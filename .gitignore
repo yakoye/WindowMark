@@ -1,0 +1,57 @@
+# CMake build trees and generated metadata
+/build/
+/out/
+/cmake-build-*/
+/.cache/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# C/C++ and MSVC build products
+*.obj
+*.o
+*.lo
+*.a
+*.lib
+*.dll
+*.exe
+*.exp
+*.ilk
+*.idb
+*.pdb
+*.pch
+*.res
+*.tlog
+*.recipe
+
+# Generated Visual Studio files and per-user state
+/.vs/
+*.sln
+*.slnx
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.suo
+*.user
+
+# IDE caches (keep shareable editor configuration eligible for commit)
+/.idea/
+/.vscode/.browse.VC.db*
+/.vscode/ipch/
+
+# Logs, temporary files, and editor backups
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
