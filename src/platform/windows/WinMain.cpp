@@ -201,6 +201,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     windowmark::win::WinControlWindow::Handlers handlers;
+    // Master switch. "Anything on" turns everything off; everything off turns both back on,
+    // so one click always changes something - a switch that can land on "half on" and then
+    // do nothing visible on the next click would be worse than no switch.
+    handlers.onToggleAll = [&]() {
+        windowmark::Settings draft = coordinator.CurrentSettings();
+        const bool anythingOn = draft.drawer.enabled || draft.border.enabled;
+        draft.drawer.enabled = !anythingOn;
+        draft.border.enabled = !anythingOn;
+        coordinator.UpdateSettings(draft);
+        control.SetEnabledState(draft.drawer.enabled);
+        control.SetBorderState(draft.border.enabled);
+        persist();
+    };
     handlers.onToggleBookmarks = [&]() {
         coordinator.SetOverlayEnabled(!coordinator.OverlayEnabled());
         control.SetEnabledState(coordinator.OverlayEnabled());
@@ -241,6 +254,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             std::wstring(L"两个独立的窗口增强功能，合在一个托盘程序里：\n"
                          L"  • 书签 — 同一应用的每个窗口共享一组书签，点击即可切换\n"
                          L"  • 窗口边框 — 为每个窗口描边，区分当前活动窗口\n\n"
+                         L"作者：yekoye\n"
+                         L"邮箱：yuxiang_163com@163.com\n\n"
                          L"程序位置：\n") +
             windowmark::win::InstalledExePath().wstring() + L"\n\n" +
             L"配置文件：\n" + settingsPath.wstring() + L"\n\n" +

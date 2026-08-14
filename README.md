@@ -1,10 +1,10 @@
-# WindowMark v0.3.6
+# WindowMark v0.3.7
 
 WindowMark is a lightweight **same-application multi-window bookmark layer**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.3.6 at a glance
+## v0.3.7 at a glance
 
 This Windows release combines two independent tools in one ordinary user process:
 
@@ -13,22 +13,26 @@ This Windows release combines two independent tools in one ordinary user process
 - **Window borders** for outlining every eligible top-level window with separate active
   and inactive colors. Borders are optional and disabled by default.
 
-v0.3.6 fixes the major drag-latency problem caused by assigning cross-process owners to
-bookmark windows, strengthens bookmark/border z-order recovery, creates bookmark windows
-only when they are visible, and adds build timestamps plus opt-in diagnostic counters.
+v0.3.7 reworks the tray menu — a **暂停所有 / 启用所有** master switch, **开机启动** (off
+after a fresh install), shorter labels and a left-growing popup — and makes the settings
+dialog's height derive from its field list instead of a hand-tuned constant.
+
+v0.3.6 fixed the major drag-latency problem caused by assigning cross-process owners to
+bookmark windows, strengthened bookmark/border z-order recovery, created bookmark windows
+only when they are visible, and added build timestamps plus opt-in diagnostic counters.
 See [CHANGELOG.md](CHANGELOG.md) for the measurements and full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.3.6-Release.zip` from the
-   [v0.3.6 release](https://github.com/yakoye/WindowMark/releases/tag/v0.3.6).
+1. Download `WindowMark-v0.3.7-Release.zip` from the
+   [v0.3.7 release](https://github.com/yakoye/WindowMark/releases/tag/v0.3.7).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
 4. Use the tray menu to enable/configure **书签** and the optional **窗口边框** separately.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.3.6.
+scaffold and does not provide a working macOS application in v0.3.7.
 
 ## Interaction
 
@@ -74,6 +78,27 @@ The settings dialog exposes every configurable value — appearance, the bottom 
 preview, behaviour and performance — and changes **apply immediately** and are written to
 `settings.conf`. There is a 恢复默认值 button, and out-of-range numbers are reported rather
 than silently clamped.
+
+The tray menu itself carries the program-wide switches, above 关于 and 退出:
+
+```text
+WindowMark          greyed header, so 关于/退出 need not repeat the name
+书签              >
+窗口边框           >
+──────────
+暂停所有            master switch; reads 启用所有 while paused
+开机启动
+关于
+──────────
+退出
+```
+
+**暂停所有 / 启用所有** turns both features off, or both back on, without visiting either
+submenu. The label names what the click will do, so there is no tick to interpret.
+
+**开机启动** is off after a fresh install, and is *not* stored in `settings.conf`: Windows
+lets the user turn a startup entry off from Task Manager and from 设置 - 应用 - 启动, so the
+registry entry is the only record and the menu reads it live every time it opens.
 
 Renaming overrides the window title on that one bookmark; clearing the field restores it.
 Like per-window selection, a custom name lasts only for the current WindowMark run — see
@@ -270,8 +295,10 @@ WindowMarkInspect.exe      diagnostic: which window has an outline, and why
 ```
 
 Double-click `WindowMarkSetup.exe`. It shows one dialog with the install location and an
-**开机时自动启动 WindowMark** checkbox, then installs to `%LOCALAPPDATA%\Programs\WindowMark`,
-creates a Start menu shortcut, registers an entry under **设置 - 应用**, and starts the app.
+**开机时自动启动 WindowMark** checkbox — unchecked on a fresh install, and pre-set to
+whatever is already configured on an upgrade — then installs to
+`%LOCALAPPDATA%\Programs\WindowMark`, creates a Start menu shortcut, registers an entry
+under **设置 - 应用**, and starts the app. The same switch is available from the tray menu.
 
 Uninstall from **设置 - 应用**, from the Start menu, or by running `WindowMarkUninstall.exe`
 in the install directory. Its dialog has a **同时删除我的设置和数据** checkbox; leaving it
@@ -311,13 +338,14 @@ on a 125% display, and full install/reinstall-over-running/uninstall cycles.
 
 ## Version policy
 
-**v0.3.6** is the current release. It includes the window-border feature developed in the
+**v0.3.7** is the current release. It includes the window-border feature developed in the
 v0.3.0 line, configurable exclusions and `WindowMarkInspect.exe` from v0.3.2, the movement
-path improvements from v0.3.5, and the cross-process-owner and z-order fixes from v0.3.6.
+path improvements from v0.3.5, the cross-process-owner and z-order fixes from v0.3.6, and
+the start-with-Windows switch from v0.3.7.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
-v0.2.0. Development revisions v0.3.0, v0.3.2, and v0.3.5 are retained in the changelog so
-the progression to v0.3.6 remains auditable.
+v0.2.0. Development revisions v0.3.0, v0.3.2, v0.3.5 and v0.3.6 are retained in the
+changelog so the progression to v0.3.7 remains auditable.
 
 Fixes go to `v0.3.x`; new features to `v0.4.0`. See [VALIDATION.md](VALIDATION.md) for what
 is verified and what still is not, and [ROADMAP.md](ROADMAP.md) for what is deferred.

@@ -10,7 +10,7 @@ inline constexpr wchar_t kProductName[] = L"WindowMark";
 // Bump on every change that gets installed. If it is ever ambiguous whether a running
 // binary is the current one, the build stamp in BuildStamp.h settles it - that one is
 // written by the build itself and cannot be forgotten.
-inline constexpr wchar_t kProductVersion[] = L"0.3.6";
+inline constexpr wchar_t kProductVersion[] = L"0.3.7";
 inline constexpr wchar_t kPublisher[] = L"WindowMark";
 
 inline constexpr wchar_t kSingletonMutex[] = L"Local\\WindowMark.Singleton.v0";

@@ -1,11 +1,13 @@
 #include "WinControlWindow.h"
 
 #include "AppIdentity.h"
+#include "AutoStart.h"
 #include "Resource.h"
 
 #include <shellapi.h>
 #include <utility>
 #include <cwchar>
+#include <iterator>
 
 namespace windowmark::win {
 namespace {
@@ -102,13 +104,21 @@ void WinControlWindow::ShowMenu() {
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
+    // Disabled header. It carries the app name so 关于 and 退出 do not have to repeat it,
+    // which is what was making the menu wide - a Win32 menu is exactly as wide as its
+    // longest label, and 「关于 WindowMark...」 was that label.
+    AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, app::kProductName);
     // Bookmarks and borders are separate features with separate switches and separate
     // settings, so the menu keeps them in separate submenus rather than one flat list.
     HMENU bookmarks = CreatePopupMenu();
     if (bookmarks) {
         AppendMenuW(bookmarks, MF_STRING | (enabled_ ? MF_CHECKED : MF_UNCHECKED),
                     kToggleCommand, L"启用书签");
-        AppendMenuW(bookmarks, MF_STRING, kSelectionCommand, L"选择参与的应用/窗口...");
+        // Shortened from 「选择参与的应用/窗口...」: at twelve glyphs it was the widest item
+        // anywhere in the menu, and a submenu is right-aligned to the parent's left edge,
+        // so it alone decided how far left the 书签 panel reached - visibly further than
+        // the 窗口边框 panel next to it.
+        AppendMenuW(bookmarks, MF_STRING, kSelectionCommand, L"选择应用/窗口...");
         AppendMenuW(bookmarks, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(bookmarks, MF_STRING, kSettingsCommand, L"书签设置...");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarks), L"书签");
@@ -124,10 +134,28 @@ void WinControlWindow::ShowMenu() {
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kAboutCommand, L"关于 WindowMark...");
-    AppendMenuW(menu, MF_STRING, kExitCommand, L"退出 WindowMark");
+    // Master switch above the per-feature ones: one click silences the whole app without
+    // having to visit both submenus. The label names what the click will do rather than
+    // what the state is - no tick to interpret, and two glyphs instead of five.
+    const bool anythingOn = enabled_ || bordersEnabled_;
+    AppendMenuW(menu, MF_STRING, kToggleAllCommand, anythingOn ? L"暂停所有" : L"启用所有");
+    // Top level rather than inside either submenu: it switches the program, not a feature.
+    // The tick is read from the registry every time the menu opens instead of being cached,
+    // because Windows lets the user turn a startup entry off from Task Manager and from
+    // 设置 - 应用 - 启动, and a cached copy would keep claiming the opposite.
+    // 「开机启动」 rather than 「开机自启动」: with the app name moved into the header, this
+    // was the widest label left, and a Win32 menu is exactly as wide as its widest label.
+    AppendMenuW(menu, MF_STRING | (app::IsAutoStartEnabled() ? MF_CHECKED : MF_UNCHECKED),
+                kAutoStartCommand, L"开机启动");
+    AppendMenuW(menu, MF_STRING, kAboutCommand, L"关于");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kExitCommand, L"退出");
     SetForegroundWindow(hwnd_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+    // TPM_RIGHTALIGN puts the menu's *right* edge on the cursor, so it grows leftwards into
+    // the free desktop instead of rightwards towards the screen edge. The tray sits at the
+    // bottom right, so growing right meant the menu was always shoved back by the clamp and
+    // ended up hard against the edge.
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
                    pt.x, pt.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 }
@@ -163,8 +191,22 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         break;
     case WM_COMMAND: {
+        // Handled here rather than routed to a handler like the rest: there is no
+        // application state behind it and nothing to persist - the registry value *is* the
+        // setting, so a trip out to WinMain and back would only add indirection.
+        if (LOWORD(wParam) == kAutoStartCommand) {
+            const bool turningOn = !app::IsAutoStartEnabled();
+            wchar_t exe[MAX_PATH]{};
+            if (GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe))) != 0) {
+                if (turningOn) app::ClearAutoStartVeto();
+                app::SetAutoStart(exe, turningOn);
+            }
+            return 0;
+        }
+
         const std::function<void()>* handler = nullptr;
         switch (LOWORD(wParam)) {
+        case kToggleAllCommand:      handler = &handlers_.onToggleAll; break;
         case kToggleCommand:         handler = &handlers_.onToggleBookmarks; break;
         case kSelectionCommand:      handler = &handlers_.onSelection; break;
         case kSettingsCommand:       handler = &handlers_.onBookmarkSettings; break;

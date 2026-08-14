@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
-Write-Host '=== WindowMark v0.3.6 build ==='
+Write-Host '=== WindowMark v0.3.7 build ==='
 cmake -S . -B build
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure

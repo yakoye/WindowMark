@@ -1,6 +1,7 @@
 #include "InstallerCommon.h"
 
 #include "AppIdentity.h"
+#include "AutoStart.h"
 
 #include <objbase.h>
 #include <shellapi.h>
@@ -198,37 +199,14 @@ std::filesystem::path LocatePayload(const wchar_t* fileName) {
 
 // --- registry / shell integration -----------------------------------------
 
+// Both of these live in AutoStart.h now, shared with the app so the settings dialog and
+// the installer cannot drift apart on what "start with Windows" means.
 bool SetStartWithWindows(const std::filesystem::path& exePath, bool enable) {
-    HKEY key = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, app::kRunKeyPath, 0, nullptr, 0,
-                        KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
-        return false;
-    }
-
-    LSTATUS status = ERROR_SUCCESS;
-    if (enable) {
-        const std::wstring quoted = L"\"" + exePath.wstring() + L"\"";
-        status = RegSetValueExW(key, app::kRunValueName, 0, REG_SZ,
-                                reinterpret_cast<const BYTE*>(quoted.c_str()),
-                                static_cast<DWORD>((quoted.size() + 1) * sizeof(wchar_t)));
-    } else {
-        status = RegDeleteValueW(key, app::kRunValueName);
-        if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
-    }
-
-    RegCloseKey(key);
-    return status == ERROR_SUCCESS;
+    if (enable) app::ClearAutoStartVeto();
+    return app::SetAutoStart(exePath.wstring(), enable);
 }
 
-bool IsStartWithWindowsEnabled() {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, app::kRunKeyPath, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
-        return false;
-    }
-    const LSTATUS status = RegQueryValueExW(key, app::kRunValueName, nullptr, nullptr, nullptr, nullptr);
-    RegCloseKey(key);
-    return status == ERROR_SUCCESS;
-}
+bool IsStartWithWindowsEnabled() { return app::IsAutoStartEnabled(); }
 
 namespace {
 

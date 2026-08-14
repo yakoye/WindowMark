@@ -313,7 +313,7 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
         return false;
     }
 
-    output << "# WindowMark v0.3.6\n";
+    output << "# WindowMark v0.3.7\n";
     output << "# Edit this file, then restart WindowMark.\n\n";
     output << "drawer.enabled=" << (settings.drawer.enabled ? "true" : "false") << "\n";
     output << "placement=" << ToString(settings.drawer.placement) << "\n";

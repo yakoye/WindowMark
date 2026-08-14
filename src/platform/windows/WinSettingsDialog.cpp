@@ -1,6 +1,7 @@
 #include "WinSettingsDialog.h"
 
 #include "AppIdentity.h"
+#include "AutoStart.h"
 #include "Resource.h"
 #include "WinUtil.h"
 
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace windowmark::win {
@@ -41,7 +43,19 @@ struct Field {
     // accessors so the numeric fields stay as simple as they were.
     std::wstring (*getText)(const Settings&){};
     void (*setText)(Settings&, const std::wstring&){};
+    // For settings that are not part of Settings at all. Start-with-Windows is one: it
+    // lives in the registry, where Windows itself lets the user change it, so keeping a
+    // copy in settings.conf would mean two records that disagree. When these are set,
+    // get/set are ignored.
+    int (*getExternal)(){};
+    void (*setExternal)(int){};
 };
+
+// Nothing uses the external channel today - start-with-Windows lives in the tray menu,
+// where a program-wide switch sits better than on either feature's page. The channel stays
+// because the reason it exists is not going away: any setting Windows also lets the user
+// change from outside has to be read from where Windows keeps it, not mirrored into
+// settings.conf where the two copies would disagree.
 
 // "A,B,C" <-> the list form the settings file and the backend both use.
 std::wstring JoinClasses(const std::vector<std::string>& values) {
@@ -566,7 +580,7 @@ private:
                 SetWindowTextW(control, field.getText(source).c_str());
                 continue;
             }
-            const int value = field.get(source);
+            const int value = field.getExternal ? field.getExternal() : field.get(source);
             switch (field.kind) {
             case FieldKind::Int:
                 SetWindowTextW(control, std::to_wstring(value).c_str());
@@ -588,6 +602,9 @@ private:
     // than silently clamped, so a typo does not quietly become a different setting.
     bool Collect() {
         Settings draft = working_;
+        // Registry-backed fields are written only once every control has validated, so a
+        // typo in some unrelated number cannot leave half the dialog applied.
+        std::vector<std::pair<void (*)(int), int>> external;
         for (std::size_t i = 0; i < std::size(kFields) && i < controls_.size(); ++i) {
             const auto& field = kFields[i];
             HWND control = controls_[i];
@@ -641,8 +658,14 @@ private:
                 if (value < 0) value = 0;
                 break;
             }
-            field.set(draft, value);
+            if (field.setExternal) {
+                external.emplace_back(field.setExternal, value);
+            } else {
+                field.set(draft, value);
+            }
         }
+
+        for (const auto& [apply, value] : external) apply(value);
 
         if (draft.drawer.expandedExtent < draft.drawer.collapsedExtent) {
             draft.drawer.expandedExtent = draft.drawer.collapsedExtent;
@@ -695,6 +718,29 @@ private:
         int width;
     };
 
+    // Derived from the field table rather than hand-tuned. The two page heights used to be
+    // literals that had to be re-measured by eye every time a field was added, which is
+    // exactly the step that gets skipped - and the failure mode is controls drawn on top
+    // of the OK button. This walks the same group/row arithmetic BuildControls does.
+    [[nodiscard]] static constexpr int PageHeight(SettingsPage page, int columns) {
+        int leftY = kPad;
+        int rightY = kPad;
+        const wchar_t* currentGroup = nullptr;
+        for (const auto& field : kFields) {
+            if (field.page != page) continue;
+            const bool left = columns == 1 || IsLeftColumn(field);
+            int& cursor = left ? leftY : rightY;
+            if (!currentGroup || wcscmp(currentGroup, field.group) != 0) {
+                currentGroup = field.group;
+                cursor += kGroupGap + kRowH + 2 + 1 + 6;
+            }
+            cursor += kRowH + kRowGap;
+        }
+        const int tallest = leftY > rightY ? leftY : rightY;
+        // Room below the last field for the footer line and the button row.
+        return tallest + kRowGap + kFooterH + kButtonH + kPad * 2;
+    }
+
     [[nodiscard]] static constexpr PageMetrics MetricsFor(SettingsPage page) {
         PageMetrics m{};
         bool hasColour = false;
@@ -702,14 +748,13 @@ private:
             m.labelW = 66;   // 「自定义圆角」「非活动窗口」
             m.hintW = 116;   // 「px  仅「自定义」时」
             m.columns = 1;   // eight fields; two columns left half the window empty
-            m.height = 404;  // three groups now: 窗口边框, 颜色, 排除窗口
             hasColour = true;
         } else {
             m.labelW = 80;   // 「折叠显示字数」「几何事件节流」
             m.hintW = 86;    // 「px  0=厚度一半」
             m.columns = 2;
-            m.height = 516;
         }
+        m.height = PageHeight(page, m.columns);
         const int numberSpan = kEditW + kFieldGap + m.hintW;
         const int colourSpan = hasColour ? kColorEditW + kFieldGap + kColorHintW : 0;
         m.controlSpan = numberSpan > colourSpan ? numberSpan : colourSpan;

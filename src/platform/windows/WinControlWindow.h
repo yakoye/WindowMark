@@ -10,6 +10,8 @@ public:
     ~WinControlWindow();
 
     struct Handlers {
+        // Master switch: turns both features off, or both back on.
+        std::function<void()> onToggleAll;
         std::function<void()> onToggleBookmarks;
         std::function<void()> onSelection;
         std::function<void()> onBookmarkSettings;
@@ -34,6 +36,8 @@ private:
     static constexpr UINT kExitCommand = 1005;
     static constexpr UINT kToggleBordersCommand = 1006;
     static constexpr UINT kBorderSettingsCommand = 1007;
+    static constexpr UINT kAutoStartCommand = 1008;
+    static constexpr UINT kToggleAllCommand = 1009;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
