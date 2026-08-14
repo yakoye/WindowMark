@@ -114,7 +114,84 @@ std::string EncodeList(std::vector<std::string> values) {
     return out.str();
 }
 
+// Accepts the same hex forms tacky-borders does - #RGB, #RGBA, #RRGGBB, #RRGGBBAA, with
+// or without the leading '#'. Returns 0xAARRGGBB; alpha defaults to opaque when omitted.
+// Anything unparseable keeps the previous value rather than silently turning the border
+// transparent or black.
+unsigned ParseColor(const std::string& value, unsigned fallback) {
+    std::string digits = Trim(value);
+    if (!digits.empty() && digits.front() == '#') digits.erase(digits.begin());
+
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
+    std::vector<int> n;
+    n.reserve(digits.size());
+    for (char c : digits) {
+        const int v = nibble(c);
+        if (v < 0) return fallback;
+        n.push_back(v);
+    }
+
+    int r = 0, g = 0, b = 0, a = 255;
+    switch (n.size()) {
+    case 3:  // #RGB
+        r = n[0] * 17; g = n[1] * 17; b = n[2] * 17;
+        break;
+    case 4:  // #RGBA
+        r = n[0] * 17; g = n[1] * 17; b = n[2] * 17; a = n[3] * 17;
+        break;
+    case 6:  // #RRGGBB
+        r = n[0] * 16 + n[1]; g = n[2] * 16 + n[3]; b = n[4] * 16 + n[5];
+        break;
+    case 8:  // #RRGGBBAA
+        r = n[0] * 16 + n[1]; g = n[2] * 16 + n[3]; b = n[4] * 16 + n[5];
+        a = n[6] * 16 + n[7];
+        break;
+    default:
+        return fallback;
+    }
+    return (static_cast<unsigned>(a) << 24) | (static_cast<unsigned>(r) << 16) |
+           (static_cast<unsigned>(g) << 8) | static_cast<unsigned>(b);
+}
+
+// Writes #RRGGBB when fully opaque, #RRGGBBAA otherwise, so the common case stays short.
+std::string ColorToString(unsigned color) {
+    std::ostringstream out;
+    out << '#' << std::uppercase << std::hex << std::setfill('0');
+    out << std::setw(6) << (color & 0xFFFFFFu);
+    const unsigned alpha = (color >> 24) & 0xFFu;
+    if (alpha != 0xFFu) out << std::setw(2) << alpha;
+    return out.str();
+}
+
 } // namespace
+
+std::string ToString(BorderCorners corners) {
+    switch (corners) {
+    case BorderCorners::Square: return "square";
+    case BorderCorners::Round: return "round";
+    case BorderCorners::RoundSmall: return "round_small";
+    case BorderCorners::Custom: return "custom";
+    case BorderCorners::Auto:
+    default: return "auto";
+    }
+}
+
+BorderCorners BorderCornersFromString(const std::string& value) {
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lowered == "square") return BorderCorners::Square;
+    if (lowered == "round") return BorderCorners::Round;
+    if (lowered == "round_small" || lowered == "roundsmall") return BorderCorners::RoundSmall;
+    if (lowered == "custom") return BorderCorners::Custom;
+    return BorderCorners::Auto;
+}
 
 std::string ToString(Placement placement) {
     switch (placement) {
@@ -180,9 +257,29 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     settings.drawer.bottomCollapsedExtent = ParseInt(values, "drawer.bottom_collapsed_extent", settings.drawer.bottomCollapsedExtent, 24, 240);
     settings.drawer.bottomExpandedExtent = ParseInt(values, "drawer.bottom_expanded_extent", settings.drawer.bottomExpandedExtent, settings.drawer.bottomCollapsedExtent, 480);
     settings.drawer.bottomCollapsedThickness = ParseInt(values, "drawer.bottom_collapsed_thickness", settings.drawer.bottomCollapsedThickness, 0, 80);
+    settings.drawer.bottomActiveThickness = ParseInt(values, "drawer.bottom_active_thickness", settings.drawer.bottomActiveThickness, 0, 80);
     settings.drawer.transparency = ParseInt(values, "drawer.transparency", settings.drawer.transparency, 0, 90);
+    if (const auto it = values.find("drawer.enabled"); it != values.end()) {
+        settings.drawer.enabled = ParseBool(it->second, settings.drawer.enabled);
+    }
     if (const auto it = values.find("drawer.active_window_only"); it != values.end()) {
         settings.drawer.activeWindowOnly = ParseBool(it->second, settings.drawer.activeWindowOnly);
+    }
+
+    if (const auto it = values.find("border.enabled"); it != values.end()) {
+        settings.border.enabled = ParseBool(it->second, settings.border.enabled);
+    }
+    settings.border.width = ParseInt(values, "border.width", settings.border.width, 1, 20);
+    settings.border.offset = ParseInt(values, "border.offset", settings.border.offset, -20, 20);
+    settings.border.cornerRadius = ParseInt(values, "border.corner_radius", settings.border.cornerRadius, 0, 64);
+    if (const auto it = values.find("border.corners"); it != values.end()) {
+        settings.border.corners = BorderCornersFromString(it->second);
+    }
+    if (const auto it = values.find("border.active_color"); it != values.end()) {
+        settings.border.activeColor = ParseColor(it->second, settings.border.activeColor);
+    }
+    if (const auto it = values.find("border.inactive_color"); it != values.end()) {
+        settings.border.inactiveColor = ParseColor(it->second, settings.border.inactiveColor);
     }
 
     if (const auto it = values.find("preview.enabled"); it != values.end()) {
@@ -196,6 +293,9 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
 
     if (const auto it = values.find("selection.disabled_apps"); it != values.end()) {
         settings.selection.disabledAppKeys = ParseEncodedList(it->second);
+    }
+    if (const auto it = values.find("tracking.exclude_classes"); it != values.end()) {
+        settings.tracking.excludeClasses = ParseEncodedList(it->second);
     }
 
     if (settings.drawer.expandedExtent < settings.drawer.collapsedExtent) {
@@ -213,8 +313,9 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
         return false;
     }
 
-    output << "# WindowMark v0.2.0\n";
+    output << "# WindowMark v0.3.6\n";
     output << "# Edit this file, then restart WindowMark.\n\n";
+    output << "drawer.enabled=" << (settings.drawer.enabled ? "true" : "false") << "\n";
     output << "placement=" << ToString(settings.drawer.placement) << "\n";
     output << "drawer.collapsed_extent=" << settings.drawer.collapsedExtent << "\n";
     output << "drawer.expanded_extent=" << settings.drawer.expandedExtent << "\n";
@@ -233,17 +334,44 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "drawer.transparency=" << settings.drawer.transparency << "\n\n";
     output << "# Bottom/top rows (used for maximized windows) size independently of the sides:\n";
     output << "# here the extent is a tab's width. A row tab rests at half thickness against\n";
-    output << "# the window edge and grows upward on hover. 0 thickness means half of\n";
-    output << "# drawer.thickness.\n";
+    output << "# the window edge and grows upward on hover.\n";
+    output << "#   bottom_collapsed_thickness  resting height; 0 = half of drawer.thickness\n";
+    output << "#   bottom_active_thickness     how tall the active tab stands, and the\n";
+    output << "#                               ceiling a hovered tab grows to; 0 = drawer.thickness\n";
     output << "drawer.bottom_collapsed_extent=" << settings.drawer.bottomCollapsedExtent << "\n";
     output << "drawer.bottom_expanded_extent=" << settings.drawer.bottomExpandedExtent << "\n";
-    output << "drawer.bottom_collapsed_thickness=" << settings.drawer.bottomCollapsedThickness << "\n\n";
+    output << "drawer.bottom_collapsed_thickness=" << settings.drawer.bottomCollapsedThickness << "\n";
+    output << "drawer.bottom_active_thickness=" << settings.drawer.bottomActiveThickness << "\n\n";
+    output << "# Window borders. Independent of bookmarks: these apply to every top-level\n";
+    output << "# window, including apps that only ever have one.\n";
+    output << "#   border.offset  negative shrinks the outline inwards, positive pushes it out.\n";
+    output << "#                  Keep it at -1: at 0 the outline stops one pixel short of\n";
+    output << "#                  the window and the frame Windows draws for itself shows\n";
+    output << "#                  through as a grey seam.\n";
+    output << "#   border.corners auto | square | round | round_small | custom\n";
+    output << "#                  auto asks DWM what shape each window is\n";
+    output << "#   colors         #RGB, #RGBA, #RRGGBB or #RRGGBBAA - alpha is part of the color\n";
+    output << "border.enabled=" << (settings.border.enabled ? "true" : "false") << "\n";
+    output << "border.width=" << settings.border.width << "\n";
+    output << "border.offset=" << settings.border.offset << "\n";
+    output << "border.corners=" << ToString(settings.border.corners) << "\n";
+    output << "border.corner_radius=" << settings.border.cornerRadius << "\n";
+    output << "border.active_color=" << ColorToString(settings.border.activeColor) << "\n";
+    output << "border.inactive_color=" << ColorToString(settings.border.inactiveColor) << "\n\n";
+
     output << "preview.enabled=" << (settings.preview.enabled ? "true" : "false") << "\n";
     output << "preview.delay_ms=" << settings.preview.delayMs << "\n";
     output << "preview.width=" << settings.preview.width << "\n";
     output << "preview.height=" << settings.preview.height << "\n";
     output << "preview.corner_radius=" << settings.preview.cornerRadius << "\n\n";
-    output << "performance.geometry_throttle_ms=" << settings.performance.geometryThrottleMs << "\n\n";
+    output << "performance.geometry_throttle_ms=" << settings.performance.geometryThrottleMs << "\n";
+    output << "\n";
+    output << "# Extra window classes to ignore completely - no bookmark and no border.\n";
+    output << "# Adds to the built-in list; comma separated. Run mark_borders.bat to find a\n";
+    output << "# class name: it numbers every outline on screen and prints the class next to\n";
+    output << "# the number. Needed because the built-in list was measured on one Windows\n";
+    output << "# build with one set of IMEs, and neither of those travels.\n";
+    output << "tracking.exclude_classes=" << EncodeList(settings.tracking.excludeClasses) << "\n\n";
     output << "# Application selections are persistent. Individual-window selections are session-only.\n";
     output << "selection.disabled_apps=" << EncodeList(settings.selection.disabledAppKeys) << "\n";
     return static_cast<bool>(output);

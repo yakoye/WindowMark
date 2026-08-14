@@ -12,13 +12,39 @@ namespace windowmark {
 class IWindowBackend {
 public:
     using EventSink = std::function<void(const WindowEvent&)>;
+    // Raised for every geometry change, bypassing the throttling EventSink is subject to.
+    // A border hugs the window edge, so a throttled position visibly lags behind a drag;
+    // bookmarks sit outside the window and do not care. Handlers run on the UI thread
+    // inside event dispatch and must stay cheap - move a window, do not repaint it.
+    using GeometrySink = std::function<void(WindowId, const Rect& frame)>;
 
     virtual ~IWindowBackend() = default;
     virtual bool Start(EventSink sink) = 0;
+    virtual void SetGeometrySink(GeometrySink sink) = 0;
+    // Extra window classes never to report, on top of whatever the backend excludes by
+    // itself. Not pure: a backend with nothing shell-specific to hide needs no opinion.
+    virtual void SetExcludedClasses(const std::vector<std::string>& classes) { (void)classes; }
     virtual void Stop() noexcept = 0;
     [[nodiscard]] virtual std::vector<WindowInfo> EnumerateWindows() = 0;
     [[nodiscard]] virtual std::optional<WindowInfo> QueryWindow(WindowId id) = 0;
+    // Just the frame, for a window already known to be tracked. A drag fires hundreds of
+    // location events and the only thing that changed is where the window is - re-running
+    // the whole QueryWindow costs about 0.7ms of cross-process calls each time (measured),
+    // to re-derive a class name, a process path and a title that cannot have changed.
+    // Returns nothing if the window is gone, which is the caller's cue to re-enumerate.
+    [[nodiscard]] virtual std::optional<Rect> QueryFrame(WindowId id) = 0;
     virtual bool ActivateWindow(WindowId id) = 0;
+};
+
+class IBorderBackend {
+public:
+    virtual ~IBorderBackend() = default;
+    virtual bool Start(const Settings& settings) = 0;
+    virtual void Apply(const std::vector<BorderModel>& models) = 0;
+    // Cheap path for a window that only moved: reposition without re-rendering.
+    virtual void MoveBorder(WindowId id, const Rect& frame) = 0;
+    virtual void UpdateSettings(const Settings& settings) = 0;
+    virtual void Stop() noexcept = 0;
 };
 
 class IOverlayBackend {

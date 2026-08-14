@@ -15,6 +15,10 @@ struct DrawerMetrics {
     // Thickness at rest. Row tabs sit at part of their full thickness and grow toward
     // the screen interior on hover; side tabs always use the full thickness.
     int restThickness{};
+    // What the active tab stands at, and what a hovered tab grows to. Separate from
+    // fullThickness so a row's active tab can be sized without dragging the resting
+    // height, the strip and the side layout along with it.
+    int activeThickness{};
     int fullThickness{};
 };
 

@@ -2,6 +2,6 @@
 
 int main() {
     std::cout << "WindowMark: this build validates the platform-neutral core.\n"
-                 "The functional MVP backend in v0.2.0 targets Windows.\n";
+                 "The functional backend in v0.3.6 targets Windows.\n";
     return 0;
 }

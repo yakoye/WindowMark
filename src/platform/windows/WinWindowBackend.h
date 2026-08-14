@@ -18,9 +18,12 @@ public:
     ~WinWindowBackend() override;
 
     bool Start(EventSink sink) override;
+    void SetGeometrySink(GeometrySink sink) override;
+    void SetExcludedClasses(const std::vector<std::string>& classes) override;
     void Stop() noexcept override;
     [[nodiscard]] std::vector<WindowInfo> EnumerateWindows() override;
     [[nodiscard]] std::optional<WindowInfo> QueryWindow(WindowId id) override;
+    [[nodiscard]] std::optional<Rect> QueryFrame(WindowId id) override;
     bool ActivateWindow(WindowId id) override;
 
 private:
@@ -53,8 +56,26 @@ private:
 
     mutable std::unordered_map<HWND, ProcessIdentity> identityCache_;
 
+    // DWM's extended frame differs from GetWindowRect by a constant inset for a given
+    // window state, but querying it crosses into the DWM process. A drag fires ~100
+    // location events a second, so the inset is measured once and reapplied to the cheap
+    // local GetWindowRect, recalibrating only when the window's size actually changes.
+    struct FrameInset {
+        LONG left{}, top{}, right{}, bottom{};
+        LONG width{}, height{};   // window rect size the inset was measured at
+    };
+    [[nodiscard]] Rect FrameFor(HWND hwnd) const;
+    mutable std::unordered_map<HWND, FrameInset> frameInsets_;
+
+    // Whether a window is top-level never changes, but asking costs a cross-process
+    // GetWindowLongPtr. That question is asked for every location event - hundreds a
+    // second while dragging - so the answer is remembered per window.
+    [[nodiscard]] bool IsTopLevel(HWND hwnd) const;
+    mutable std::unordered_map<HWND, bool> topLevelCache_;
+
     HWND dispatcher_{};
     EventSink sink_;
+    GeometrySink geometrySink_;
     std::vector<HWINEVENTHOOK> hooks_;
     std::mutex pendingMutex_;
     std::unordered_map<WindowId, std::uint32_t> pendingBits_;
@@ -62,6 +83,9 @@ private:
     ULONGLONG lastGeometryDispatch_{0};
     int geometryThrottleMs_{33};
     DWORD processId_{0};
+    // The user's own exclusions, kept as wide strings so the per-window check is a
+    // straight comparison against the class name rather than a conversion each time.
+    std::vector<std::wstring> excludedClasses_;
     std::atomic_bool geometryTimerArmed_{false};
 };
 

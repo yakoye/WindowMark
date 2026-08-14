@@ -1,3 +1,4 @@
+#include "WinBorderBackend.h"
 #include "WinControlWindow.h"
 #include "WinOverlayBackend.h"
 #include "WinPreviewBackend.h"
@@ -11,7 +12,10 @@
 #include "windowmark/core/Settings.h"
 
 #include "AppIdentity.h"
+#include "BuildStamp.h"
+#include "Resource.h"
 
+#include <commctrl.h>
 #include <shellapi.h>
 #include <windows.h>
 
@@ -131,18 +135,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     windowmark::win::WinWindowBackend windowBackend(settings.performance.geometryThrottleMs);
     windowmark::win::WinOverlayBackend overlayBackend;
     windowmark::win::WinPreviewBackend previewBackend;
-    windowmark::Coordinator coordinator(settings, windowBackend, overlayBackend, previewBackend);
+    windowmark::win::WinBorderBackend borderBackend;
+    windowmark::Coordinator coordinator(
+        settings, windowBackend, overlayBackend, previewBackend, &borderBackend);
 
     // Declared before Start() so the context-menu handlers below can capture it; it is
     // only actually started further down, once the coordinator is running.
     windowmark::win::WinControlWindow control;
 
-    const auto openSettings = [&]() {
-        windowmark::Settings draft = coordinator.CurrentSettings();
-        if (!windowmark::win::WinSettingsDialog::ShowModal(control.NativeHandle(), draft)) {
-            return;
-        }
-        coordinator.UpdateSettings(draft);
+    const auto persist = [&]() {
         if (!windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings())) {
             MessageBoxW(control.NativeHandle(),
                         L"设置已在本次运行中生效，但保存 settings.conf 失败，下次启动不会保留。",
@@ -151,15 +152,45 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
     };
 
+    // Every dialog below is modal to the hidden tray window. Disabling that window blocks
+    // input to it but not the tray icon's callback message, so the menu stayed usable and
+    // could stack a second copy of any dialog on top of the first.
+    bool dialogOpen = false;
+    HWND aboutDialog = nullptr;
+    const auto exclusive = [&](auto&& body) {
+        if (dialogOpen) return;
+        dialogOpen = true;
+        body();
+        dialogOpen = false;
+    };
+
+    const auto openSettingsPage = [&](windowmark::win::SettingsPage page) {
+        exclusive([&] {
+            windowmark::Settings draft = coordinator.CurrentSettings();
+            if (!windowmark::win::WinSettingsDialog::ShowModal(control.NativeHandle(), draft, page)) {
+                return;
+            }
+            coordinator.UpdateSettings(draft);
+            control.SetBorderState(coordinator.CurrentSettings().border.enabled);
+            persist();
+        });
+    };
+
+    const auto openBookmarkSettings = [&]() {
+        openSettingsPage(windowmark::win::SettingsPage::Bookmarks);
+    };
+
     coordinator.SetMenuHandlers(
         [&](windowmark::WindowId id) {
-            std::wstring name = windowmark::win::Utf8ToWide(coordinator.CustomLabel(id));
-            const std::wstring title = windowmark::win::Utf8ToWide(coordinator.DefaultLabel(id));
-            if (windowmark::win::WinRenameDialog::ShowModal(control.NativeHandle(), title, name)) {
-                coordinator.SetCustomLabel(id, windowmark::win::WideToUtf8(name));
-            }
+            exclusive([&] {
+                std::wstring name = windowmark::win::Utf8ToWide(coordinator.CustomLabel(id));
+                const std::wstring title = windowmark::win::Utf8ToWide(coordinator.DefaultLabel(id));
+                if (windowmark::win::WinRenameDialog::ShowModal(control.NativeHandle(), title, name)) {
+                    coordinator.SetCustomLabel(id, windowmark::win::WideToUtf8(name));
+                }
+            });
         },
-        openSettings);
+        openBookmarkSettings);
 
     if (!coordinator.Start()) {
         MessageBoxW(nullptr,
@@ -169,41 +200,104 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 5;
     }
 
-    if (!control.Start(
-            [&]() {
-                coordinator.SetOverlayEnabled(!coordinator.OverlayEnabled());
-                control.SetEnabledState(coordinator.OverlayEnabled());
-            },
-            [&]() {
-                auto selection = coordinator.SelectionSnapshot();
-                if (windowmark::win::WinSelectionDialog::ShowModal(control.NativeHandle(), selection)) {
-                    coordinator.ApplySelection(selection);
-                    if (!windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings())) {
-                        MessageBoxW(control.NativeHandle(),
-                                    L"选择已经在本次运行中生效，但保存 settings.conf 失败。应用级选择下次启动可能不会保留。",
-                                    L"WindowMark",
-                                    MB_OK | MB_ICONWARNING);
-                    }
-                }
-            },
-            openSettings,
-            [&]() {
-                const std::wstring content =
-                    std::wstring(L"版本 ") + windowmark::app::kProductVersion + L"\n\n" +
-                    L"同应用多窗口书签层。同一个应用的每个窗口都会得到同一组书签，\n"
-                    L"点击任意书签即可切换到对应窗口。\n\n" +
-                    L"程序位置：\n" + windowmark::win::InstalledExePath().wstring() + L"\n\n" +
-                    L"配置文件：\n" + settingsPath.wstring() + L"\n\n" +
-                    L"以普通用户进程运行，不注入 DLL、不修改 Explorer 或任务栏、\n"
-                    L"不安装服务、驱动或系统级注册表项。";
-                MessageBoxW(control.NativeHandle(), content.c_str(),
-                            L"关于 WindowMark", MB_OK | MB_ICONINFORMATION);
-            },
-            []() { PostQuitMessage(0); })) {
+    windowmark::win::WinControlWindow::Handlers handlers;
+    handlers.onToggleBookmarks = [&]() {
+        coordinator.SetOverlayEnabled(!coordinator.OverlayEnabled());
+        control.SetEnabledState(coordinator.OverlayEnabled());
+        persist();
+    };
+    handlers.onSelection = [&]() {
+        exclusive([&] {
+            auto selection = coordinator.SelectionSnapshot();
+            if (windowmark::win::WinSelectionDialog::ShowModal(control.NativeHandle(), selection)) {
+                coordinator.ApplySelection(selection);
+                persist();
+            }
+        });
+    };
+    handlers.onBookmarkSettings = openBookmarkSettings;
+    handlers.onToggleBorders = [&]() {
+        windowmark::Settings draft = coordinator.CurrentSettings();
+        draft.border.enabled = !draft.border.enabled;
+        coordinator.UpdateSettings(draft);
+        control.SetBorderState(draft.border.enabled);
+        persist();
+    };
+    handlers.onBorderSettings = [&]() {
+        openSettingsPage(windowmark::win::SettingsPage::Borders);
+    };
+    handlers.onAbout = [&]() {
+        // A TaskDialog does not even disable its owner, so this one also remembers its own
+        // HWND and raises the existing box rather than just swallowing the second click.
+        if (aboutDialog && IsWindow(aboutDialog)) {
+            SetForegroundWindow(aboutDialog);
+            return;
+        }
+        if (dialogOpen) return;
+        dialogOpen = true;
+        // TaskDialog rather than MessageBox: MessageBox only takes the stock system icons,
+        // so the about box was showing the generic blue "i" instead of the app's own.
+        const std::wstring content =
+            std::wstring(L"两个独立的窗口增强功能，合在一个托盘程序里：\n"
+                         L"  • 书签 — 同一应用的每个窗口共享一组书签，点击即可切换\n"
+                         L"  • 窗口边框 — 为每个窗口描边，区分当前活动窗口\n\n"
+                         L"程序位置：\n") +
+            windowmark::win::InstalledExePath().wstring() + L"\n\n" +
+            L"配置文件：\n" + settingsPath.wstring() + L"\n\n" +
+            L"以普通用户进程运行，不注入 DLL、不修改 Explorer 或任务栏、\n"
+            L"不安装服务、驱动或系统级注册表项。";
+        // Version and build stamp together: the version says which release this is, the
+        // stamp says which build, and only the stamp is impossible to forget to update.
+        const std::wstring instruction =
+            std::wstring(L"WindowMark ") + windowmark::app::kProductVersion +
+            L"   （构建于 " + windowmark::app::kBuildStamp + L"）";
+
+        // TaskDialog draws the main icon at 32px, so ask the .ico for that size rather
+        // than letting it shrink the 256.
+        HICON icon = static_cast<HICON>(LoadImageW(
+            GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+
+        TASKDIALOGCONFIG config{};
+        config.cbSize = sizeof(config);
+        config.hwndParent = control.NativeHandle();
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+        config.dwCommonButtons = TDCBF_OK_BUTTON;
+        config.pszWindowTitle = L"关于 WindowMark";
+        if (icon) {
+            // hMainIcon shares a union with pszMainIcon; without the flag the handle would
+            // be read as a resource id.
+            config.dwFlags |= TDF_USE_HICON_MAIN;
+            config.hMainIcon = icon;
+        } else {
+            config.pszMainIcon = TD_INFORMATION_ICON;
+        }
+        // These must outlive the call: pointing the dialog at a temporary's c_str() leaves
+        // it reading freed memory, which is what garbled the installer's title once.
+        config.pszMainInstruction = instruction.c_str();
+        config.pszContent = content.c_str();
+        // TDN_CREATED is the only place the dialog's own HWND is handed out, and it is
+        // what the duplicate check above needs.
+        config.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR data) -> HRESULT {
+            if (msg == TDN_CREATED) *reinterpret_cast<HWND*>(data) = hwnd;
+            return S_OK;
+        };
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&aboutDialog);
+
+        TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+        aboutDialog = nullptr;
+        dialogOpen = false;
+        if (icon) DestroyIcon(icon);
+    };
+    handlers.onExit = []() { PostQuitMessage(0); };
+
+    if (!control.Start(std::move(handlers))) {
         coordinator.Stop();
         MessageBoxW(nullptr, L"托盘控制器初始化失败，程序已安全退出。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 6;
     }
+    control.SetBorderState(coordinator.CurrentSettings().border.enabled);
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

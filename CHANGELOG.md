@@ -1,5 +1,421 @@
 # Changelog
 
+## v0.3.6
+
+### 拖动卡顿的真正原因：跨进程 owner
+
+书签条创建时把宿主窗口当成了 owner（`CreateWindowExW` 的 `hWndParent` 传的是另一个进程
+的 HWND）。宿主每移动一次，Windows 都要维护这个「被拥有窗口」的层级关系，而 owner 在另
+一个进程，这需要一次到 WindowMark 线程的**同步往返**。Excel 的拖动循环就卡在这上面。
+
+量化（8 字形注入拖动，x 半幅 780px、y 半幅 400px，每秒 2 个来回，5 轮交错取中位数）：
+
+| 条件 | 光标→窗口延迟 | 窗口跟随率 |
+|---|---|---|
+| 有 owner（修复前） | **174.7ms** | **0.024** |
+| 无 owner | 17.3ms | 0.976 |
+| 书签窗口完全不存在 | 14.0ms | 0.966 |
+
+跟随率 = 窗口走过的路程 ÷ 光标走过的路程。0.024 意味着窗口几乎没跟上，整段整段地漏掉往返。
+
+**修复后的总体效果**（书签和边框都开）：
+
+| 条件 | 延迟中位 | 跟随率中位 |
+|---|---|---|
+| 书签+边框 | **32ms** | **0.971** |
+| 只开书签 | 24ms | 0.969 |
+| 只开边框 | 30ms | 0.958 |
+| WindowMark 未运行 | 10ms | 0.983 |
+
+从 +165ms 降到 +22ms，跟随率与基线已无法区分（0.971 对 0.983）。
+
+### 去掉 owner 之后如何维持层级
+
+owner 机制原本免费换来一件事：**允许把窗口放到前台窗口之上**。去掉之后必须自己解决，
+过程中踩了两个坑，都是「返回成功但什么都没做」：
+
+1. **前台锁**。非前台进程发起的「抬升」类 z 序调用会被静默忽略——`SetWindowPos` 返回
+   TRUE、不设标志、不移动窗口。日志里 34 次「置顶成功」而窗口纹丝不动。
+   解法：**创建时就带 `WS_EX_TOPMOST`**。创建不算抬升，是允许的。而书签条只在宿主是前
+   台窗口时才存在，置顶正好是它该在的位置。
+2. **遍历预算被隐藏窗口吃光**。向上找锚点窗口的步数上限写死 64，而实测宿主上方压着
+   **144 个隐藏窗口**，永远走不到可见窗口就耗尽预算。解法：步数与「实际插入尝试次数」
+   分成两个预算，跳过隐藏窗口几乎免费，不该占用配额。边框的同一处也一起修了。
+
+### 只给可见的书签建窗口
+
+`drawer.active_window_only` 打开时每组只有一个书签条可见，但过去给组里**每个**成员都建了
+窗口——常见桌面上 12 个，其中 11 个永远不显示。现在不可见就不建。
+
+副作用是切换同组窗口时会销毁旧的、新建新的，而这恰好让「创建时置顶」在每次切换后都自动
+生效。
+
+### 边框层级：修好了三处，退回了一处
+
+**遍历预算**同书签一样拆成步数与插入尝试两个配额，否则永远走不到可见窗口。
+
+**不再锚定到置顶窗口**。`SetWindowPos` 会把插到置顶窗口下面的窗口一并提升，一次这样的
+锚定就让一个普通窗口的边框变成了「总在最前」——实测到一个边框跑到 z=14 且置顶位为真，
+浮在所有无关窗口之上。书签条现在是置顶的，恰好最容易被第一个撞上。
+
+**前台窗口的边框改为紧贴宿主下方**。前台窗口之上放不了东西（`HWND_TOP` 会返回成功但什么
+都不做），过去这里什么都不做，结果边框留在原地——实测到一个 Excel 的边框卡在**另一个
+Excel 窗口下面**，那正是「边框不完整」的样子。改成 `SetWindowPos(边框, 宿主)` 插到宿主
+正下方：这是降低操作，不受限制；代价只有压在窗框上的那 1px，其余 3px 和「盖过其它所有
+窗口」都保住了。
+
+**退回的那一处**：曾把 `SyncZOrder()` 改成只在激活或可见性变化时才跑（窗口移动不可能改变
+层级）。道理成立但结果是错的——层级也会因为我们收不到的事件而漂移，一旦漂移就再没有东西
+把它拉回来。收益是 34ms → 30ms，在噪声里；代价是边框会时不时缺一块。不划算，退回。
+
+### 排查过程中被证伪的假设
+
+外部测量能定位到「书签有问题」，但看不进去，几个从外面推出来的结论都被实测推翻了：
+
+- 全局 WinEvent 钩子的存在本身 —— 空转钩子进程与基线完全一致
+- Z 序操作、`SetWindowPos` 的次数和耗时 —— 18 秒只调用 69 次，撑不起 69ms
+- 命中测试（`WS_EX_TRANSPARENT`）—— 715px vs 696px，无差别
+- 重绘与文字重排 —— 拖动全程 **0 次**
+- CPU 与锁争用 —— WindowMark 12 秒只烧 0.25 秒，Excel 用量与基线相同
+- 窗口数量 —— 12 个减到 1 个，依然 748px
+
+真正定位靠的是把链路拆成「注入坐标→系统光标→窗口移动」两段分别测量：A 段恒为 0ms，
+说明系统输入管线正常，问题全在 B 段，也就是 Excel 自己被卡住。
+
+### 版本与构建时间戳
+
+`kProductVersion` 升到 0.3.6。另外每次构建自动写入 `BuildStamp.h`，关于框和
+`reinstall.ps1` 都会显示构建时间并校验安装的二进制与刚构建的哈希是否一致——
+「我装的到底是不是最新的」不再靠记忆回答。
+
+### 诊断计数器
+
+`WinOverlayBackend` 里加了一组分阶段计数器，默认关闭，设 `WINDOWMARK_DIAG=1` 时才写
+`%LOCALAPPDATA%\WindowMark\diag.log`。记录 Apply 次数与耗时、SetWindowPos 的耗时分布、
+重绘与重排次数、以及 `SyncZOrder` 每次的决策和结果。层级这条路径从进程外完全看不见，
+这次两个「返回成功但没生效」的坑都是靠它挖出来的。
+
+## v0.3.5
+
+### 移动只更新位置，不再整个重查
+
+A location event means one thing: the window moved. It was being handled by re-running the
+full `QueryWindow` — class name, process path, title, work area, DWM frame — about **0.7ms
+of cross-process calls**, measured. One 80-step Excel drag delivers **274** of them, and
+274 x 1.2ms lands almost exactly on the 328ms of CPU that was being burned.
+
+`IWindowBackend::QueryFrame` returns just the frame, reusing the DWM inset the backend
+already caches. A resize still takes the full path, because that one can cross a monitor
+edge or flip the maximized state.
+
+Measured with a realistic drag — figure-of-eight, 1200px across and 400px down, two round
+trips a second for three seconds, seven runs per configuration:
+
+| 配置 | 卡住中位 | 散布 | 平均滞后 | CPU |
+|---|---|---|---|---|
+| WindowMark 未运行 | 2.5% | 0.7~4.8% | 3.6px | — |
+| **只书签** | **3.1%** | 0.8~4.7% | **4.1px** | 484ms |
+| 只边框 | 2.8% | 0.7~**75.8%** | 76.0px | 484ms |
+| 书签+边框 | 6.8% | 0.8~7.8% | 42.4px | 688ms |
+
+**Bookmarks are now level with not running WindowMark at all.**
+
+### 仍未解决：边框在快速拖动下偶发卡死
+
+Borders still take the unthrottled path — a `SetWindowPos` on a layered window per location
+event, which is how their tracking was matched against tacky-borders. The median is fine
+(2.8% against a 2.5% baseline) but **one run in seven stalled 75.8% of samples with a mean
+lag of 76px and a peak of 1216px**, i.e. the outline dragged the window to a near halt for
+a stretch. Both configurations with borders on show the same 1216-1220px peak. This is the
+remaining cause of what an Excel drag feels like, and it needs its own investigation.
+
+### 试过又撤掉的两件事
+
+- **Bookmarks on the border's unthrottled move-only path.** Added a `SetWindowPos` per
+  location event without removing any throttled work; CPU rose, smoothness did not change.
+- **Hiding both decorations during a drag** (`EVENT_SYSTEM_MOVESIZESTART`/`MOVESIZEEND`).
+  Hiding worked — verified the strip really disappeared — but the stutter did not move,
+  because hiding only removed the *drawing*; the per-event query behind it was still being
+  paid. Fixing the query is what actually worked, so the hiding came out again.
+
+  It did surface a real bug on the way through: `EmitPending` had a hardcoded list of event
+  kinds, so the two new ones had their bits set and were **never emitted** — the feature
+  silently did nothing, and those map entries never went away. The list is now exhaustive
+  with a `static_assert` that turns the next omission into a compile error.
+
+### 拖动时隐藏书签（已撤销，保留记录）
+
+`performance.hide_bookmarks_while_dragging`, on by default, in 书签设置 → 性能 → 拖动时隐藏.
+Hooks `EVENT_SYSTEM_MOVESIZESTART` / `MOVESIZEEND`: the strip for the window being dragged
+is hidden and left alone until the drag ends, then rebuilt at the new position. Borders are
+deliberately not covered — they hug the window edge where hiding would be obvious, and
+their drag tracking was matched against tacky-borders on purpose.
+
+**What the measurements actually support, and what they do not.** Seven runs of an
+80-step Excel drag per configuration, counting steps where the window did not move at all:
+
+| 配置 | 卡住中位 | 均值 | 散布 | CPU |
+|---|---|---|---|---|
+| WindowMark 未运行 | 1/80 | 0.4 | 0~1 | — |
+| 只边框 | 1/80 | 0.9 | 0~3 | 391ms |
+| 只书签 | 1/80 | 0.9 | 0~2 | 359ms |
+| 书签+边框 | 3/80 | 2.7 | 1~5 | 516ms |
+
+- Each feature on its own is at or barely above the baseline. An earlier three-run pass
+  said bookmarks were four times worse than borders; seven runs made that difference
+  vanish. It was noise, and three runs was not enough to see it.
+- **Both together is where it becomes visible** — median 3 against 1, reproduced in every
+  run.
+- The hide-while-dragging change is in and does what it says (the events were confirmed to
+  fire), but **this benchmark cannot show that it helps**: its noise floor is the same size
+  as the effect, and the medians did not move across four passes.
+
+### 不做的事，以及为什么
+
+Bookmarks were also put on the border's unthrottled move-only path, then taken back off.
+It added a `SetWindowPos` per location event — 274 of them in one 80-step drag — without
+removing any of the throttled work, so CPU rose and smoothness did not change. The strip
+sits outside the window, where 30fps is fine.
+
+### Defaults
+
+- Version 0.3.2 -> 0.3.5.
+
+### 关于对话框
+
+- Uses the app's own icon instead of the stock blue "i", via TaskDialog — MessageBox only
+  takes the system icons.
+- **Only one at a time.** Every dialog here is modal to the *hidden* tray window, and
+  disabling that window blocks input to it but not the tray icon's callback message, so the
+  menu stayed live and could stack a second copy of any dialog. A shared guard now covers
+  the settings, selection and rename dialogs too; the about box additionally raises the
+  existing one rather than silently ignoring the click.
+
+## v0.3.2
+
+### 排除窗口自己就能配
+
+- **`tracking.exclude_classes`** — extra window classes to ignore entirely, no bookmark and
+  no border, on top of the built-in list. Edit it under 窗口边框 → 边框设置... → 排除窗口,
+  comma separated, applied immediately.
+
+  This is the difference between the exclusions being *my* problem and being solvable. The
+  built-in list was measured on one Windows build with one set of IMEs and neither
+  travels: another Windows version renames its shell classes, another IME brings its own
+  candidate window. Without this, every such window meant a code change and a rebuild.
+
+  Verified end to end: a test window that reliably gets an outline stops getting one the
+  moment its class is added to the setting, and gets it back when removed.
+
+### WindowMarkInspect.exe
+
+The diagnostic is a real program now instead of a PowerShell script, built to
+`build\Release\WindowMarkInspect.exe`. It watches for 20 seconds, then **numbers every
+outline** — a yellow badge on each one still on screen, the same numbers in a table with
+the class name beside them — and spells out where to paste the class name. Flyouts that
+have already closed keep their number in the table without a badge, which is the only way
+to catch an IME candidate list.
+
+It shares nothing with the app but the window class name. An earlier script version
+reimplemented the filtering rules, drifted from the code, and confidently told me to
+exclude a class that was already excluded; this one only looks at the outlines that are
+actually on screen.
+
+### Icon
+
+`res/wmiicon.ico` is now the tray icon and both settings windows' title-bar icon. Loaded
+with `LoadImage` at the small-icon metric rather than `LoadIcon`, so Windows takes the
+16px image out of the multi-size file instead of shrinking the 256px one. Replacing the
+file is the whole procedure — the `.rc` is generated by CMake with the path substituted in,
+so nothing needs an include path or an id change.
+
+### Defaults
+
+- `drawer.short_name_chars` 3 -> **4**.
+
+## v0.3.0
+
+Adds window borders, so one tray app now covers both features.
+
+### Window borders
+
+Inspired by [tacky-borders](https://github.com/lukeyou05/tacky-borders), reimplemented
+natively rather than bundled. That project is Rust and WindowMark is C++, so shipping it
+would have meant a second process with its own WinEvent hooks and its own tray icon —
+twice the event handling for something the existing infrastructure already does. Window
+tracking, layered-window rendering and DWM frame queries were all already here; a border
+is just another overlay.
+
+- Outlines every top-level window, including single-window apps that never get a bookmark
+  strip. Separate colours and opacities for the active and inactive window.
+- Corner radius follows the system by default, asking DWM per window
+  (`DWMWA_WINDOW_CORNER_PREFERENCE`); Windows 10 has no rounding and gets square corners.
+  Can be forced square or round.
+- **Completely independent of bookmarks**: its own switch, its own settings window, its
+  own tray submenu. The two share only window tracking.
+- Off by default (`border.enabled`). Sizing and colours follow tacky-borders' conventions:
+  `border.offset` is negative-inward, `border.corners` is `auto|square|round|round_small|
+  custom`, and colours take `#RGB`, `#RGBA`, `#RRGGBB` or `#RRGGBBAA` with alpha carried
+  in the colour rather than a separate opacity setting.
+- Not carried over: gradients, animations and effects. See ROADMAP.md for what else from
+  tacky-borders is still outstanding — `window_rules`, `initialize_delay`,
+  `follow_native_border`.
+
+Getting this to match tacky-borders took three rounds of measurement; the findings are
+worth recording because each one contradicted the obvious guess:
+
+- **Z-order, twice.** Outlines were first being buried under the very windows they
+  outlined, leaving only the pixels of overhang visible — which looked like "some edges
+  are missing". `SetWindowPos(A, B)` places A *after* B in z-order, i.e. below it, so
+  passing the target was exactly backwards. Fixed by inserting below whatever is directly
+  above the target. Owner windows were not an option, for the same cross-process reason
+  the bookmark overlays ran into.
+
+  That fix then failed on **Task Manager specifically**, permanently: its outline sat 14
+  slots too low and no amount of moving, resizing or refocusing brought it back. The
+  window directly above Task Manager is its own hidden `Default IME` window — every thread
+  gets one, and it is *owned* by the window it serves. Windows will not slot anything
+  between an owner and a window it owns, so that `SetWindowPos` returned
+  `ERROR_ACCESS_DENIED` and did nothing, silently, forever. The walk now skips invisible
+  siblings and keeps going if a call is refused. Stepping over hidden windows is free:
+  they paint no pixels, so being above them looks the same as being below them. Audited
+  across every window on the desktop, before and after deliberately scrambling the
+  z-order: 0 outlines misplaced, and 0 cases of a *visible* window ending up sandwiched
+  between an outline and its target.
+
+  Always-on-top windows turned out to work for free — Windows promotes a window to
+  topmost when it is inserted below a topmost one — but the reverse does not happen. When
+  an app turns always-on-top *off*, the outline keeps the flag and stays stranded in the
+  topmost band, floating over 20-30 unrelated windows and never coming down. Only
+  `HWND_NOTOPMOST` clears it, so the target's topmost state is now matched explicitly on
+  every sync. Measured across the on -> off -> move -> on cycle: the outline stays exactly
+  one slot above its target throughout, and its topmost flag tracks the target's.
+- **Lag.** Geometry events are throttled to 33 ms for the bookmarks' sake, which is
+  invisible for a strip outside the window but very visible on an outline hugging its
+  edge, so `IWindowBackend` gained an unthrottled geometry sink. That was necessary but
+  not sufficient. Measured head-to-head against tacky-borders on the same window and the
+  same drag, this build tracked 50/80 frames perfectly against its 80/80.
+  The cause was **an outline being four strip windows**: every location event had to
+  reposition four windows instead of one. Caching the cross-process style and DWM frame
+  queries changed nothing (62% -> 60%); disabling bookmarks entirely changed nothing
+  (46/80 either way), ruling out UI-thread contention. Going back to one window per
+  outline took it to **80/80 with 0px mean error — level with tacky-borders**.
+- **Memory.** One window-sized layered bitmap per outline is ~9 MB for a maximized
+  window, and a full desktop reached **~240 MB**. The fix is not to shrink the windows but
+  to stop each one owning a bitmap: `UpdateLayeredWindow` copies what it is handed, so a
+  single process-wide scratch bitmap serves every outline in turn. Private memory is now
+  **~55 MB** for 12 outlines, below tacky-borders' 73 MB, on 4 threads against its 32.
+  Working set is higher (122 MB vs 67 MB) because `UpdateLayeredWindow` keeps a
+  system-side copy per layered window that `SetLayeredWindowAttributes` does not — see
+  ROADMAP.md.
+- **The seam.** `border.width` defaults to 4 (was 3), keeping `border.offset` at
+  tacky-borders' -1, so the outline reaches 3px past the window and covers its last pixel.
+  Windows draws a 1px frame of its own around each window; if the outline stops one pixel
+  short of it — which is what `offset: 0` does — that frame shows through as a grey seam
+  between the outline and the window: measured `#646765` on Explorer, `#4F5255` on Chrome,
+  and clearly visible at 8x. Overlapping by one pixel hides it. Measured across
+  `w3/off0`, `w3/off-1`, `w4/off-1` and `w5/off-1` on both a Chrome-style and a standard
+  Win11 frame: every configuration with `offset: -1` gives an outline that is the
+  configured colour end to end, with no seam.
+- `SetWindowPos` now passes `SWP_NOSENDCHANGING | SWP_NOREDRAW | SWP_NOCOPYBITS`, and
+  border windows are `WS_DISABLED` on top of `WS_EX_TRANSPARENT`, both following
+  tacky-borders.
+
+### Bookmarks
+
+- `drawer.bottom_expanded_extent` 150 -> **120**: how wide a bottom tab grows on hover.
+- **The active row tab has its own height** (`drawer.bottom_active_thickness`, default
+  23px). It was hard-wired to `drawer.thickness`, so the only way to change it was to
+  change `thickness` — which also shrank the resting tabs and the strip, and meant the
+  value silently went back to 34 whenever `thickness` was touched. A hovered tab now grows
+  to the active height rather than past it, and the strip is sized to the active tab
+  instead of to `thickness`.
+- **Titles are stripped of characters that draw nothing** before they become labels. A
+  collapsed tab shows the first few *characters* of a title, and a Chrome page was
+  measured carrying fifty zero-width code points (ZWNJ, BOM, the invisible maths
+  operators) before its first real glyph — so the tab rendered correctly and completely
+  blank. `SanitizeTitle` drops the invisibles and any leading whitespace; every visible
+  character is untouched, including CJK and 4-byte emoji, and malformed UTF-8 passes
+  through rather than being swallowed.
+
+### Settings
+
+- Bookmark and border settings are now **two separate windows**, reachable from two tray
+  submenus (书签 / 窗口边框). They share the dialog implementation but not their field
+  lists, so either feature stays liftable on its own.
+- New field 底部横排 → 激活高度 for the active tab's height.
+- **Bookmarks have an on/off switch of their own** (`drawer.enabled`, 书签 → 启用书签),
+  the same shape as `border.enabled`. It replaces a runtime-only flag that the tray menu
+  toggled, so the choice now survives a restart and the tray item and the checkbox cannot
+  disagree — both read and write the same setting.
+- **Both dialogs are sized to their content.** Every width is derived from the widest
+  thing it has to hold rather than set to a round number: the label column fits
+  「仅在当前窗口显示」, the number fields fit four digits, the drop-downs fit 「跟随系统」.
+  The border page also drops to a single column — seven fields in two columns left half
+  the window empty. Bookmarks went 700x500 -> **506x516**, borders 700x250 -> **274x340**.
+  The footer moved onto its own line above the buttons, which is what lets the border page
+  be narrow enough for just the three buttons.
+- 「仅在当前窗口显示」 is now 「仅当前窗口」. At eight glyphs it was the single label
+  holding the whole bookmark page's label column 26px wider than anything else needed.
+- Two constraints the layout now enforces rather than hopes for: the page can never be
+  narrower than its own button row (three buttons drew on top of each other at 260px), and
+  the label and hint columns are measured **per page** — sharing them made each page pay
+  for the other page's longest string.
+
+### Excluded windows
+
+- **The IME no longer gets an outline, and no longer flickers.** 「Windows 输入体验」 is a
+  full-screen `Windows.UI.Core.CoreWindow` belonging to `TextInputHost`, which DWM keeps
+  *cloaked* while idle — so it passed the cloaked check and looked like an ordinary window.
+  Typing uncloaks it, and so does the keyboard-layout flyout, which put a screen-sized
+  outline up for as long as the candidate list was open. Cloak, uncloak, cloak: that is
+  what the flicker was.
+- **The IME candidate bar and the layout switcher too.** These turned out to be two more
+  windows, found by watching which windows actually received an outline over 30 seconds
+  rather than by guessing: `Shell_InputSwitchTopLevelWindow` (「Input Flyout」, 480x410) is
+  the switcher, and the candidate bar is an **`ApplicationFrameWindow`** — the same class
+  that hosts every UWP app.
+- **`ApplicationFrameWindow` is judged by owner, not by class.** Excluding the class
+  outright would strip the outline from 设置, 计算器 and every other UWP window. The shell
+  reuses the class for its own chrome, and what separates the two is which process owns
+  it: an app's frame belongs to `ApplicationFrameHost.exe`, the shell's to `explorer.exe`.
+  Verified against live windows: 计算器 and 设置 (`ApplicationFrameHost`, pid 22828) keep
+  their outlines; the two untitled `explorer` (pid 8344) frames are excluded.
+- The class exclusion list grew from four entries to ten. `Windows.UI.Core.CoreWindow` and
+  `XamlExplorerHostIslandWindow` are also what tacky-borders ships as defaults. Making the
+  list configurable is ROADMAP item 1.
+
+### Tooling
+
+- `rebuild_and_install.bat` — double-click to build, test, uninstall and reinstall in one
+  go. `-Fresh` also deletes `settings.conf`, which is the only way a changed *default*
+  becomes visible: an existing file overrides it.
+- `list_tracked.bat` / `list-tracked.ps1` — double-click and it watches for 30 seconds,
+  then lists every window that **actually received an outline**, transient flyouts first,
+  with class names ready to paste back. It does not replicate the C++ filter — it finds
+  the real `WindowMark.WindowBorder` windows on screen and works out what each one is
+  around, so it cannot drift out of step with the code. Two things it took to get right:
+  matching by rect size rather than by centre (a 2560x1400 maximized window and a
+  2560x1440 IME host have centres 20px apart, and the tool confidently named a class that
+  was *already excluded*), and falling back to `WindowFromPoint` when the sizes disagree,
+  because the candidate bar resizes on every keystroke and the outline lags it by tens of
+  pixels.
+- `check_border.bat` / `check-border.ps1` — border diagnostics. Reports where the outline
+  window actually is, whether it is above its target, the colour of every sampled pixel on
+  all four edges, and for the wrong ones, which window is covering them. It exists because
+  "this edge is missing" has two completely different causes and guessing between them
+  wasted time twice.
+
+### Removed
+
+- **The `Ctrl+Alt+W` global hotkey.** `RegisterHotKey` claims a combination process-wide
+  for the whole session: whichever app asks first wins and every other one silently loses
+  it. Not a trade worth making for a switch that is two clicks away in the tray menu,
+  which now shows 启用书签 with a check mark instead of 显示/隐藏书签.
+- Colours are entered as `#RRGGBB`; an unparseable value is reported rather than silently
+  becoming black.
+- The tray menu is grouped rather than flat, and the border switch shows a check mark.
+
 ## v0.2.0
 
 ### Bookmarks always show text

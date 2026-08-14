@@ -40,11 +40,13 @@ Coordinator::Coordinator(
     Settings settings,
     IWindowBackend& windowBackend,
     IOverlayBackend& overlayBackend,
-    IPreviewBackend& previewBackend)
+    IPreviewBackend& previewBackend,
+    IBorderBackend* borderBackend)
     : settings_(std::move(settings)),
       windowsBackend_(windowBackend),
       overlaysBackend_(overlayBackend),
-      previewBackend_(previewBackend) {}
+      previewBackend_(previewBackend),
+      borderBackend_(borderBackend) {}
 
 bool Coordinator::Start() {
     if (started_) {
@@ -72,10 +74,32 @@ bool Coordinator::Start() {
         previewBackend_.Stop();
         return false;
     }
-    if (!windowsBackend_.Start([this](const WindowEvent& event) { OnWindowEvent(event); })) {
+    if (borderBackend_ && !borderBackend_->Start(settings_)) {
         overlaysBackend_.Stop();
         previewBackend_.Stop();
         return false;
+    }
+
+    windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
+    if (!windowsBackend_.Start([this](const WindowEvent& event) { OnWindowEvent(event); })) {
+        if (borderBackend_) borderBackend_->Stop();
+        overlaysBackend_.Stop();
+        previewBackend_.Stop();
+        return false;
+    }
+
+    // Borders track the window edge, so they take the unthrottled path and only move -
+    // repainting is left to the normal event flow.
+    //
+    // Bookmarks deliberately do *not*. Putting them on this path too was tried and
+    // measured: it added a SetWindowPos per location event (274 in one 80-step drag)
+    // without removing any of the throttled work, so CPU went up and the dragged window's
+    // smoothness did not change. The strip sits outside the window, where 30fps is fine.
+    if (borderBackend_) {
+        windowsBackend_.SetGeometrySink([this](WindowId id, const Rect& frame) {
+            if (!started_ || !settings_.border.enabled) return;
+            borderBackend_->MoveBorder(id, frame);
+        });
     }
 
     started_ = true;
@@ -89,9 +113,12 @@ void Coordinator::Stop() noexcept {
     }
     previewBackend_.Hide();
     overlaysBackend_.Apply({});
+    if (borderBackend_) borderBackend_->Apply({});
+    windowsBackend_.SetGeometrySink({});
     windowsBackend_.Stop();
     overlaysBackend_.Stop();
     previewBackend_.Stop();
+    if (borderBackend_) borderBackend_->Stop();
     windows_.clear();
     disabledWindowIds_.clear();
     customLabels_.clear();
@@ -99,7 +126,7 @@ void Coordinator::Stop() noexcept {
 }
 
 void Coordinator::SetOverlayEnabled(bool enabled) {
-    overlayEnabled_ = enabled;
+    settings_.drawer.enabled = enabled;
     if (!enabled) {
         previewBackend_.Hide();
         overlaysBackend_.Apply({});
@@ -195,7 +222,11 @@ void Coordinator::UpdateSettings(Settings settings) {
     previewBackend_.Hide();
     previewBackend_.UpdateSettings(settings_.preview);
     overlaysBackend_.UpdateSettings(settings_);
-    ApplyModels();
+    if (borderBackend_) borderBackend_->UpdateSettings(settings_);
+    // A newly excluded class has to disappear from the tracked set, not just stop being
+    // added, so re-enumerate rather than repaint what is already there.
+    windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
+    RefreshAll();
 }
 
 void Coordinator::SetCustomLabel(WindowId id, std::string label) {
@@ -231,6 +262,8 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         RefreshAll();
         break;
     case WindowEventKind::GeometryChanged:
+        RefreshGeometry(event.windowId);
+        break;
     case WindowEventKind::TitleChanged:
     case WindowEventKind::VisibilityChanged:
         RefreshOne(event.windowId);
@@ -238,6 +271,7 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
     case WindowEventKind::ActiveChanged:
         activeWindow_ = event.windowId;
         ApplyModels();
+        ApplyBorders();
         break;
     }
 }
@@ -257,11 +291,50 @@ void Coordinator::RefreshAll() {
         if (window.active) {
             activeWindow_ = window.id;
         }
+        // Once, here, rather than every time a label is built: titles change far less
+        // often than models are rebuilt.
+        window.title = SanitizeTitle(window.title);
         windows_.emplace(window.id, std::move(window));
     }
 
     PruneTransientState();
     ApplyModels();
+    ApplyBorders();
+}
+
+// A window moved. That is the only thing a location event can mean, and it is by far the
+// most common event there is - one 80-step drag of an Excel window delivers 274 of them.
+// Going through RefreshOne for each cost about 0.7ms of cross-process calls to re-derive
+// a class name, a process path, a title and a work area that a move cannot have changed.
+void Coordinator::RefreshGeometry(WindowId id) {
+    const auto it = windows_.find(id);
+    if (it == windows_.end()) {
+        // Not tracked yet - it may have just become eligible, so take the slow path once.
+        RefreshOne(id);
+        return;
+    }
+    const auto frame = windowsBackend_.QueryFrame(id);
+    if (!frame.has_value()) {
+        // Gone or hidden; that is a structural change, not a move.
+        RefreshAll();
+        return;
+    }
+    if (it->second.frame.left == frame->left && it->second.frame.top == frame->top &&
+        it->second.frame.right == frame->right && it->second.frame.bottom == frame->bottom) {
+        return;
+    }
+
+    const bool sizeChanged = it->second.frame.width() != frame->width() ||
+                             it->second.frame.height() != frame->height();
+    it->second.frame = *frame;
+    // A resize can cross a monitor edge or flip the maximized state, both of which change
+    // the layout rather than just its position, so that case still needs the full query.
+    if (sizeChanged) {
+        RefreshOne(id);
+        return;
+    }
+    ApplyModels();
+    ApplyBorders();
 }
 
 void Coordinator::RefreshOne(WindowId id) {
@@ -280,15 +353,48 @@ void Coordinator::RefreshOne(WindowId id) {
     if (updated->active) {
         activeWindow_ = id;
     }
+    updated->title = SanitizeTitle(updated->title);
     windows_[id] = std::move(*updated);
     ApplyModels();
+    ApplyBorders();
 }
 
 void Coordinator::ApplyModels() {
-    if (!started_ || !overlayEnabled_) {
+    if (!started_) return;
+    if (!settings_.drawer.enabled) {
+        // Clear rather than return: the switch may have just been turned off from the
+        // settings dialog, and the strips are still on screen.
+        overlaysBackend_.Apply({});
         return;
     }
     overlaysBackend_.Apply(BuildModels());
+}
+
+// Borders have their own switch: turning bookmarks off must not take them with it.
+void Coordinator::ApplyBorders() {
+    if (!started_ || !borderBackend_) return;
+    borderBackend_->Apply(BuildBorderModels());
+}
+
+std::vector<BorderModel> Coordinator::BuildBorderModels() const {
+    std::vector<BorderModel> models;
+    if (!settings_.border.enabled) return models;
+
+    models.reserve(windows_.size());
+    for (const auto& [id, window] : windows_) {
+        // Skip hidden and minimized windows outright rather than emitting an invisible
+        // model: every border costs a window plus a bitmap, and a desktop full of
+        // minimized windows would pay for outlines nobody can see.
+        if (!window.visible || window.minimized) continue;
+
+        BorderModel model;
+        model.windowId = id;
+        model.frame = window.frame;
+        model.active = id == activeWindow_;
+        model.visible = true;
+        models.push_back(model);
+    }
+    return models;
 }
 
 std::vector<OverlayModel> Coordinator::BuildModels() {

@@ -42,7 +42,8 @@ _deps/
 /.vscode/.browse.VC.db*
 /.vscode/ipch/
 
-# Logs, temporary files, and editor backups
+# Diagnostics, logs, temporary files, and editor backups
+diag.log
 *.log
 *.tmp
 *.temp

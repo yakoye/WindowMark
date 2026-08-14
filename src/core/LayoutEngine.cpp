@@ -26,6 +26,9 @@ DrawerMetrics LayoutEngine::MetricsFor(Placement placement, const DrawerSettings
         metrics.collapsedExtent = std::max(1, settings.collapsedExtent);
         metrics.expandedExtent = std::max(metrics.collapsedExtent, settings.expandedExtent);
         metrics.restThickness = metrics.fullThickness;
+        // Side tabs are all the same height; the active one is told apart by reaching
+        // further out, so shrinking it here would only make it look broken.
+        metrics.activeThickness = metrics.fullThickness;
         return metrics;
     }
 
@@ -34,6 +37,11 @@ DrawerMetrics LayoutEngine::MetricsFor(Placement placement, const DrawerSettings
     metrics.restThickness = settings.bottomCollapsedThickness > 0
         ? std::min(settings.bottomCollapsedThickness, metrics.fullThickness)
         : std::max(1, metrics.fullThickness / 2);
+    // Never below the resting height (the active tab would sink under its neighbours)
+    // and never above the full thickness (the strip is only that tall).
+    metrics.activeThickness = settings.bottomActiveThickness > 0
+        ? std::clamp(settings.bottomActiveThickness, metrics.restThickness, metrics.fullThickness)
+        : metrics.fullThickness;
     return metrics;
 }
 
@@ -85,9 +93,10 @@ Rect LayoutEngine::ComputeOverlayBounds(
         + (count - 1) * metrics.collapsedExtent
         + (count - 1) * settings.gap;
     const int width = std::min(maxRowWidth, std::max(metrics.collapsedExtent, host.workArea.width()));
-    // Full thickness even though row tabs rest at part of it: the spare space above is
-    // what they expand into on hover.
-    const int height = metrics.fullThickness;
+    // Sized to the active tab, not to the resting height: the spare space above a
+    // resting tab is what it expands into on hover, and nothing ever grows past the
+    // active one.
+    const int height = metrics.activeThickness;
     const int centeredX = host.frame.left + (host.frame.width() - width) / 2;
     const int x = ClampOrigin(centeredX, width, host.workArea.left, host.workArea.right);
 

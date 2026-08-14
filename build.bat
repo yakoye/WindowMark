@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo === WindowMark v0.2.0 build ===
+echo === WindowMark v0.3.6 build ===
 where cmake >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] cmake not found. Install CMake or add it to PATH.
@@ -25,6 +25,7 @@ if errorlevel 1 (
 echo.
 echo Build completed.
 echo   App:       %CD%\build\Release\WindowMark.exe
+echo   Inspect:   %CD%\build\Release\WindowMarkInspect.exe
 echo   Installer: %CD%\build\Release\WindowMarkSetup.exe
 echo   Uninstall: %CD%\build\Release\WindowMarkUninstall.exe
 echo.

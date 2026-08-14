@@ -7,7 +7,10 @@
 namespace windowmark::app {
 
 inline constexpr wchar_t kProductName[] = L"WindowMark";
-inline constexpr wchar_t kProductVersion[] = L"0.2.0";
+// Bump on every change that gets installed. If it is ever ambiguous whether a running
+// binary is the current one, the build stamp in BuildStamp.h settles it - that one is
+// written by the build itself and cannot be forgotten.
+inline constexpr wchar_t kProductVersion[] = L"0.3.6";
 inline constexpr wchar_t kPublisher[] = L"WindowMark";
 
 inline constexpr wchar_t kSingletonMutex[] = L"Local\\WindowMark.Singleton.v0";
@@ -15,6 +18,10 @@ inline constexpr wchar_t kSingletonMutex[] = L"Local\\WindowMark.Singleton.v0";
 // The hidden tray control window. Messages are posted straight to it rather than to
 // HWND_BROADCAST, so no other process on the system is disturbed.
 inline constexpr wchar_t kControlWindowClass[] = L"WindowMark.Control";
+
+// One layered window per outlined window. Shared here because WindowMarkInspect.exe finds
+// the outlines on screen by class name; two copies of the string would drift.
+inline constexpr wchar_t kBorderWindowClass[] = L"WindowMark.WindowBorder";
 
 // Resolve with RegisterWindowMessageW before use.
 inline constexpr wchar_t kRequestQuitMessage[] = L"WindowMark.RequestQuit.v1";

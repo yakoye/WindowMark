@@ -1,0 +1,11 @@
+// Generated into the build directory by CMake with the icon's absolute path substituted.
+//
+// Why generated rather than checked in: rc.exe resolves a relative resource path against
+// its own include path, not against the .rc file, and passing /I through MSBuild's
+// resource-compiler step does not survive. An absolute path removes the question.
+//
+// The id is 1 rather than the IDI_APPICON name for the same reason - keeping this file
+// free of #include means no include path to get wrong. It must stay in step with
+// IDI_APPICON in src/shared/Resource.h, and it must stay the *lowest* icon id in the
+// binary, because that is the one Explorer shows as the program's file icon.
+1 ICON "@WINDOWMARK_ICON@"

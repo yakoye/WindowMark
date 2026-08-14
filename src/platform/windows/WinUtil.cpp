@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <iterator>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -106,7 +107,49 @@ bool IsCloaked(HWND hwnd) {
     return false;
 }
 
-bool IsEligibleTopLevelWindow(HWND hwnd) {
+// System UI that is not a window in the sense the user means. Everything here was seen
+// getting an outline in practice, or is a default tacky-borders ships for the same reason.
+//
+// The IME entry is the one that matters most. "Windows 输入体验" is a full-screen
+// Windows.UI.Core.CoreWindow owned by TextInputHost that DWM keeps cloaked, so it passes
+// the cloaked check while idle - but typing uncloaks it and the switcher flyout uncloaks
+// it too, which put a screen-sized outline on screen for as long as the candidate list was
+// up. Cloak, uncloak, cloak: that is the flicker.
+//
+// Making this list configurable is ROADMAP item 1 (window_rules).
+constexpr std::wstring_view kExcludedClasses[] = {
+    L"Progman",                             // desktop
+    L"WorkerW",                             // desktop wallpaper host
+    L"Shell_TrayWnd",                       // taskbar
+    L"Shell_SecondaryTrayWnd",              // taskbar on secondary monitors
+    L"Windows.UI.Core.CoreWindow",          // 「Windows 输入体验」, full-screen IME host
+    L"XamlExplorerHostIslandWindow",        // Explorer's XAML islands
+    L"TopLevelWindowForOverflowXamlIsland", // tray overflow flyout
+    L"Shell_InputSwitchTopLevelWindow",     // 「Input Flyout」, the IME switcher, 480x410
+    L"MS_WebcheckMonitor",                  // Explorer helper; 1920x1010 but never painted
+    L"CicLoaderWndClass",                   // ctfmon helper
+};
+
+// ApplicationFrameWindow is the host frame for UWP apps, and a real one - 设置, 照片,
+// 计算器 - is a window the user means, so the class cannot simply be excluded. The shell
+// reuses it for its own chrome though: the IME candidate bar is an ApplicationFrameWindow
+// too, measured at 751x90 with an empty title, and that one must not get an outline.
+//
+// What tells them apart is ownership. An app's frame belongs to ApplicationFrameHost.exe;
+// the shell's belongs to explorer.exe. GetShellWindow() is the desktop window, so whoever
+// owns it is the shell - looked up per call rather than cached, because explorer can
+// restart and come back with a different pid.
+bool IsShellOwned(HWND hwnd) {
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    if (windowPid == 0) return false;
+
+    DWORD shellPid = 0;
+    GetWindowThreadProcessId(GetShellWindow(), &shellPid);
+    return shellPid != 0 && windowPid == shellPid;
+}
+
+bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoExclude) {
     if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
     if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
     if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
@@ -117,10 +160,14 @@ bool IsEligibleTopLevelWindow(HWND hwnd) {
 
     wchar_t className[128]{};
     GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
-    const std::wstring cls(className);
-    if (cls == L"Progman" || cls == L"WorkerW" || cls == L"Shell_TrayWnd" || cls == L"Shell_SecondaryTrayWnd") {
-        return false;
+    const std::wstring_view cls(className);
+    for (const auto excluded : kExcludedClasses) {
+        if (cls == excluded) return false;
     }
+    for (const auto& excluded : alsoExclude) {
+        if (cls == excluded) return false;
+    }
+    if (cls == L"ApplicationFrameWindow" && IsShellOwned(hwnd)) return false;
     return true;
 }
 

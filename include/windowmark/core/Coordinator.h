@@ -19,12 +19,15 @@ public:
         Settings settings,
         IWindowBackend& windowBackend,
         IOverlayBackend& overlayBackend,
-        IPreviewBackend& previewBackend);
+        IPreviewBackend& previewBackend,
+        IBorderBackend* borderBackend = nullptr);
 
     bool Start();
     void Stop() noexcept;
+    // Backed by the setting rather than a separate runtime flag, so the tray toggle and
+    // the settings checkbox cannot disagree and the choice survives a restart.
     void SetOverlayEnabled(bool enabled);
-    [[nodiscard]] bool OverlayEnabled() const noexcept { return overlayEnabled_; }
+    [[nodiscard]] bool OverlayEnabled() const noexcept { return settings_.drawer.enabled; }
 
     // Selection is intentionally exposed as platform-neutral data so each OS can
     // build its own native settings UI without pulling platform types into Core.
@@ -51,8 +54,14 @@ private:
     void OnWindowEvent(const WindowEvent& event);
     void RefreshAll();
     void RefreshOne(WindowId id);
+    // Cheap path for location events: updates the frame and nothing else.
+    void RefreshGeometry(WindowId id);
     void ApplyModels();
+    void ApplyBorders();
     [[nodiscard]] std::vector<OverlayModel> BuildModels();
+    // Borders cover every tracked top-level window, with no grouping: a single-window app
+    // gets a border even though it never gets a bookmark strip.
+    [[nodiscard]] std::vector<BorderModel> BuildBorderModels() const;
     [[nodiscard]] Color ColorFor(WindowId id);
     [[nodiscard]] bool IsAppEnabled(const std::string& groupKey) const;
     [[nodiscard]] bool IsWindowEnabled(WindowId id) const;
@@ -62,6 +71,7 @@ private:
     IWindowBackend& windowsBackend_;
     IOverlayBackend& overlaysBackend_;
     IPreviewBackend& previewBackend_;
+    IBorderBackend* borderBackend_{};
 
     std::unordered_map<WindowId, WindowInfo> windows_;
     std::unordered_map<WindowId, std::size_t> stableOrder_;
@@ -74,7 +84,6 @@ private:
     std::size_t nextColorSlot_{0};
     WindowId activeWindow_{0};
     bool started_{false};
-    bool overlayEnabled_{true};
 };
 
 } // namespace windowmark

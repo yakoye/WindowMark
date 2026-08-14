@@ -33,11 +33,20 @@ public:
         sink_ = std::move(sink);
         return true;
     }
-    void Stop() noexcept override { sink_ = {}; }
+    void SetGeometrySink(GeometrySink sink) override { geometrySink_ = std::move(sink); }
+    void Stop() noexcept override { sink_ = {}; geometrySink_ = {}; }
     std::vector<WindowInfo> EnumerateWindows() override { return windows; }
     std::optional<WindowInfo> QueryWindow(WindowId id) override {
+        ++fullQueries;
         for (const auto& w : windows) {
             if (w.id == id) return w;
+        }
+        return std::nullopt;
+    }
+    std::optional<Rect> QueryFrame(WindowId id) override {
+        ++frameQueries;
+        for (const auto& w : windows) {
+            if (w.id == id) return w.frame;
         }
         return std::nullopt;
     }
@@ -46,10 +55,37 @@ public:
         return true;
     }
     void Emit(WindowEvent e) { if (sink_) sink_(e); }
+    void EmitGeometry(WindowId id, const Rect& frame) {
+        if (geometrySink_) geometrySink_(id, frame);
+    }
 
     std::vector<WindowInfo> windows;
     WindowId activated{};
+    // A move must not go down the expensive path. Counted rather than asserted on shape,
+    // because the whole point is how often each is called.
+    int fullQueries{0};
+    int frameQueries{0};
     EventSink sink_;
+    GeometrySink geometrySink_;
+};
+
+class MockBorderBackend final : public IBorderBackend {
+public:
+    bool Start(const Settings& settings) override {
+        settings_ = settings;
+        started = true;
+        return true;
+    }
+    void Apply(const std::vector<BorderModel>& models) override { last = models; ++applyCount; }
+    void MoveBorder(WindowId id, const Rect& frame) override { moves.emplace_back(id, frame); }
+    void UpdateSettings(const Settings& settings) override { settings_ = settings; }
+    void Stop() noexcept override { started = false; last.clear(); }
+
+    Settings settings_{};
+    std::vector<BorderModel> last;
+    std::vector<std::pair<WindowId, Rect>> moves;
+    int applyCount{0};
+    bool started{false};
 };
 
 class MockOverlayBackend final : public IOverlayBackend {
@@ -256,6 +292,87 @@ void TestCustomLabels() {
     coordinator.Stop();
 }
 
+// A collapsed tab shows the first few characters of a title, so a title whose first
+// characters draw nothing produces a blank tab. Real case: a Chrome page carrying fifty
+// zero-width code points before its first glyph.
+void TestTitleSanitising() {
+    // Ordinary titles come through untouched, including CJK and emoji.
+    CHECK(SanitizeTitle("PCIe Report") == "PCIe Report");
+    CHECK(SanitizeTitle("\xE6\x8E\xA5\xE5\x8F\xA3") == "\xE6\x8E\xA5\xE5\x8F\xA3");
+    CHECK(SanitizeTitle("\xF0\x9F\x93\x8A x") == "\xF0\x9F\x93\x8A x");  // U+1F4CA, 4-byte
+    CHECK(SanitizeTitle("").empty());
+
+    // Each invisible class is stripped: ZWNJ, BOM, invisible separator, bidi isolate,
+    // soft hyphen, LRM.
+    CHECK(SanitizeTitle("\xE2\x80\x8C\xEF\xBB\xBF\xE2\x81\xA3""ab") == "ab");
+    CHECK(SanitizeTitle("\xE2\x81\xA6""x\xE2\x81\xA9") == "x");
+    CHECK(SanitizeTitle("a\xC2\xAD""b") == "ab");
+    CHECK(SanitizeTitle("\xE2\x80\x8E\xE2\x80\x8F""hi") == "hi");
+
+    // The real shape of the bug: the first three characters were all invisible, so a
+    // three-character label rendered empty. After stripping, the label starts at a glyph.
+    const std::string chrome =
+        "\xE2\x80\x8C\xEF\xBB\xBF\xE2\x81\xA2\xE2\x81\xA1\xE2\x81\xA2\xE2\x81\xA4"
+        "5.haps";
+    CHECK(SanitizeTitle(chrome) == "5.haps");
+
+    // Leading whitespace would take a visible character's place just the same.
+    CHECK(SanitizeTitle("  \t x ") == "x");
+    CHECK(SanitizeTitle("\xE2\x80\x8B  Report") == "Report");
+
+    // A title that is nothing but invisibles has no glyph to offer; the caller falls back
+    // to the app name, which is what an empty title already means.
+    CHECK(SanitizeTitle("\xE2\x80\x8C\xE2\x80\x8D\xEF\xBB\xBF").empty());
+
+    // Malformed UTF-8 must not swallow the rest of the string.
+    CHECK(SanitizeTitle("a\xFF""b") == "a\xFF""b");
+    CHECK(SanitizeTitle("a\xE4\xB8") == "a\xE4\xB8");  // truncated 3-byte sequence
+}
+
+// A window that only moved must not be re-queried in full. One 80-step drag of an Excel
+// window delivers 274 location events, and the full query costs ~0.7ms of cross-process
+// calls each - to re-derive a class name, process path and title that a move cannot have
+// changed.
+void TestMoveDoesNotRequery() {
+    Settings settings;
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    windows.windows = {
+        Make(1, "code.exe", "A", 100, true),
+        Make(2, "code.exe", "B", 900),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews);
+    CHECK(coordinator.Start());
+
+    windows.fullQueries = 0;
+    windows.frameQueries = 0;
+
+    // Ten moves of a tracked window.
+    for (int i = 0; i < 10; ++i) {
+        windows.windows[1].frame.left += 7;
+        windows.windows[1].frame.right += 7;
+        windows.Emit({WindowEventKind::GeometryChanged, 2});
+    }
+    CHECK(windows.frameQueries == 10);
+    CHECK(windows.fullQueries == 0);
+
+    // A resize can cross a monitor edge or change the maximized state, so it still has to
+    // take the full path.
+    windows.fullQueries = 0;
+    windows.windows[1].frame.right += 50;
+    windows.Emit({WindowEventKind::GeometryChanged, 2});
+    CHECK(windows.fullQueries == 1);
+
+    // An untracked id has to be looked at properly - it may have just become eligible.
+    windows.fullQueries = 0;
+    windows.Emit({WindowEventKind::GeometryChanged, 999});
+    CHECK(windows.fullQueries == 1);
+
+    coordinator.Stop();
+}
+
 // The settings UI edits a copy and hands it back; backends must see it without a restart.
 void TestSettingsHotUpdate() {
     Settings settings;
@@ -287,6 +404,71 @@ void TestSettingsHotUpdate() {
     CHECK(overlays.last.size() == 2);
 
     coordinator.Stop();
+}
+
+// Borders are a separate feature sharing only window tracking: their own switch, every
+// top-level window (not just grouped ones), and an unthrottled move path so they do not
+// trail a drag.
+void TestBorders() {
+    Settings settings;
+    CHECK(!settings.border.enabled);  // opt-in
+
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    windows.windows = {
+        Make(1, "code.exe", "Grace", 100, true),
+        Make(2, "code.exe", "PCIe", 850),
+        Make(9, "solo.exe", "Alone", 300),   // single-window app: no bookmarks, but a border
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    CHECK(borders.started);
+    // Disabled by default, so nothing is drawn even though the backend is running.
+    CHECK(borders.last.empty());
+
+    Settings enabled = coordinator.CurrentSettings();
+    enabled.border.enabled = true;
+    coordinator.UpdateSettings(enabled);
+
+    // Every tracked window, including the one that never gets a bookmark strip.
+    CHECK(borders.last.size() == 3);
+    const auto find = [&borders](WindowId id) -> const BorderModel* {
+        for (const auto& m : borders.last) {
+            if (m.windowId == id) return &m;
+        }
+        return nullptr;
+    };
+    CHECK(find(9) != nullptr);
+    CHECK(find(1) != nullptr && find(1)->active);
+    CHECK(find(2) != nullptr && !find(2)->active);
+
+    // Focus change repaints borders even though bookmarks are switched off.
+    coordinator.SetOverlayEnabled(false);
+    windows.windows[0].active = false;
+    windows.windows[1].active = true;
+    windows.Emit({WindowEventKind::ActiveChanged, 2});
+    CHECK(find(2) != nullptr && find(2)->active);
+    CHECK(find(1) != nullptr && !find(1)->active);
+
+    // The unthrottled sink reaches the backend as a move, not a rebuild.
+    const int appliesBefore = borders.applyCount;
+    windows.EmitGeometry(2, Rect{10, 20, 110, 120});
+    CHECK(borders.moves.size() == 1);
+    CHECK(borders.moves.back().first == 2);
+    CHECK(borders.moves.back().second.left == 10);
+    CHECK(borders.applyCount == appliesBefore);
+
+    // Turning borders off clears them.
+    Settings off = coordinator.CurrentSettings();
+    off.border.enabled = false;
+    coordinator.UpdateSettings(off);
+    CHECK(borders.last.empty());
+
+    coordinator.Stop();
+    CHECK(!borders.started);
 }
 
 void TestSelectionFiltering() {
@@ -394,6 +576,9 @@ void TestRowPlacementMetrics() {
     CHECK(side.collapsedExtent == settings.drawer.collapsedExtent);
     CHECK(side.expandedExtent == settings.drawer.expandedExtent);
     CHECK(side.restThickness == side.fullThickness);
+    // Side tabs are all one height - the active one is told apart by reaching further
+    // out - so the row-only active height must not shrink them.
+    CHECK(side.activeThickness == side.fullThickness);
 
     const auto row = LayoutEngine::MetricsFor(Placement::Bottom, settings.drawer);
     CHECK(LayoutEngine::IsRowPlacement(Placement::Bottom));
@@ -409,13 +594,40 @@ void TestRowPlacementMetrics() {
     custom.drawer.bottomCollapsedThickness = 12;
     CHECK(LayoutEngine::MetricsFor(Placement::Bottom, custom.drawer).restThickness == 12);
 
-    // A row overlay is still allotted the full thickness; the spare space is what a
-    // hovered tab expands into.
+    // The active row tab has its own height, independent of `thickness`. It used to be
+    // hard-wired to `thickness`, so changing it meant changing every tab and the strip.
+    CHECK(settings.drawer.bottomActiveThickness == 23);
+    CHECK(row.activeThickness == 23);
+    CHECK(row.restThickness < row.activeThickness);
+    CHECK(row.activeThickness < row.fullThickness);
+
+    // 0 means "same as thickness", which is what the behaviour was before the setting.
+    Settings legacy = settings;
+    legacy.drawer.bottomActiveThickness = 0;
+    const auto legacyRow = LayoutEngine::MetricsFor(Placement::Bottom, legacy.drawer);
+    CHECK(legacyRow.activeThickness == legacy.drawer.thickness);
+
+    // Clamped: never under the resting height (the active tab would sink below its
+    // neighbours) and never over the full thickness (the strip is only that tall).
+    Settings tooSmall = settings;
+    tooSmall.drawer.bottomActiveThickness = 4;
+    const auto smallRow = LayoutEngine::MetricsFor(Placement::Bottom, tooSmall.drawer);
+    CHECK(smallRow.activeThickness == smallRow.restThickness);
+    Settings tooBig = settings;
+    tooBig.drawer.bottomActiveThickness = 500;
+    CHECK(LayoutEngine::MetricsFor(Placement::Bottom, tooBig.drawer).activeThickness ==
+          tooBig.drawer.thickness);
+
+    // The strip is sized to the active tab, not to `thickness`: nothing grows past it,
+    // so the extra would be transparent padding hanging over the window.
     WindowInfo host = Make(1, "code.exe", "A", 0);
     host.maximized = true;
     host.frame = host.workArea;
     const auto bounds = LayoutEngine::ComputeOverlayBounds(host, 3, Placement::Bottom, settings.drawer);
-    CHECK(bounds.height() == settings.drawer.thickness);
+    CHECK(bounds.height() == 23);
+    const auto legacyBounds =
+        LayoutEngine::ComputeOverlayBounds(host, 3, Placement::Bottom, legacy.drawer);
+    CHECK(legacyBounds.height() == legacy.drawer.thickness);
 }
 
 void TestLayout() {
@@ -449,7 +661,10 @@ int main() {
     TestGroupingAndSelfState();
     TestActiveWindowOnlyVisibility();
     TestCustomLabels();
+    TestTitleSanitising();
+    TestMoveDoesNotRequery();
     TestSettingsHotUpdate();
+    TestBorders();
     TestSelectionFiltering();
     TestSelectionSettingsPersistence();
     TestRowPlacementMetrics();

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace windowmark {
@@ -60,6 +61,14 @@ struct WindowInfo {
     bool active{false};
 };
 
+// Window titles are whatever the app feels like putting there, and some of it occupies no
+// space at all: zero-width joiners, bidi controls, byte-order marks, the invisible maths
+// operators. A Chrome page was measured carrying fifty of them before its first real
+// glyph. A collapsed tab shows the first few *characters* of the title, so a title like
+// that produces a tab that is correctly rendered and completely blank. Dropping the
+// characters that draw nothing leaves every visible one untouched.
+[[nodiscard]] std::string SanitizeTitle(std::string_view title);
+
 struct BookmarkItemModel {
     WindowId targetWindowId{};
     std::string label;
@@ -76,6 +85,14 @@ struct OverlayModel {
     Rect workArea;
     bool visible{true};
     std::vector<BookmarkItemModel> items;
+};
+
+// One per tracked top-level window, independent of bookmark grouping.
+struct BorderModel {
+    WindowId windowId{};
+    Rect frame;
+    bool active{false};
+    bool visible{true};
 };
 
 struct PreviewRequest {

@@ -1,5 +1,6 @@
 #include "WinOverlayBackend.h"
 
+#include "AppIdentity.h"
 #include "WinUtil.h"
 #include "windowmark/core/DrawerState.h"
 #include "windowmark/core/LayoutEngine.h"
@@ -10,6 +11,7 @@
 #include <climits>
 
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 #include <cmath>
 #include <cstdint>
@@ -19,7 +21,122 @@
 namespace windowmark::win {
 namespace {
 
+// Phase counters for the drag-latency work. External measurement narrowed the cost to
+// this file but cannot see inside it, and every guess made from the outside - hook
+// presence, z-order, cross-process ownership, hit-testing - was wrong when tested. These
+// answer "which phase, how often, how long" directly.
+//
+// Off unless WINDOWMARK_DIAG=1 is in the environment, and the flag is read once, so the
+// cost when off is one predictable branch per call site.
+struct DiagState {
+    long long apply{}, update{}, content{}, setpos{}, redraw{}, rebuild{};
+    double applyUs{}, rebuildUs{}, drawUs{}, ulwUs{};
+    double setposUs{}, setposMaxUs{};
+    long long setposOver1ms{}, setposOver5ms{};
+    long long overlays{}, overlaysVisible{};   // 最近一次 Apply 后的窗口数
+    double lastFlushMs{};
+};
+DiagState g_diag;
+
+[[nodiscard]] bool DiagOn() {
+    static const bool on = [] {
+        wchar_t buf[8]{};
+        return GetEnvironmentVariableW(L"WINDOWMARK_DIAG", buf, 8) > 0 && buf[0] == L'1';
+    }();
+    return on;
+}
+
+[[nodiscard]] double DiagNowMs() {
+    static const double perMs = [] {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart) / 1000.0;
+    }();
+    LARGE_INTEGER c{};
+    QueryPerformanceCounter(&c);
+    return static_cast<double>(c.QuadPart) / perMs;
+}
+
+// Scoped timer that adds elapsed microseconds to a field.
+class DiagTimer {
+public:
+    explicit DiagTimer(double& sink) : sink_(sink), start_(DiagOn() ? DiagNowMs() : 0.0) {}
+    ~DiagTimer() {
+        if (DiagOn()) sink_ += (DiagNowMs() - start_) * 1000.0;
+    }
+    DiagTimer(const DiagTimer&) = delete;
+    DiagTimer& operator=(const DiagTimer&) = delete;
+
+private:
+    double& sink_;
+    double start_;
+};
+
+void DiagFlush() {
+    if (!DiagOn()) return;
+    const double now = DiagNowMs();
+    if (g_diag.lastFlushMs == 0.0) {
+        g_diag.lastFlushMs = now;
+        return;
+    }
+    if (now - g_diag.lastFlushMs < 2000.0) return;
+    const double span = (now - g_diag.lastFlushMs) / 1000.0;
+
+    wchar_t dir[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH) > 0) {
+        std::wstring path = std::wstring(dir) + L"\\WindowMark\\diag.log";
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path.c_str(), L"a, ccs=UTF-8") == 0 && f != nullptr) {
+            std::fwprintf(
+                f,
+                L"%.1fs  书签窗口 %lld 个(可见 %lld)  Apply %lld (%.0fus/次)  Update %lld  内容变了 %lld"
+                L"  | SetWindowPos %lld 次 均值%.0fus 最长%.0fus 超1ms %lld 超5ms %lld"
+                L"  | 重排 %lld (%.0fus)  重绘 %lld (%.0fus, ULW %.0fus)\n",
+                span, g_diag.overlays, g_diag.overlaysVisible,
+                g_diag.apply, g_diag.apply ? g_diag.applyUs / g_diag.apply : 0.0,
+                g_diag.update, g_diag.content,
+                g_diag.setpos, g_diag.setpos ? g_diag.setposUs / g_diag.setpos : 0.0,
+                g_diag.setposMaxUs, g_diag.setposOver1ms, g_diag.setposOver5ms,
+                g_diag.rebuild, g_diag.rebuild ? g_diag.rebuildUs / g_diag.rebuild : 0.0,
+                g_diag.redraw, g_diag.redraw ? g_diag.drawUs / g_diag.redraw : 0.0,
+                g_diag.redraw ? g_diag.ulwUs / g_diag.redraw : 0.0);
+            std::fclose(f);
+        }
+    }
+    const long long keepOverlays = g_diag.overlays;
+    const long long keepVisible = g_diag.overlaysVisible;
+    g_diag = DiagState{};
+    g_diag.overlays = keepOverlays;
+    g_diag.overlaysVisible = keepVisible;
+    g_diag.lastFlushMs = now;
+}
+
 constexpr wchar_t kOverlayClass[] = L"WindowMark.BookmarkOverlay";
+
+// Z-order maintenance for the strip. Same shape as the outline windows use: never move,
+// never resize, never activate, and never make the target's own thread field a
+// WM_WINDOWPOSCHANGING for it.
+constexpr UINT kOverlayZFlags =
+    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING;
+
+// Bounds on the GW_HWNDPREV walk. Two separate numbers on purpose: a desktop carries
+// hundreds of hidden top-level windows - 144 sat above one Excel window here - and a
+// single budget spent on stepping over them ran out long before the walk reached anything
+// visible, every single time. Skipping an invisible sibling is nearly free, so only real
+// insertion attempts are rationed; the step cap is just a guard against a pathological
+// z-order spinning the UI thread.
+constexpr int kZOrderStepLimit = 4096;
+constexpr int kZOrderAttemptLimit = 16;
+
+// Our own decoration windows for a host - the outline and the strip - stack in a fixed
+// order between the host and everything else, so the z-order walk steps over them rather
+// than treating them as obstacles to insert below.
+[[nodiscard]] bool IsOwnDecoration(HWND hwnd) {
+    wchar_t cls[64]{};
+    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) == 0) return false;
+    return std::wcscmp(cls, kOverlayClass) == 0 ||
+           std::wcscmp(cls, windowmark::app::kBorderWindowClass) == 0;
+}
 constexpr UINT_PTR kAnimationTimerId = 1;
 constexpr UINT_PTR kPreviewTimerId = 2;
 constexpr UINT kAnimationTickMs = 16;
@@ -167,8 +284,22 @@ public:
 
     bool Create() {
         const auto& b = model_.screenBounds;
+        // Deliberately unowned. Making the host the owner is the obvious way to keep the
+        // strip above it, and it is what this did until it was measured: every move of
+        // the host makes Windows keep the owned window's bookkeeping in step, and because
+        // the owner lives in another process that needs a synchronous round trip to this
+        // thread. Dragging an Excel window then ran 175ms behind the cursor and followed
+        // only 2% of the mouse path. Dropping the owner brought both back to the numbers
+        // measured with WindowMark not running at all. Z-order is maintained explicitly
+        // in SyncZOrder instead, the same way the outline windows already do it.
+        // WS_EX_TOPMOST is set here, at creation, and that placement is the whole reason
+        // this works: Windows silently ignores z-order *raises* requested by a process
+        // that does not own the foreground window - SetWindowPos returns TRUE, sets
+        // nothing, and moves nothing. Creating the window topmost is not a raise, so it is
+        // allowed. Since a strip only exists while its host is the window it belongs to
+        // being shown for, being topmost is also the correct place for it to sit.
         hwnd_ = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
             kOverlayClass,
             L"",
             WS_POPUP,
@@ -176,7 +307,7 @@ public:
             b.top,
             std::max(1, b.width()),
             std::max(1, b.height()),
-            HwndFromId(model_.hostWindowId),
+            nullptr,
             nullptr,
             GetModuleHandleW(nullptr),
             this);
@@ -186,6 +317,7 @@ public:
         RebuildLabels();
         UpdatePositionAndVisibility();
         Redraw();
+        SyncZOrder();
         return true;
     }
 
@@ -206,6 +338,8 @@ public:
                            owner.settings_.drawer.animationMs);
     }
 
+    [[nodiscard]] bool IsShown() const { return appliedVisible_; }
+
     void UpdateModel(const OverlayModel& model) {
         const bool countChanged = model.items.size() != model_.items.size();
         const bool placementChanged = model.placement != model_.placement;
@@ -215,6 +349,8 @@ public:
         const bool contentChanged = countChanged || placementChanged || ItemsDiffer(model.items) ||
                                     model.screenBounds.width() != model_.screenBounds.width() ||
                                     model.screenBounds.height() != model_.screenBounds.height();
+        ++g_diag.update;
+        if (contentChanged) ++g_diag.content;
         const bool wasVisible = model_.visible;
         model_ = model;
 
@@ -226,15 +362,102 @@ public:
             drawer_.Reset(model_.items.size());
             if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
         }
-        if (contentChanged) RebuildLabels();
-
-        HWND desiredOwner = HwndFromId(model_.hostWindowId);
-        if (hwnd_ && GetWindow(hwnd_, GW_OWNER) != desiredOwner) {
-            SetWindowLongPtrW(hwnd_, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(desiredOwner));
+        if (contentChanged) {
+            ++g_diag.rebuild;
+            DiagTimer t(g_diag.rebuildUs);
+            RebuildLabels();
         }
 
         UpdatePositionAndVisibility();
         if (contentChanged || (model_.visible && !wasVisible)) Redraw();
+        SyncZOrder();
+    }
+
+    // Sit directly above the host window. The host is in another process, so ownership -
+    // the mechanism that would do this automatically - is not an option: see Create.
+    // Placing the strip by hand costs one GetWindow call in the steady state, because the
+    // walk below stops as soon as it finds us and issues no SetWindowPos at all.
+    void SyncZOrder() {
+        if (!hwnd_) return;
+        if (!appliedVisible_) { DiagZ(L"跳过: 未显示", nullptr, 0); return; }
+        HWND host = HwndFromId(model_.hostWindowId);
+        if (!IsWindow(host)) { DiagZ(L"跳过: 宿主已失效", nullptr, 0); return; }
+
+        // The common case: the host is the window in front, the strip was created topmost,
+        // and it is already exactly where it belongs. Nothing to do, and nothing may be
+        // done - every raise from here would be ignored anyway.
+        if (GetForegroundWindow() == host) { DiagZ(L"宿主在前台, 保持置顶", nullptr, 0); return; }
+
+        // Host is buried, which only happens with drawer.active_window_only off. Lowering
+        // is not restricted the way raising is, so the strip can be walked down to sit
+        // just above its own host again.
+        //
+        // SetWindowPos inserts *after* hWndInsertAfter, i.e. below it, so passing the host
+        // would bury the strip under the window it belongs to. Insert below whatever sits
+        // directly above the host instead.
+        HWND above = host;
+        int attempts = 0;
+        for (int step = 0; step < kZOrderStepLimit; ++step) {
+            above = GetWindow(above, GW_HWNDPREV);
+            if (!above) break;                  // host is already at the top of its band
+            if (above == hwnd_) { DiagZ(L"已在位", nullptr, 0); return; }
+            // Step over hidden helper windows - the per-thread Default IME window and the
+            // like. Windows refuses to slot anything between an owner and a window it
+            // owns, and that refusal is silent, so a hidden helper above the host would
+            // otherwise strand the strip wherever it happened to be.
+            if (!IsWindowVisible(above)) continue;
+            // Our own outline for this same host belongs between the host and the strip.
+            // Skipping it is what stops the two from swapping places forever, each
+            // re-inserting itself just above the host on every update.
+            if (IsOwnDecoration(above)) continue;
+
+            // Coming down out of the topmost band has to be asked for explicitly: Windows
+            // promotes a window inserted below a topmost one and never demotes it again.
+            const bool targetTopmost = (GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+            if (!targetTopmost && (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
+                SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0, kOverlayZFlags);
+            }
+            if (SetWindowPos(hwnd_, above, 0, 0, 0, 0, kOverlayZFlags)) {
+                DiagZ(L"插到下方成功", above, 0);
+                return;
+            }
+            DiagZ(L"插到下方被拒", above, GetLastError());
+            if (++attempts >= kZOrderAttemptLimit) break;
+        }
+
+        // Found nothing to anchor to. Staying topmost is the safe outcome: visible but
+        // possibly in front of something it should be behind, rather than invisible.
+        DiagZ(L"没找到锚点, 维持原状", nullptr, 0);
+    }
+
+    // 只在 WINDOWMARK_DIAG=1 时写；层级这条路径出问题时从外面完全看不见发生了什么。
+    void DiagZ(const wchar_t* what, HWND other, DWORD err) const {
+        if (!DiagOn()) return;
+        wchar_t dir[MAX_PATH]{};
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH) == 0) return;
+        const std::wstring path = std::wstring(dir) + L"\\WindowMark\\diag.log";
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path.c_str(), L"a, ccs=UTF-8") != 0 || f == nullptr) return;
+        wchar_t cls[64]{};
+        if (other) GetClassNameW(other, cls, static_cast<int>(std::size(cls)));
+        // 调用完之后的真实状态：层级里我们上面还压着几个窗口、宿主上面压着几个、
+        // 置顶标志到底有没有被真的设上。返回值说成功不等于生效。
+        auto depth = [](HWND h) {
+            int n = 0;
+            for (HWND w = GetWindow(h, GW_HWNDPREV); w && n < 4096; w = GetWindow(w, GW_HWNDPREV)) {
+                ++n;
+            }
+            return n;
+        };
+        const HWND host = HwndFromId(model_.hostWindowId);
+        const bool topmostBit = (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        std::fwprintf(
+            f,
+            L"[Z] %-14ls 我=%d 宿主=%d 锚点=%d 置顶位=%d 前台=%d 可见=%d 系统可见=%d 对方=%ls err=%lu\n",
+            what, depth(hwnd_), depth(host), other ? depth(other) : -1, topmostBit ? 1 : 0,
+            GetForegroundWindow() == host ? 1 : 0, appliedVisible_ ? 1 : 0,
+            IsWindowVisible(hwnd_) ? 1 : 0, other ? cls : L"-", err);
+        std::fclose(f);
     }
 
 private:
@@ -397,8 +620,17 @@ private:
 
         if (b.left != appliedBounds_.left || b.top != appliedBounds_.top ||
             width != appliedBounds_.width() || height != appliedBounds_.height()) {
+            ++g_diag.setpos;
+            const double spStart = DiagOn() ? DiagNowMs() : 0.0;
             SetWindowPos(hwnd_, nullptr, b.left, b.top, width, height,
                          SWP_NOACTIVATE | SWP_NOZORDER);
+            if (DiagOn()) {
+                const double us = (DiagNowMs() - spStart) * 1000.0;
+                g_diag.setposUs += us;
+                g_diag.setposMaxUs = std::max(g_diag.setposMaxUs, us);
+                if (us > 1000.0) ++g_diag.setposOver1ms;
+                if (us > 5000.0) ++g_diag.setposOver5ms;
+            }
             appliedBounds_ = Rect{b.left, b.top, b.left + width, b.top + height};
         }
 
@@ -459,15 +691,18 @@ private:
         }
 
         // Row placements rest at part of their thickness against the window edge and
-        // grow toward the host on hover; the active one is always at full thickness.
+        // grow toward the host on hover. Both the active tab and the ceiling a hovered
+        // tab grows to are the active thickness, so nothing ever stands taller than the
+        // bookmark for the window you are actually looking at.
         const auto metrics = LayoutEngine::MetricsFor(model_.placement, owner_.settings_.drawer);
         const float rest = static_cast<float>(metrics.restThickness);
+        const float active = static_cast<float>(metrics.activeThickness);
         const float span = std::max(1.0F, static_cast<float>(metrics.expandedExtent - metrics.collapsedExtent));
         const auto thicknessAt = [&](std::size_t i) {
-            if (isActive(i)) return thickness;
+            if (isActive(i)) return active;
             const float progress = std::clamp(
                 (extents[i] - static_cast<float>(metrics.collapsedExtent)) / span, 0.0F, 1.0F);
-            return rest + (thickness - rest) * progress;
+            return rest + (active - rest) * progress;
         };
 
         float total = 0.0F;
@@ -700,6 +935,8 @@ private:
     void Redraw() {
         if (!hwnd_ || !IsWindowVisible(hwnd_)) return;
         if (!owner_.EnsureDrawingResources()) return;
+        ++g_diag.redraw;
+        DiagTimer drawTimer(g_diag.drawUs);
 
         RECT rc{};
         GetClientRect(hwnd_, &rc);
@@ -730,7 +967,11 @@ private:
         blend.AlphaFormat = AC_SRC_ALPHA;
 
         HDC screen = GetDC(nullptr);
-        UpdateLayeredWindow(hwnd_, screen, nullptr, &size, surface_.dc(), &source, 0, &blend, ULW_ALPHA);
+        {
+            DiagTimer ulwTimer(g_diag.ulwUs);
+            UpdateLayeredWindow(hwnd_, screen, nullptr, &size, surface_.dc(), &source, 0, &blend,
+                                ULW_ALPHA);
+        }
         ReleaseDC(nullptr, screen);
     }
 
@@ -854,10 +1095,25 @@ bool WinOverlayBackend::Start(const Settings& settings, OverlayCallbacks callbac
 
 void WinOverlayBackend::Apply(const std::vector<OverlayModel>& models) {
     if (!started_) return;
+    ++g_diag.apply;
+    DiagTimer applyTimer(g_diag.applyUs);
     std::unordered_set<WindowId> desired;
     desired.reserve(models.size());
 
     for (const auto& model : models) {
+        // An overlay nobody can see has no reason to exist as a window. With
+        // drawer.active_window_only on, exactly one model per group is visible, yet a
+        // window used to be created for every member - twelve of them on a normal
+        // desktop, eleven permanently hidden.
+        //
+        // They were not free. Measured against a fast Excel drag, their mere existence
+        // put the dragged window 69ms behind the cursor; hiding them, or never moving
+        // them, changed nothing, and destroying them dropped it to the same level as
+        // running with bookmarks off. Windows keeps owner/owned bookkeeping in step
+        // whenever an owner moves, that bookkeeping needs an answer from this thread,
+        // and this thread is busy draining location events. Every window that does not
+        // need to exist is one more round trip the dragged app waits for.
+        if (!model.visible) continue;
         desired.insert(model.hostWindowId);
         auto it = windows_.find(model.hostWindowId);
         if (it == windows_.end()) {
@@ -877,7 +1133,17 @@ void WinOverlayBackend::Apply(const std::vector<OverlayModel>& models) {
             ++it;
         }
     }
+    if (DiagOn()) {
+        g_diag.overlays = static_cast<long long>(windows_.size());
+        g_diag.overlaysVisible = 0;
+        for (const auto& [id, overlay] : windows_) {
+            (void)id;
+            if (overlay->IsShown()) ++g_diag.overlaysVisible;
+        }
+    }
+    DiagFlush();
 }
+
 
 void WinOverlayBackend::UpdateSettings(const Settings& settings) {
     settings_ = settings;

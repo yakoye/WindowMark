@@ -76,6 +76,58 @@ bool WinWindowBackend::Start(EventSink sink) {
     return true;
 }
 
+void WinWindowBackend::SetGeometrySink(GeometrySink sink) {
+    geometrySink_ = std::move(sink);
+}
+
+void WinWindowBackend::SetExcludedClasses(const std::vector<std::string>& classes) {
+    excludedClasses_.clear();
+    excludedClasses_.reserve(classes.size());
+    for (const auto& name : classes) {
+        if (name.empty()) continue;
+        excludedClasses_.push_back(Utf8ToWide(name));
+    }
+    // A class that just became excluded may already be in the identity cache; drop it so
+    // the next enumeration does not hand back a stale entry for a window we now ignore.
+    identityCache_.clear();
+    topLevelCache_.clear();
+}
+
+bool WinWindowBackend::IsTopLevel(HWND hwnd) const {
+    const auto it = topLevelCache_.find(hwnd);
+    if (it != topLevelCache_.end()) return it->second;
+    const bool topLevel = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) == 0;
+    topLevelCache_[hwnd] = topLevel;
+    return topLevel;
+}
+
+Rect WinWindowBackend::FrameFor(HWND hwnd) const {
+    RECT window{};
+    if (!GetWindowRect(hwnd, &window)) return ExtendedFrame(hwnd);
+
+    const LONG width = window.right - window.left;
+    const LONG height = window.bottom - window.top;
+
+    auto it = frameInsets_.find(hwnd);
+    // Recalibrate when the size changes: maximizing or restoring changes the inset.
+    if (it == frameInsets_.end() || it->second.width != width || it->second.height != height) {
+        const Rect frame = ExtendedFrame(hwnd);
+        FrameInset inset;
+        inset.left = frame.left - window.left;
+        inset.top = frame.top - window.top;
+        inset.right = frame.right - window.right;
+        inset.bottom = frame.bottom - window.bottom;
+        inset.width = width;
+        inset.height = height;
+        frameInsets_[hwnd] = inset;
+        return frame;
+    }
+
+    const auto& inset = it->second;
+    return Rect{window.left + inset.left, window.top + inset.top,
+                window.right + inset.right, window.bottom + inset.bottom};
+}
+
 void WinWindowBackend::Stop() noexcept {
     for (HWINEVENTHOOK hook : hooks_) {
         if (hook) UnhookWinEvent(hook);
@@ -95,6 +147,7 @@ void WinWindowBackend::Stop() noexcept {
     wakePosted_ = false;
     geometryTimerArmed_.store(false);
     sink_ = {};
+    geometrySink_ = {};
     if (instance_ == this) instance_ = nullptr;
 }
 
@@ -149,7 +202,7 @@ const WinWindowBackend::ProcessIdentity* WinWindowBackend::ResolveIdentity(
 }
 
 void WinWindowBackend::PruneIdentityCache(const std::vector<WindowInfo>& live) const {
-    if (identityCache_.size() <= live.size()) return;
+    if (identityCache_.size() <= live.size() && frameInsets_.size() <= live.size()) return;
 
     std::unordered_set<HWND> alive;
     alive.reserve(live.size());
@@ -158,6 +211,11 @@ void WinWindowBackend::PruneIdentityCache(const std::vector<WindowInfo>& live) c
     for (auto it = identityCache_.begin(); it != identityCache_.end();) {
         it = alive.contains(it->first) ? std::next(it) : identityCache_.erase(it);
     }
+    for (auto it = frameInsets_.begin(); it != frameInsets_.end();) {
+        it = alive.contains(it->first) ? std::next(it) : frameInsets_.erase(it);
+    }
+    // This one also collects windows we rejected, so it is pruned on size alone.
+    if (topLevelCache_.size() > live.size() * 4 + 64) topLevelCache_.clear();
 }
 
 BOOL CALLBACK WinWindowBackend::EnumProc(HWND hwnd, LPARAM param) {
@@ -172,8 +230,17 @@ std::optional<WindowInfo> WinWindowBackend::QueryWindow(WindowId id) {
     return BuildWindowInfo(HwndFromId(id));
 }
 
+std::optional<Rect> WinWindowBackend::QueryFrame(WindowId id) {
+    HWND hwnd = HwndFromId(id);
+    // Only the two checks that can change from under us mid-drag. Eligibility, class,
+    // process and title are all re-derived by QueryWindow, and none of them can change
+    // because a window moved.
+    if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return std::nullopt;
+    return FrameFor(hwnd);
+}
+
 std::optional<WindowInfo> WinWindowBackend::BuildWindowInfo(HWND hwnd) const {
-    if (!IsEligibleTopLevelWindow(hwnd) || IsOwnWindow(hwnd)) {
+    if (!IsEligibleTopLevelWindow(hwnd, excludedClasses_) || IsOwnWindow(hwnd)) {
         return std::nullopt;
     }
 
@@ -248,7 +315,7 @@ void CALLBACK WinWindowBackend::WinEventProc(
     // on every surviving event.
 
     if (event >= EVENT_OBJECT_CREATE && event <= EVENT_OBJECT_NAMECHANGE) {
-        if ((GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) != 0) return;
+        if (!self->IsTopLevel(hwnd)) return;
     }
 
     WindowEventKind kind = WindowEventKind::StructureChanged;
@@ -273,6 +340,13 @@ void CALLBACK WinWindowBackend::WinEventProc(
     default:
         kind = WindowEventKind::StructureChanged;
         break;
+    }
+
+    // Borders hug the window edge and would visibly trail a drag if they waited for the
+    // throttled queue, so geometry is handed over immediately. This runs on the UI thread
+    // during event dispatch: the handler only repositions a window, it does not repaint.
+    if (kind == WindowEventKind::GeometryChanged && self->geometrySink_) {
+        self->geometrySink_(IdFromHwnd(hwnd), self->FrameFor(hwnd));
     }
 
     self->EnqueueEvent(IdFromHwnd(hwnd), kind);
@@ -335,22 +409,30 @@ void WinWindowBackend::EmitPending(bool includeGeometry) {
             std::uint32_t& bits = it->second;
             const WindowId id = it->first;
 
-            const WindowEventKind ordered[] = {
+            // Every kind must be listed. One that is missing has its bit set and never
+            // cleared: the event is silently dropped and the map entry never goes away.
+            // That is exactly what happened when DragStarted/DragEnded were added and
+            // hiding-while-dragging quietly did nothing. The static_assert makes the next
+            // addition a compile error instead of a silent no-op.
+            //
+            // Order is deliberate: DragStarted first so the rest of the batch finds the
+            // overlay already suspended, DragEnded last so its rebuild wins.
+            static constexpr WindowEventKind kOrder[] = {
                 WindowEventKind::StructureChanged,
                 WindowEventKind::VisibilityChanged,
                 WindowEventKind::TitleChanged,
                 WindowEventKind::ActiveChanged,
+                WindowEventKind::GeometryChanged,
             };
-            for (WindowEventKind kind : ordered) {
-                if ((bits & Bit(kind)) != 0U) {
-                    events.push_back({kind, id});
-                    bits &= ~Bit(kind);
-                }
-            }
+            static_assert(std::size(kOrder) ==
+                              static_cast<std::size_t>(WindowEventKind::VisibilityChanged) + 1,
+                          "every WindowEventKind must appear in kOrder");
 
-            if (includeGeometry && (bits & Bit(WindowEventKind::GeometryChanged)) != 0U) {
-                events.push_back({WindowEventKind::GeometryChanged, id});
-                bits &= ~Bit(WindowEventKind::GeometryChanged);
+            for (WindowEventKind kind : kOrder) {
+                if ((bits & Bit(kind)) == 0U) continue;
+                if (kind == WindowEventKind::GeometryChanged && !includeGeometry) continue;
+                events.push_back({kind, id});
+                bits &= ~Bit(kind);
             }
 
             if (bits == 0U) it = pendingBits_.erase(it);

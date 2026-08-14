@@ -1,57 +1,38 @@
-# WindowMark v0.2.0
+# WindowMark v0.3.6
 
 WindowMark is a lightweight **same-application multi-window bookmark layer**.
 
-It solves a simple but common problem: when one application has many independent top-level
-windows, titles and taskbar previews are often too slow to scan. WindowMark gives every
-participating window a compact, colored bookmark strip so you can identify and activate a
-sibling window directly.
-
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## Version scope: v0.2.0
+## v0.3.6 at a glance
 
-> **Window borders are not part of v0.2.0.** This release does not strengthen window
-> borders and does not add border glow or active-window border highlighting. It does not
-> include functionality equivalent to
-> [tacky-borders](https://github.com/lukeyou05/tacky-borders). Border enhancement is
-> planned for **v0.3.0**.
+This Windows release combines two independent tools in one ordinary user process:
 
-The colored elements in this release are bookmark tabs attached to participating windows;
-they are not a replacement window border.
+- **Window bookmarks** for identifying, previewing, renaming, and switching between
+  multiple windows of the same application.
+- **Window borders** for outlining every eligible top-level window with separate active
+  and inactive colors. Borders are optional and disabled by default.
 
-## Main features
-
-- Groups ordinary top-level windows by application and creates bookmarks when a group has
-  at least two enabled windows.
-- Activates a sibling window with one click and distinguishes the current and active window.
-- Supports bottom, top, left, right, and automatic placement, with compact-to-expanded hover
-  animation.
-- Shows a delayed DWM thumbnail preview for a hovered non-current window.
-- Provides per-session bookmark renaming and app/window participation controls.
-- Applies appearance, preview, behavior, and performance settings immediately.
-- Includes a tray menu, `Ctrl+Alt+W` emergency hide/show, installer, and uninstaller.
+v0.3.6 fixes the major drag-latency problem caused by assigning cross-process owners to
+bookmark windows, strengthens bookmark/border z-order recovery, creates bookmark windows
+only when they are visible, and adds build timestamps plus opt-in diagnostic counters.
+See [CHANGELOG.md](CHANGELOG.md) for the measurements and full history.
 
 ## Quick start
 
-The functional v0.2.0 release targets **Windows 10/11**. The macOS directory is currently an
-architecture scaffold, not a working macOS release.
+1. Download `WindowMark-v0.3.6-Release.zip` from the
+   [v0.3.6 release](https://github.com/yakoye/WindowMark/releases/tag/v0.3.6).
+2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
+   `WindowMark.exe` directly from the extracted directory.
+3. Open at least two normal windows from the same application to see bookmarks.
+4. Use the tray menu to enable/configure **书签** and the optional **窗口边框** separately.
 
-1. Download `WindowMark-v0.2.0-Release.zip` from the
-   [2.0 release](https://github.com/yakoye/WindowMark/releases/tag/2.0).
-2. Extract the archive and run `WindowMarkSetup.exe` (recommended), or run
-   `WindowMark.exe` directly for a portable session.
-3. Open two or more normal windows of the same application. Bookmarks appear on the active
-   participating window; click one to switch to that window.
-4. Right-click a bookmark to rename it or open settings. Use the tray menu to configure
-   participating applications/windows or to exit.
+The functional release targets Windows 10/11. The macOS directory remains an architecture
+scaffold and does not provide a working macOS application in v0.3.6.
 
 ## Interaction
 
-The default placement is a compact row at the **bottom edge**. If placement is changed to
-`auto`, a normal window uses the side with more free space and a maximized window uses the
-bottom edge. Each bookmark has its own stable pastel/rainbow color during the process
-lifetime. A left-edge layout looks like this:
+Normal windows prefer the **left outside edge**. Each bookmark has its own stable pastel/rainbow color during the process lifetime.
 
 ```text
         compact                         hover B
@@ -63,12 +44,31 @@ lifetime. A left-edge layout looks like this:
 
 Only the hovered bookmark expands. The others remain compact. `Self` (the window that owns this bookmark strip) and `Active` (the current foreground window) are separate states.
 
-Hovering a non-self bookmark waits for the configured preview delay and then shows one DWM
-thumbnail preview; only one preview exists at a time.
+When a host window is maximized, automatic layout moves the bookmarks to a compact row at the **bottom edge**. Hovering a non-self bookmark waits for the configured preview delay and then shows one DWM thumbnail preview; only one preview exists at a time.
+
+## Window borders
+
+WindowMark also draws a coloured outline around windows, with separate colours for the
+active and inactive window. The corner radius follows the system per window, so it matches
+Windows 11's rounding and stays square on Windows 10.
+
+This is **independent of bookmarks**: its own switch, its own settings window, its own
+tray submenu, and it covers every top-level window — including single-window apps that
+never get a bookmark strip. Turn it on under **窗口边框 → 启用窗口边框**, or set
+`border.enabled=true`. It is off by default.
+
+The idea comes from [tacky-borders](https://github.com/lukeyou05/tacky-borders); the
+implementation here is native rather than a bundled copy of it. That project is Rust and
+this one is C++, so bundling would have meant a second process with its own window hooks
+and tray icon, doubling the event handling for something this app's window tracking and
+layered rendering already do.
 
 ## Settings, renaming and the context menu
 
-Right-click a bookmark for **重命名** / **设置**; the tray menu has **设置...** too.
+Right-click a bookmark for **重命名** / **设置**. The tray menu groups everything into
+**书签** and **窗口边框** submenus, each with its own settings window and its own
+**启用** check mark — the two features are switched and configured separately, and both
+switches are the same setting the dialog's checkbox writes, so they survive a restart.
 
 The settings dialog exposes every configurable value — appearance, the bottom row, hover
 preview, behaviour and performance — and changes **apply immediately** and are written to
@@ -111,13 +111,16 @@ WindowMark
 |   +-- IWindowBackend
 |   +-- IOverlayBackend
 |   +-- IPreviewBackend
+|   +-- IBorderBackend           window outlines; independent of bookmarks
 |
 +-- platform/windows/
 |   +-- WinWindowBackend         EnumWindows + SetWinEventHook
 |   +-- WinOverlayBackend        Win32 + Direct2D/DirectWrite
+|   +-- WinBorderBackend         one layered window per outline, shared bitmap
 |   +-- WinPreviewBackend        DWM thumbnail preview
-|   +-- WinControlWindow         tray + emergency hide/show
+|   +-- WinControlWindow         tray icon and menu
 |   +-- WinSelectionDialog       native app/window checkbox UI
+|   +-- WinSettingsDialog        bookmark and border settings windows
 |
 +-- platform/macos/
 |   +-- backend scaffold         Cocoa types stay here only
@@ -148,11 +151,11 @@ Important safety properties:
 - Hook callbacks only coalesce/post lightweight events; they do not render previews or enumerate windows synchronously.
 - location-change events are throttled (default 33 ms) so dragging a window does not cause an unbounded redraw storm.
 - no polling loop repeatedly calls `EnumWindows`.
-- overlay windows are ordinary non-topmost owned popup windows; no `HWND_TOPMOST` is used.
+- overlay and border windows sit at their target's own depth, never at the top of the desktop. A border only becomes topmost when its target is, and drops back when the target does.
 - host minimize/hide/close causes its overlay to hide or be destroyed.
 - DWM preview count is globally limited to one.
 - all WinEvent hooks, DWM thumbnails, HWNDs and COM graphics resources are released on normal shutdown; process-owned windows/resources also disappear if the process is force-terminated.
-- `Ctrl+Alt+W` immediately hides/shows all bookmark overlays without stopping window tracking.
+- **no global hotkey.** `RegisterHotKey` claims a combination process-wide for the session — whoever asks first wins and everyone else silently loses it. Both features are switched from the tray menu instead.
 
 ## Settings
 
@@ -165,6 +168,7 @@ On first Windows run WindowMark creates:
 Defaults:
 
 ```ini
+drawer.enabled=true
 placement=bottom
 drawer.collapsed_extent=30
 drawer.expanded_extent=180
@@ -172,7 +176,7 @@ drawer.thickness=34
 drawer.gap=6
 drawer.corner_radius=10
 drawer.animation_ms=90
-drawer.short_name_chars=3
+drawer.short_name_chars=4
 drawer.top_offset=72
 drawer.attach_overlap=6
 drawer.active_window_only=true
@@ -180,8 +184,17 @@ drawer.active_extra_extent=10
 drawer.transparency=0
 
 drawer.bottom_collapsed_extent=44
-drawer.bottom_expanded_extent=150
+drawer.bottom_expanded_extent=120
 drawer.bottom_collapsed_thickness=0
+drawer.bottom_active_thickness=23
+
+border.enabled=false
+border.width=4
+border.offset=-1
+border.corners=auto
+border.corner_radius=8
+border.active_color=#6274E7
+border.inactive_color=#7080AA
 
 preview.enabled=true
 preview.delay_ms=450
@@ -191,13 +204,38 @@ preview.corner_radius=12
 
 performance.geometry_throttle_ms=33
 
+# Extra window classes to ignore completely - no bookmark, no border. Adds to the
+# built-in list. Run WindowMarkInspect.exe to find a class name.
+tracking.exclude_classes=
+
 # Filled automatically when apps are unchecked in the selection panel.
 selection.disabled_apps=
 ```
 
 `drawer.animation_ms=0` gives an immediate no-animation expansion. `preview.width` and `preview.height` control preview size. `drawer.collapsed_extent` is how far a compact tab sticks out; `drawer.short_name_chars` is how many characters that compact tab shows (no ellipsis — the full label appears on hover).
 
-An existing `settings.conf` is never rewritten by an upgrade, so changed defaults only apply to new installs. Edit the file and restart WindowMark to pick them up.
+An existing `settings.conf` is never rewritten by an upgrade, so changed defaults only apply to new installs. Edit the file and restart WindowMark to pick them up, or run
+`rebuild_and_install.bat -Fresh`, which deletes it.
+
+### 这些数值是定过的，不要顺手改回去
+
+Each of these was chosen deliberately after looking at the result on screen. Anything that
+would change one of them needs to be raised first, not decided in passing.
+
+| 配置项 | 值 | 为什么是这个值 |
+|---|---|---|
+| `drawer.bottom_active_thickness` | **23** | 激活标签的高度。此前写死等于 `drawer.thickness`（34），只能靠改 `thickness` 来调，会连非激活项一起缩掉——所以给了它独立设置 |
+| `drawer.bottom_expanded_extent` | **120** | 悬停展开后的标签宽度 |
+| `drawer.bottom_collapsed_extent` | **44** | 平时的标签宽度 |
+| `drawer.short_name_chars` | **4** | 折叠标签显示几个字 |
+| `border.width` + `border.offset` | **4 / -1** | `Reach = 4 + (-1) = 3`：窗口外 3px，再压住窗口自身边缘 1px。`offset=0` 会让 Windows 自己那条 1px 边框露出来变成灰缝（实测 `#4F5255`/`#646765`） |
+| `placement` | **bottom** | `auto` 会随窗口移动在左右之间跳，找不着 |
+| `drawer.active_window_only` | **true** | 只有前台窗口显示书签条 |
+
+Same rule for the settings dialog's layout numbers in
+`src/platform/windows/WinSettingsDialog.cpp` — the label/hint column widths were measured
+against the longest string each one has to hold, and shrinking one clips text rather than
+wrapping it.
 
 ## Build on Windows
 
@@ -207,49 +245,28 @@ Requirements:
 - CMake
 - Visual Studio with the Desktop C++ workload
 
-From PowerShell or CMD:
+Double-click, or from PowerShell / CMD:
 
-```powershell
-.\build.bat
-```
+| 双击这个 | 做什么 |
+|---|---|
+| `build.bat` | 只编译 |
+| **`rebuild_and_install.bat`** | 编译 → 单元测试 → 卸载旧版 → 装新版并启动，最后打印生效的配置。改完直接看效果就用它 |
+| `rebuild_and_install.bat -Fresh` | 同上，**并删除 `settings.conf`**。改的是代码里的默认值时必须用这个，否则旧配置会盖掉新默认值 |
+| `rebuild_and_install.bat -NoBuild` | 跳过编译，只重装（约 5 秒）|
+| **`check_border.bat`** | 边框诊断：倒数 5 秒让你切到目标窗口，然后报边框的位置、层级、四条边逐点取色，以及每个不对的点被哪个窗口盖着 |
+| **`build\Release\WindowMarkInspect.exe`** | 看到不该有边框的东西时跑它。盯 20 秒，然后给屏幕上每个边框贴黄色数字牌并打印编号表，表里就有类名，还会告诉你填到哪。`--watch 40` 加长，`--now` 只看此刻 |
 
-or:
-
-```powershell
-.\build.ps1
-```
-
-The scripts configure a CMake build tree, compile the Release configuration, and run the
-platform-neutral core tests. The equivalent commands are:
-
-```powershell
-cmake -S . -B build
-cmake --build build --config Release --parallel
-ctest --test-dir build -C Release --output-on-failure
-```
-
-### Development layout
-
-```text
-include/windowmark/core/  Platform-neutral public interfaces and models
-src/core/                 Grouping, layout, drawer state, and settings logic
-src/platform/windows/     Win32 discovery, overlays, previews, tray, and dialogs
-src/platform/macos/       macOS backend scaffold
-src/platform/stub/        Unsupported-platform entry point
-src/installer/            Per-user Windows installer and uninstaller
-src/shared/               Product identity shared by Windows executables
-tests/                    Platform-neutral core tests
-build/                    Generated build tree (ignored by Git)
-```
+`.bat` 里全是 ASCII，不是疏忽：`cmd.exe` 按系统 ANSI 代码页读 `.bat`，写 UTF-8 中文会变乱码并打断命令解析。中文输出由对应的 `.ps1` 负责。
 
 ## Install / uninstall
 
-Both are ordinary executables. Build produces three files in `build\Release\`:
+The build produces four user-facing executables in `build\Release\`:
 
 ```text
 WindowMark.exe             the app
 WindowMarkSetup.exe        installer
 WindowMarkUninstall.exe    uninstaller
+WindowMarkInspect.exe      diagnostic: which window has an outline, and why
 ```
 
 Double-click `WindowMarkSetup.exe`. It shows one dialog with the install location and an
@@ -283,22 +300,24 @@ rc3 is the first revision **built and run on Windows**. See [VALIDATION.md](VALI
 exercised: MSVC Release/Debug builds, core tests in both configurations, overlay rendering
 on a 125% display, and full install/reinstall-over-running/uninstall cycles.
 
+## 图标
+
+`res/wmiicon.ico` — 托盘图标和两个设置窗口的标题栏图标都用它。换图标只需替换这个文件，
+代码不用动：CMake 会把绝对路径填进生成的 `.rc`。
+
+必须是**真正的多尺寸 .ico**，至少含 16/20/24/32/48/256，32bpp 带 alpha，背景透明。
+16 那一档最关键——托盘和标题栏用的就是它，而且代码用 `LoadImage` 按小图标尺寸取，
+不会拿 256 缩下来发虚。留白色底板的话，深色任务栏上会显示成一个白方块。
+
 ## Version policy
 
-**v0.2.0** is the first released version. It supersedes the `v0.1.0-rc1`..`rc5` series, which
-never shipped: rc1/rc2 were only ever built on Linux, and rc3 onward were the Windows
-bring-up. Beyond what v0.1.0 aimed at, this release adds the settings window, bookmark
-renaming, the bookmark context menu and the about dialog.
+**v0.3.6** is the current release. It includes the window-border feature developed in the
+v0.3.0 line, configurable exclusions and `WindowMarkInspect.exe` from v0.3.2, the movement
+path improvements from v0.3.5, and the cross-process-owner and z-order fixes from v0.3.6.
 
-Fixes go to `v0.2.x`; new features to `v0.3.0`. See [VALIDATION.md](VALIDATION.md) for what
-is verified and what still is not.
+The earlier public repository release is tag `2.0`, corresponding to application version
+v0.2.0. Development revisions v0.3.0, v0.3.2, and v0.3.5 are retained in the changelog so
+the progression to v0.3.6 remains auditable.
 
-## Roadmap
-
-- **v0.2.x:** stability, compatibility, and bug fixes without expanding the feature scope.
-- **v0.3.0:** add optional window-border enhancement, glow, and active-window highlighting
-  in the spirit of [tacky-borders](https://github.com/lukeyou05/tacky-borders), while
-  keeping it separate from the existing bookmark behavior and preserving the current
-  non-injection safety model.
-- **Later:** complete a native macOS backend behind the existing platform-neutral core
-  interfaces.
+Fixes go to `v0.3.x`; new features to `v0.4.0`. See [VALIDATION.md](VALIDATION.md) for what
+is verified and what still is not, and [ROADMAP.md](ROADMAP.md) for what is deferred.

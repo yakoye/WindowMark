@@ -1,6 +1,7 @@
 #include "WinControlWindow.h"
 
 #include "AppIdentity.h"
+#include "Resource.h"
 
 #include <shellapi.h>
 #include <utility>
@@ -16,17 +17,8 @@ constexpr UINT kTrayId = 1;
 
 WinControlWindow::~WinControlWindow() { Stop(); }
 
-bool WinControlWindow::Start(
-    std::function<void()> onToggle,
-    std::function<void()> onSelection,
-    std::function<void()> onSettings,
-    std::function<void()> onAbout,
-    std::function<void()> onExit) {
-    onToggle_ = std::move(onToggle);
-    onSelection_ = std::move(onSelection);
-    onSettings_ = std::move(onSettings);
-    onAbout_ = std::move(onAbout);
-    onExit_ = std::move(onExit);
+bool WinControlWindow::Start(Handlers handlers) {
+    handlers_ = std::move(handlers);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -44,14 +36,15 @@ bool WinControlWindow::Start(
     requestQuitMessage_ = RegisterWindowMessageW(app::kRequestQuitMessage);
     secondInstanceMessage_ = RegisterWindowMessageW(app::kSecondInstanceMessage);
 
+    // Deliberately no global hotkey. A process-wide RegisterHotKey claims the combination
+    // for the whole session, so whichever app asks first wins and the other silently loses
+    // it - not a trade worth making for a switch that is two clicks away in the tray menu.
     AddTrayIcon();
-    RegisterHotKey(hwnd_, kHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'W');
     return true;
 }
 
 void WinControlWindow::Stop() noexcept {
     if (!hwnd_) return;
-    UnregisterHotKey(hwnd_, kHotkeyId);
     RemoveTrayIcon();
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -61,6 +54,10 @@ void WinControlWindow::SetEnabledState(bool enabled) {
     enabled_ = enabled;
 }
 
+void WinControlWindow::SetBorderState(bool enabled) {
+    bordersEnabled_ = enabled;
+}
+
 void WinControlWindow::AddTrayIcon() {
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
@@ -68,8 +65,13 @@ void WinControlWindow::AddTrayIcon() {
     data.uID = kTrayId;
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = kTrayMessage;
-    data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(data.szTip, L"WindowMark - Ctrl+Alt+W 显示/隐藏书签");
+    // LoadImage rather than LoadIcon, asking for the small-icon metric: the .ico carries
+    // several sizes and this picks the 16px one outright instead of squashing the 256.
+    data.hIcon = static_cast<HICON>(LoadImageW(
+        GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    if (!data.hIcon) data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(data.szTip, L"WindowMark - 右键打开菜单");
     Shell_NotifyIconW(NIM_ADD, &data);
 }
 
@@ -100,9 +102,27 @@ void WinControlWindow::ShowMenu() {
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
-    AppendMenuW(menu, MF_STRING, kToggleCommand, enabled_ ? L"隐藏书签\tCtrl+Alt+W" : L"显示书签\tCtrl+Alt+W");
-    AppendMenuW(menu, MF_STRING, kSelectionCommand, L"选择需要书签的应用/窗口...");
-    AppendMenuW(menu, MF_STRING, kSettingsCommand, L"设置...");
+    // Bookmarks and borders are separate features with separate switches and separate
+    // settings, so the menu keeps them in separate submenus rather than one flat list.
+    HMENU bookmarks = CreatePopupMenu();
+    if (bookmarks) {
+        AppendMenuW(bookmarks, MF_STRING | (enabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    kToggleCommand, L"启用书签");
+        AppendMenuW(bookmarks, MF_STRING, kSelectionCommand, L"选择参与的应用/窗口...");
+        AppendMenuW(bookmarks, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(bookmarks, MF_STRING, kSettingsCommand, L"书签设置...");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarks), L"书签");
+    }
+
+    HMENU borders = CreatePopupMenu();
+    if (borders) {
+        AppendMenuW(borders, MF_STRING | (bordersEnabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    kToggleBordersCommand, L"启用窗口边框");
+        AppendMenuW(borders, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(borders, MF_STRING, kBorderSettingsCommand, L"边框设置...");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(borders), L"窗口边框");
+    }
+
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kAboutCommand, L"关于 WindowMark...");
     AppendMenuW(menu, MF_STRING, kExitCommand, L"退出 WindowMark");
@@ -127,7 +147,7 @@ LRESULT CALLBACK WinControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     // Registered message ids are runtime values, so they cannot be switch labels.
     if (requestQuitMessage_ != 0 && msg == requestQuitMessage_) {
-        if (onExit_) onExit_();
+        if (handlers_.onExit) handlers_.onExit();
         return 0;
     }
     if (secondInstanceMessage_ != 0 && msg == secondInstanceMessage_) {
@@ -142,34 +162,24 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
         break;
-    case WM_HOTKEY:
-        if (wParam == kHotkeyId && onToggle_) {
-            onToggle_();
+    case WM_COMMAND: {
+        const std::function<void()>* handler = nullptr;
+        switch (LOWORD(wParam)) {
+        case kToggleCommand:         handler = &handlers_.onToggleBookmarks; break;
+        case kSelectionCommand:      handler = &handlers_.onSelection; break;
+        case kSettingsCommand:       handler = &handlers_.onBookmarkSettings; break;
+        case kToggleBordersCommand:  handler = &handlers_.onToggleBorders; break;
+        case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
+        case kAboutCommand:          handler = &handlers_.onAbout; break;
+        case kExitCommand:           handler = &handlers_.onExit; break;
+        default: break;
+        }
+        if (handler) {
+            if (*handler) (*handler)();
             return 0;
         }
         break;
-    case WM_COMMAND:
-        if (LOWORD(wParam) == kToggleCommand && onToggle_) {
-            onToggle_();
-            return 0;
-        }
-        if (LOWORD(wParam) == kSelectionCommand && onSelection_) {
-            onSelection_();
-            return 0;
-        }
-        if (LOWORD(wParam) == kSettingsCommand && onSettings_) {
-            onSettings_();
-            return 0;
-        }
-        if (LOWORD(wParam) == kAboutCommand && onAbout_) {
-            onAbout_();
-            return 0;
-        }
-        if (LOWORD(wParam) == kExitCommand && onExit_) {
-            onExit_();
-            return 0;
-        }
-        break;
+    }
     default:
         break;
     }

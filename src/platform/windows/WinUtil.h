@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 #include <windows.h>
 
 namespace windowmark::win {
@@ -18,7 +19,9 @@ namespace windowmark::win {
 std::filesystem::path LocalDataRoot();
 [[nodiscard]] std::filesystem::path RoamingDataRoot();
 [[nodiscard]] bool IsCloaked(HWND hwnd);
-[[nodiscard]] bool IsEligibleTopLevelWindow(HWND hwnd);
+// `alsoExclude` is the user's own list of window classes, added to the built-in one.
+[[nodiscard]] bool IsEligibleTopLevelWindow(HWND hwnd,
+                                            const std::vector<std::wstring>& alsoExclude = {});
 [[nodiscard]] Rect ExtendedFrame(HWND hwnd);
 [[nodiscard]] Rect WorkAreaFor(HWND hwnd);
 void PurgeAllUserData();
