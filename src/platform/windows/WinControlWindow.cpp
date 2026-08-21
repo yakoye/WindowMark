@@ -8,6 +8,7 @@
 #include <utility>
 #include <cwchar>
 #include <cstddef>
+#include <algorithm>
 #include <cstdint>
 #include <iterator>
 
@@ -16,6 +17,21 @@ namespace {
 
 constexpr const wchar_t* kControlClass = app::kControlWindowClass;
 constexpr UINT kTrayId = 1;
+
+// Anything of ours is not a pin target: the outlines and bookmark strips sit right on top
+// of the windows being aimed at, and WindowFromPoint would happily return one of them.
+bool IsOwnWindowClass(HWND hwnd) {
+    wchar_t cls[64]{};
+    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) == 0) return false;
+    return wcsncmp(cls, L"WindowMark.", 11) == 0;
+}
+
+// Far enough that a plain click on the tray icon is never mistaken for a drag, close
+// enough that a deliberate drag feels immediate. The system's own double-click slop is
+// the number Windows already trained everyone on.
+int DragThreshold() {
+    return std::max(4, GetSystemMetrics(SM_CXDRAG) * 2);
+}
 
 } // namespace
 
@@ -109,6 +125,57 @@ void WinControlWindow::RemoveTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &data);
 }
 
+
+WindowId WinControlWindow::WindowUnderCursor() const {
+    POINT pt{};
+    if (!GetCursorPos(&pt)) return 0;
+    HWND hit = WindowFromPoint(pt);
+    if (!hit) return 0;
+    HWND root = GetAncestor(hit, GA_ROOT);
+    if (!root || root == hwnd_ || IsOwnWindowClass(root)) return 0;
+    return static_cast<WindowId>(reinterpret_cast<std::uintptr_t>(root));
+}
+
+void WinControlWindow::UpdateGrabTarget() {
+    // The cursor is redrawn here rather than from WM_SETCURSOR: while a window holds the
+    // mouse capture, the system stops asking it what cursor to use.
+    if (grabCursor_) SetCursor(grabCursor_);
+    const WindowId target = WindowUnderCursor();
+    if (target == grabTarget_) return;
+    grabTarget_ = target;
+    if (handlers_.onGrabPreview) handlers_.onGrabPreview(target);
+}
+
+void WinControlWindow::BeginGrabFromMenu() {
+    if (grabState_ != GrabState::None) return;
+    SetForegroundWindow(hwnd_);
+    SetCapture(hwnd_);
+    grabState_ = GrabState::Grabbing;
+    SetTimer(hwnd_, kGrabTimeoutTimer, kGrabTimeoutMs, nullptr);
+    grabNeedsPress_ = true;
+    grabTarget_ = 0;
+    if (!grabCursor_) grabCursor_ = LoadCursorW(nullptr, IDC_CROSS);
+    UpdateGrabTarget();
+}
+
+void WinControlWindow::EndGrab(bool commit) {
+    if (grabState_ == GrabState::None) return;
+    const WindowId target = grabTarget_;
+    grabState_ = GrabState::None;
+    KillTimer(hwnd_, kGrabTimeoutTimer);
+    grabNeedsPress_ = false;
+    grabTarget_ = 0;
+    if (GetCapture() == hwnd_) ReleaseCapture();
+    // Clear the preview before committing, so the window ends up drawn from the real
+    // pinned set rather than briefly from both.
+    if (handlers_.onGrabPreview) handlers_.onGrabPreview(0);
+    if (commit && target != 0) {
+        if (handlers_.onGrabCommit) handlers_.onGrabCommit(target);
+    } else if (handlers_.onGrabCancel) {
+        handlers_.onGrabCancel();
+    }
+}
+
 void WinControlWindow::ShowMenu() {
     POINT pt{};
     GetCursorPos(&pt);
@@ -149,6 +216,7 @@ void WinControlWindow::ShowMenu() {
                     kTogglePinningCommand, L"启用窗口置顶");
         if (pinningEnabled_) {
             AppendMenuW(pinning, MF_STRING, kPinForegroundCommand, L"置顶当前窗口");
+            AppendMenuW(pinning, MF_STRING, kGrabToPinCommand, L"抓取窗口置顶...");
         }
 
         // The pinned list is built fresh here, not cached: it changes whenever a window is
@@ -225,7 +293,71 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 
     switch (msg) {
+    case WM_TIMER:
+        if (wParam == kGrabTimeoutTimer) {
+            EndGrab(false);
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE:
+        if (grabState_ == GrabState::PendingDrag) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            if (std::abs(pt.x - grabStart_.x) + std::abs(pt.y - grabStart_.y) >= DragThreshold()) {
+                grabState_ = GrabState::Grabbing;
+                if (!grabCursor_) grabCursor_ = LoadCursorW(nullptr, IDC_CROSS);
+            }
+        }
+        if (grabState_ == GrabState::Grabbing) {
+            UpdateGrabTarget();
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (grabState_ == GrabState::Grabbing) {
+            grabNeedsPress_ = false;
+            UpdateGrabTarget();
+            return 0;
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (grabState_ == GrabState::PendingDrag) {
+            // Never became a drag, so it was an ordinary click on the tray icon. Do
+            // nothing rather than pin whatever the cursor happens to be over.
+            EndGrab(false);
+            return 0;
+        }
+        if (grabState_ == GrabState::Grabbing) {
+            // In the menu path the button-up that dismissed the menu arrives here first;
+            // waiting for a press of its own is what stops it pinning something at random.
+            if (grabNeedsPress_) return 0;
+            EndGrab(true);
+            return 0;
+        }
+        break;
+    case WM_RBUTTONDOWN:
+    case WM_KILLFOCUS:
+        if (grabState_ != GrabState::None) {
+            EndGrab(false);
+            return 0;
+        }
+        break;
+    case WM_CAPTURECHANGED:
+        // Something else took the mouse. Whatever it was, this grab is over.
+        if (grabState_ != GrabState::None) EndGrab(false);
+        return 0;
     case kTrayMessage:
+        if (lParam == WM_LBUTTONDOWN && grabState_ == GrabState::None && pinningEnabled_) {
+            // Drag off the icon to aim at a window. Capture starts now rather than after
+            // the threshold, because without it no further mouse messages arrive at all.
+            GetCursorPos(&grabStart_);
+            SetForegroundWindow(hwnd_);
+            SetCapture(hwnd_);
+            grabState_ = GrabState::PendingDrag;
+            SetTimer(hwnd_, kGrabTimeoutTimer, kGrabTimeoutMs, nullptr);
+            grabTarget_ = 0;
+            return 0;
+        }
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
             ShowMenu();
             return 0;
@@ -272,6 +404,10 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kPinForegroundCommand:  handler = &handlers_.onPinForeground; break;
         case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;
         case kPinSettingsCommand:    handler = &handlers_.onPinSettings; break;
+        case kGrabToPinCommand:
+            // Entered after the menu closes, so the menu's own mouse messages are gone.
+            BeginGrabFromMenu();
+            return 0;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;
         default: break;
