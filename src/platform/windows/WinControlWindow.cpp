@@ -8,6 +8,7 @@
 #include <utility>
 #include <cwchar>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 
 namespace windowmark::win {
@@ -267,6 +268,7 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kToggleBordersCommand:  handler = &handlers_.onToggleBorders; break;
         case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
         case kTogglePinningCommand:  handler = &handlers_.onTogglePinning; break;
+
         case kPinForegroundCommand:  handler = &handlers_.onPinForeground; break;
         case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;
         case kPinSettingsCommand:    handler = &handlers_.onPinSettings; break;

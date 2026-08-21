@@ -39,7 +39,12 @@ public:
     [[nodiscard]] bool IsPinned(WindowId id) const { return pins_.Contains(id); }
     // The window the user last worked in. Not GetForegroundWindow() at click time: opening
     // the tray menu makes the tray window itself the foreground one.
-    [[nodiscard]] WindowId ActiveWindow() const noexcept { return activeWindow_; }
+    // The window the user last worked in. Deliberately *not* activeWindow_, and not
+    // GetForegroundWindow() at click time either: reaching for the tray icon hands
+    // activation to the taskbar and then to the tray window, at which point no tracked
+    // window is active any more and both of those report nothing useful. This one only
+    // ever moves forward, to the last eligible window that really was in front.
+    [[nodiscard]] WindowId LastActiveWindow() const noexcept { return lastActiveWindow_; }
     // Title for the tray submenu. Empty when the window is no longer tracked.
     [[nodiscard]] std::string PinnedTitle(WindowId id) const;
 
@@ -103,6 +108,7 @@ private:
     std::size_t nextStableOrder_{0};
     std::size_t nextColorSlot_{0};
     WindowId activeWindow_{0};
+    WindowId lastActiveWindow_{0};
     bool started_{false};
 };
 
