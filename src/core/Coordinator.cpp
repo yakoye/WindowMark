@@ -298,7 +298,6 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         break;
     case WindowEventKind::ActiveChanged:
         activeWindow_ = event.windowId;
-        if (activeWindow_ != 0) lastActiveWindow_ = activeWindow_;
         ApplyModels();
         ApplyBorders();
         break;
@@ -319,7 +318,6 @@ void Coordinator::RefreshAll() {
         }
         if (window.active) {
             activeWindow_ = window.id;
-            lastActiveWindow_ = window.id;
         }
         // Once, here, rather than every time a label is built: titles change far less
         // often than models are rebuilt.
@@ -383,7 +381,6 @@ void Coordinator::RefreshOne(WindowId id) {
     }
     if (updated->active) {
         activeWindow_ = id;
-        lastActiveWindow_ = id;
     }
     updated->title = SanitizeTitle(updated->title);
     windows_[id] = std::move(*updated);

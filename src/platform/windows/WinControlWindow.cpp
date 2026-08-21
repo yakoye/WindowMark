@@ -215,7 +215,6 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(pinning, MF_STRING | (pinningEnabled_ ? MF_CHECKED : MF_UNCHECKED),
                     kTogglePinningCommand, L"启用窗口置顶");
         if (pinningEnabled_) {
-            AppendMenuW(pinning, MF_STRING, kPinForegroundCommand, L"置顶当前窗口");
             AppendMenuW(pinning, MF_STRING, kGrabToPinCommand, L"抓取窗口置顶...");
         }
 
@@ -401,7 +400,6 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
         case kTogglePinningCommand:  handler = &handlers_.onTogglePinning; break;
 
-        case kPinForegroundCommand:  handler = &handlers_.onPinForeground; break;
         case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;
         case kPinSettingsCommand:    handler = &handlers_.onPinSettings; break;
         case kGrabToPinCommand:

@@ -39,13 +39,6 @@ public:
     [[nodiscard]] bool IsPinned(WindowId id) const { return pins_.Contains(id); }
     // The window the user last worked in. Not GetForegroundWindow() at click time: opening
     // the tray menu makes the tray window itself the foreground one.
-    // The window the user last worked in. Deliberately *not* activeWindow_, and not
-    // GetForegroundWindow() at click time either: reaching for the tray icon hands
-    // activation to the taskbar and then to the tray window, at which point no tracked
-    // window is active any more and both of those report nothing useful. This one only
-    // ever moves forward, to the last eligible window that really was in front.
-    [[nodiscard]] WindowId LastActiveWindow() const noexcept { return lastActiveWindow_; }
-    // Live highlight while the crosshair is over a window, before anything is committed.
     // Rendered exactly like a real pin - same colour, same width - because that is the
     // question being answered: what will this look like if I let go here. Pass 0 to clear.
     void SetPinPreview(WindowId id);
@@ -112,7 +105,6 @@ private:
     std::size_t nextStableOrder_{0};
     std::size_t nextColorSlot_{0};
     WindowId activeWindow_{0};
-    WindowId lastActiveWindow_{0};
     WindowId pinPreview_{0};
     bool started_{false};
 };
