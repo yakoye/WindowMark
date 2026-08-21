@@ -298,6 +298,7 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         break;
     case WindowEventKind::ActiveChanged:
         activeWindow_ = event.windowId;
+        if (activeWindow_ != 0) lastActiveWindow_ = activeWindow_;
         ApplyModels();
         ApplyBorders();
         break;
@@ -318,6 +319,7 @@ void Coordinator::RefreshAll() {
         }
         if (window.active) {
             activeWindow_ = window.id;
+            lastActiveWindow_ = window.id;
         }
         // Once, here, rather than every time a label is built: titles change far less
         // often than models are rebuilt.
@@ -381,6 +383,7 @@ void Coordinator::RefreshOne(WindowId id) {
     }
     if (updated->active) {
         activeWindow_ = id;
+        lastActiveWindow_ = id;
     }
     updated->title = SanitizeTitle(updated->title);
     windows_[id] = std::move(*updated);
@@ -403,6 +406,10 @@ void Coordinator::ApplyModels() {
 
 void Coordinator::TogglePin(WindowId id) {
     if (!started_ || !pinBackend_ || !settings_.pin.enabled) return;
+    // Only tracked windows. An excluded one has no border to show for it, so pinning it
+    // would set the style with no sign that anything happened - and no entry in the tray
+    // list to undo it with.
+    if (!windows_.contains(id) && !pins_.Contains(id)) return;
 
     if (const auto was = pins_.Remove(id); was.has_value()) {
         // Restore what the window had before, which is not always "not topmost": Task

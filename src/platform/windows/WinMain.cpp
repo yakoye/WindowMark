@@ -255,7 +255,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     handlers.onTogglePinWindow = [&](windowmark::WindowId id) { coordinator.TogglePin(id); };
     handlers.onPinForeground = [&]() {
-        if (const auto id = coordinator.ActiveWindow(); id != 0) coordinator.TogglePin(id);
+        if (const auto id = coordinator.LastActiveWindow(); id != 0) coordinator.TogglePin(id);
     };
     handlers.onUnpinAll = [&]() { coordinator.UnpinAll(); };
     handlers.onPinSettings = [&]() {
