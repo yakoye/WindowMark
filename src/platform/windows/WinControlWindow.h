@@ -26,6 +26,11 @@ public:
         std::function<void()> onTogglePinning;
         std::function<void(WindowId)> onTogglePinWindow;
         std::function<void()> onPinForeground;
+        // Crosshair grab. Preview fires as the cursor crosses windows, commit when the
+        // user settles on one, cancel on right-click or if capture is taken away.
+        std::function<void(WindowId)> onGrabPreview;
+        std::function<void(WindowId)> onGrabCommit;
+        std::function<void()> onGrabCancel;
         std::function<void()> onUnpinAll;
         std::function<void()> onPinSettings;
         std::function<void()> onAbout;
@@ -58,12 +63,18 @@ private:
     static constexpr UINT kTogglePinningCommand = 1010;
     static constexpr UINT kGrabToPinCommand = 1011;
     static constexpr UINT kPinForegroundCommand = 1012;
-    static constexpr UINT kUnpinAllCommand = 1014;
     static constexpr UINT kPinSettingsCommand = 1013;
+    static constexpr UINT kUnpinAllCommand = 1014;
     // Dynamic block: one command per currently pinned window, allocated when the menu is
     // built. Kept well clear of the fixed ids above so adding a fixed item never collides.
     static constexpr UINT kPinnedWindowCommandBase = 1100;
     static constexpr UINT kPinnedWindowCommandLimit = 64;
+    // Safety net for the crosshair grab. While it is active this window holds the mouse
+    // capture, so if it ever failed to end the user would be left clicking into nothing
+    // with no obvious way out. Fifteen seconds is far longer than aiming at a window takes
+    // and far shorter than anyone would spend wondering what broke.
+    static constexpr UINT_PTR kGrabTimeoutTimer = 90;
+    static constexpr UINT kGrabTimeoutMs = 15000;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
@@ -71,6 +82,27 @@ private:
     void AddTrayIcon();
     void RemoveTrayIcon();
     void ShowAlreadyRunningHint();
+
+    // Crosshair grab, DeskPins style: point at a window and it gets pinned.
+    //
+    // Two ways in, one state machine. Dragging off the tray icon is the quick one; the
+    // menu item is the reliable one, because a tray icon folded into the overflow flyout
+    // is awkward to drag out of.
+    enum class GrabState { None, PendingDrag, Grabbing };
+
+    void BeginGrabFromMenu();
+    void EndGrab(bool commit);
+    void UpdateGrabTarget();
+    [[nodiscard]] WindowId WindowUnderCursor() const;
+
+    GrabState grabState_{GrabState::None};
+    POINT grabStart_{};
+    // The menu path arrives with no button held, so the click that selects a window has to
+    // start with a press. Without this, the button-up that dismissed the menu would land
+    // here and instantly pin whatever happened to be under the cursor.
+    bool grabNeedsPress_{false};
+    WindowId grabTarget_{};
+    HCURSOR grabCursor_{};
 
     HWND hwnd_{};
     UINT requestQuitMessage_{};

@@ -428,6 +428,12 @@ void Coordinator::TogglePin(WindowId id) {
     ApplyBorders();
 }
 
+void Coordinator::SetPinPreview(WindowId id) {
+    if (pinPreview_ == id) return;
+    pinPreview_ = id;
+    ApplyBorders();
+}
+
 void Coordinator::UnpinAll() {
     if (!pinBackend_) return;
     for (const auto& record : pins_.Drain()) {
@@ -475,7 +481,7 @@ std::vector<BorderModel> Coordinator::BuildBorderModels() const {
     // outlined whichever way that switch is set, because the outline is the only feedback
     // that the pin worked. With borders off, this list is exactly the pinned windows.
     const bool bordersOn = settings_.border.enabled;
-    if (!bordersOn && pins_.Empty()) return models;
+    if (!bordersOn && pins_.Empty() && pinPreview_ == 0) return models;
 
     models.reserve(windows_.size());
     for (const auto& [id, window] : windows_) {
@@ -483,7 +489,7 @@ std::vector<BorderModel> Coordinator::BuildBorderModels() const {
         // model: every border costs a window plus a bitmap, and a desktop full of
         // minimized windows would pay for outlines nobody can see.
         if (!window.visible || window.minimized) continue;
-        const bool pinned = pins_.Contains(id);
+        const bool pinned = pins_.Contains(id) || id == pinPreview_;
         if (!bordersOn && !pinned) continue;
 
         BorderModel model;

@@ -258,6 +258,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (const auto id = coordinator.LastActiveWindow(); id != 0) coordinator.TogglePin(id);
     };
     handlers.onUnpinAll = [&]() { coordinator.UnpinAll(); };
+    handlers.onGrabPreview = [&](windowmark::WindowId id) { coordinator.SetPinPreview(id); };
+    handlers.onGrabCommit = [&](windowmark::WindowId id) { coordinator.TogglePin(id); };
+    handlers.onGrabCancel = [&]() { coordinator.SetPinPreview(0); };
     handlers.onPinSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Pinning);
     };
