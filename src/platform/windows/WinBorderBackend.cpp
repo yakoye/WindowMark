@@ -220,13 +220,16 @@ public:
         const bool sizeChanged = model.frame.width() != model_.frame.width() ||
                                  model.frame.height() != model_.frame.height();
         const bool activeChanged = model.active != model_.active;
+        // A pin changes both the colour and the line width, and the width feeds Reach(),
+        // so the outline has to be re-laid-out as well as repainted.
+        const bool pinnedChanged = model.pinned != model_.pinned;
         const bool visibleChanged = model.visible != model_.visible;
         model_ = model;
 
         Reposition();
         if (visibleChanged) ApplyVisibility();
         // Only the fill colour and the bitmap size affect the pixels; a pure move does not.
-        if (sizeChanged || activeChanged || (visibleChanged && model_.visible)) Redraw();
+        if (sizeChanged || activeChanged || pinnedChanged || (visibleChanged && model_.visible)) Redraw();
         // Tried gating this on activeChanged || visibleChanged, on the theory that moving a
         // window cannot restack it. The theory is right and the change was still wrong:
         // z-order also drifts from events we never see, and once an outline is stranded
@@ -342,9 +345,23 @@ private:
     // How far the outline extends beyond the window frame. A negative offset pulls it
     // inward over the window, which is the tacky-borders convention and the reason this
     // must not clamp the offset at zero.
+    // Pinned wins over active. "This window is stuck in front of everything" is the more
+    // surprising state and the one worth spotting across a busy desktop, so it gets the
+    // distinct colour and the thicker line; active/inactive is the everyday distinction.
+    [[nodiscard]] int StrokeWidth() const {
+        const auto& s = owner_.settings_;
+        return std::max(1, model_.pinned ? s.pin.width : s.border.width);
+    }
+
+    [[nodiscard]] unsigned StrokeColor() const {
+        const auto& s = owner_.settings_;
+        if (model_.pinned) return s.pin.color;
+        return model_.active ? s.border.activeColor : s.border.inactiveColor;
+    }
+
     [[nodiscard]] int Reach() const {
         const auto& border = owner_.settings_.border;
-        return std::max(0, std::max(1, border.width) + border.offset);
+        return std::max(0, StrokeWidth() + border.offset);
     }
 
     [[nodiscard]] RECT OuterRect() const {
@@ -411,8 +428,7 @@ private:
         LayeredSurface* surface = owner_.surface_.get();
         if (!surface || !surface->EnsureAtLeast(width, height)) return;
 
-        const auto& border = owner_.settings_.border;
-        const float stroke = static_cast<float>(std::max(1, border.width));
+        const float stroke = static_cast<float>(StrokeWidth());
         const float inset = stroke * 0.5F;
 
         float radius = CornerRadius();
@@ -430,7 +446,7 @@ private:
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
         target->CreateSolidColorBrush(
-            ToD2DColor(model_.active ? border.activeColor : border.inactiveColor), &brush);
+            ToD2DColor(StrokeColor()), &brush);
         if (brush) {
             const D2D1_RECT_F path = D2D1::RectF(inset, inset,
                                                  static_cast<float>(width) - inset,

@@ -92,7 +92,20 @@ struct BorderModel {
     WindowId windowId{};
     Rect frame;
     bool active{false};
+    // Pinned takes priority over active when the outline picks its colour and width:
+    // "this window is stuck in front of everything" is the more surprising state and
+    // the one the user needs to be able to spot.
+    bool pinned{false};
     bool visible{true};
+};
+
+// One pinned window. `wasTopmostBefore` is what makes unpinning safe: a window may
+// already have been always-on-top before we touched it - Task Manager has its own
+// option, so do many media players - and clearing the style unconditionally would
+// turn off something the user set themselves.
+struct PinRecord {
+    WindowId windowId{};
+    bool wasTopmostBefore{false};
 };
 
 struct PreviewRequest {

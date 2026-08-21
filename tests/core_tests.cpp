@@ -1,6 +1,7 @@
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/DrawerState.h"
 #include "windowmark/core/LayoutEngine.h"
+#include "windowmark/core/PinRegistry.h"
 #include "windowmark/core/Settings.h"
 
 #include <cstdio>
@@ -409,6 +410,47 @@ void TestSettingsHotUpdate() {
 // Borders are a separate feature sharing only window tracking: their own switch, every
 // top-level window (not just grouped ones), and an unthrottled move path so they do not
 // trail a drag.
+void TestPinRegistry() {
+    PinRegistry pins;
+    CHECK(pins.Empty());
+
+    // A window that was ordinary before we pinned it.
+    CHECK(pins.Add(1, false));
+    CHECK(pins.Contains(1));
+    CHECK(pins.Size() == 1);
+
+    // A window that was already always-on-top on its own.
+    CHECK(pins.Add(2, true));
+
+    // Pinning twice must not overwrite the recorded original state. If it did, pin, pin
+    // again, unpin would leave the window in the state it had after the first pin rather
+    // than the one it started in - which for window 2 means silently clearing an
+    // always-on-top setting the user made themselves.
+    CHECK(!pins.Add(2, false));
+    const auto restored = pins.Remove(2);
+    CHECK(restored.has_value());
+    CHECK(*restored == true);
+    CHECK(!pins.Contains(2));
+
+    // Removing something that was never pinned reports nothing rather than guessing.
+    CHECK(!pins.Remove(99).has_value());
+
+    // Insertion order is stable, so the tray menu does not reshuffle between openings.
+    CHECK(pins.Add(3, false));
+    CHECK(pins.Add(4, false));
+    const auto snapshot = pins.Snapshot();
+    CHECK(snapshot.size() == 3);
+    CHECK(snapshot[0].windowId == 1);
+    CHECK(snapshot[1].windowId == 3);
+    CHECK(snapshot[2].windowId == 4);
+
+    // Drain hands back everything needed to restore, and empties the registry.
+    const auto drained = pins.Drain();
+    CHECK(drained.size() == 3);
+    CHECK(pins.Empty());
+    CHECK(pins.Drain().empty());
+}
+
 void TestBorders() {
     Settings settings;
     CHECK(!settings.border.enabled);  // opt-in
@@ -665,6 +707,7 @@ int main() {
     TestMoveDoesNotRequery();
     TestSettingsHotUpdate();
     TestBorders();
+    TestPinRegistry();
     TestSelectionFiltering();
     TestSelectionSettingsPersistence();
     TestRowPlacementMetrics();
