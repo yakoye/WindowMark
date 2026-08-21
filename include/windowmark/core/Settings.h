@@ -94,6 +94,23 @@ struct BorderSettings {
     unsigned inactiveColor{0xFF7080AA};
 };
 
+struct PinSettings {
+    // Independent of border.enabled on purpose. A pinned window always gets its
+    // highlight, because the highlight *is* the feedback that the pin worked - tying
+    // it to a feature that ships turned off would mean pressing the shortcut does
+    // nothing visible.
+    bool enabled{true};
+    // Red, because it has to read as "this one is different" against the active and
+    // inactive blues the border already uses.
+    unsigned color{0xFFE74C3C};
+    // Thicker than the ordinary border (4) so the difference survives a glance.
+    int width{6};
+    bool showInSystemMenu{true};
+    // Empty by default. RegisterHotKey claims a combination process-wide and the
+    // loser fails silently, so this app does not take one unless asked.
+    std::string hotkey;
+};
+
 struct PreviewSettings {
     bool enabled{true};
     int delayMs{450};
@@ -131,6 +148,7 @@ struct TrackingSettings {
 struct Settings {
     DrawerSettings drawer;
     BorderSettings border;
+    PinSettings pin;
     PreviewSettings preview;
     PerformanceSettings performance;
     SelectionSettings selection;

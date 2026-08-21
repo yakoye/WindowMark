@@ -57,6 +57,32 @@ public:
     virtual void Stop() noexcept = 0;
 };
 
+
+// Window pinning: always-on-top, plus the ways a user asks for it.
+//
+// The backend owns no state of its own. Every entry point - the title bar system menu, the
+// crosshair grab, the tray submenu, the shortcut - funnels into the same callback, and the
+// Coordinator is the only place that decides whether a window ends up pinned. That keeps
+// four different input paths from developing four different ideas of the truth.
+struct PinCallbacks {
+    std::function<void(WindowId)> onTogglePin;
+    std::function<void()> onUnpinAll;
+};
+
+class IPinBackend {
+public:
+    virtual ~IPinBackend() = default;
+    virtual bool Start(const Settings& settings, PinCallbacks callbacks) = 0;
+    // Applies the always-on-top style and reports what it was beforehand, which is what
+    // makes unpinning restore rather than clear. Empty when the window is gone.
+    virtual std::optional<bool> SetTopmost(WindowId id, bool topmost) = 0;
+    // The pinned set changed: refresh whatever reflects it - the tray submenu, the tick in
+    // a system menu that is currently open.
+    virtual void Apply(const std::vector<PinRecord>& pinned) = 0;
+    virtual void UpdateSettings(const Settings& settings) = 0;
+    virtual void Stop() noexcept = 0;
+};
+
 class IPreviewBackend {
 public:
     virtual ~IPreviewBackend() = default;

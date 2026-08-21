@@ -41,12 +41,14 @@ Coordinator::Coordinator(
     IWindowBackend& windowBackend,
     IOverlayBackend& overlayBackend,
     IPreviewBackend& previewBackend,
-    IBorderBackend* borderBackend)
+    IBorderBackend* borderBackend,
+    IPinBackend* pinBackend)
     : settings_(std::move(settings)),
       windowsBackend_(windowBackend),
       overlaysBackend_(overlayBackend),
       previewBackend_(previewBackend),
-      borderBackend_(borderBackend) {}
+      borderBackend_(borderBackend),
+      pinBackend_(pinBackend) {}
 
 bool Coordinator::Start() {
     if (started_) {
@@ -80,9 +82,23 @@ bool Coordinator::Start() {
         return false;
     }
 
+    if (pinBackend_) {
+        PinCallbacks pinCallbacks;
+        pinCallbacks.onTogglePin = [this](WindowId id) { TogglePin(id); };
+        pinCallbacks.onUnpinAll = [this]() { UnpinAll(); };
+        if (!pinBackend_->Start(settings_, std::move(pinCallbacks))) {
+            if (borderBackend_) borderBackend_->Stop();
+    if (pinBackend_) pinBackend_->Stop();
+            overlaysBackend_.Stop();
+            previewBackend_.Stop();
+            return false;
+        }
+    }
+
     windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
     if (!windowsBackend_.Start([this](const WindowEvent& event) { OnWindowEvent(event); })) {
         if (borderBackend_) borderBackend_->Stop();
+    if (pinBackend_) pinBackend_->Stop();
         overlaysBackend_.Stop();
         previewBackend_.Stop();
         return false;
@@ -111,6 +127,10 @@ void Coordinator::Stop() noexcept {
     if (!started_) {
         return;
     }
+    // Restore before anything else shuts down. Leaving windows pinned after the app
+    // exits strands them in front of everything with no way left to release them -
+    // the only tool that could has just gone away.
+    UnpinAll();
     previewBackend_.Hide();
     overlaysBackend_.Apply({});
     if (borderBackend_) borderBackend_->Apply({});
@@ -119,6 +139,7 @@ void Coordinator::Stop() noexcept {
     overlaysBackend_.Stop();
     previewBackend_.Stop();
     if (borderBackend_) borderBackend_->Stop();
+    if (pinBackend_) pinBackend_->Stop();
     windows_.clear();
     disabledWindowIds_.clear();
     customLabels_.clear();
@@ -216,13 +237,20 @@ void Coordinator::ApplySelection(const std::vector<AppSelectionModel>& selection
 }
 
 void Coordinator::UpdateSettings(Settings settings) {
+    // Read before the assignment: turning pinning off has to release the windows it is
+    // holding. Otherwise the switch that could let them go is the one that just went away,
+    // and the user is left with windows stuck in front of everything.
+    const bool pinningWasOn = settings_.pin.enabled;
     settings_ = std::move(settings);
     if (!started_) return;
+
+    if (pinningWasOn && !settings_.pin.enabled) UnpinAll();
 
     previewBackend_.Hide();
     previewBackend_.UpdateSettings(settings_.preview);
     overlaysBackend_.UpdateSettings(settings_);
     if (borderBackend_) borderBackend_->UpdateSettings(settings_);
+    if (pinBackend_) pinBackend_->UpdateSettings(settings_);
     // A newly excluded class has to disappear from the tracked set, not just stop being
     // added, so re-enumerate rather than repaint what is already there.
     windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
@@ -298,6 +326,7 @@ void Coordinator::RefreshAll() {
     }
 
     PruneTransientState();
+    ApplyPins();
     ApplyModels();
     ApplyBorders();
 }
@@ -371,14 +400,75 @@ void Coordinator::ApplyModels() {
 }
 
 // Borders have their own switch: turning bookmarks off must not take them with it.
+
+void Coordinator::TogglePin(WindowId id) {
+    if (!started_ || !pinBackend_ || !settings_.pin.enabled) return;
+
+    if (const auto was = pins_.Remove(id); was.has_value()) {
+        // Restore what the window had before, which is not always "not topmost": Task
+        // Manager and a lot of media players ship their own always-on-top switch, and
+        // clearing it here would silently undo the user's own setting.
+        pinBackend_->SetTopmost(id, *was);
+        ApplyPins();
+        ApplyBorders();
+        return;
+    }
+
+    const auto wasTopmost = pinBackend_->SetTopmost(id, true);
+    if (!wasTopmost.has_value()) return;   // window went away between menu and click
+    pins_.Add(id, *wasTopmost);
+    ApplyPins();
+    ApplyBorders();
+}
+
+void Coordinator::UnpinAll() {
+    if (!pinBackend_) return;
+    for (const auto& record : pins_.Drain()) {
+        pinBackend_->SetTopmost(record.windowId, record.wasTopmostBefore);
+    }
+    ApplyPins();
+    ApplyBorders();
+}
+
+std::string Coordinator::PinnedTitle(WindowId id) const {
+    const auto it = windows_.find(id);
+    if (it == windows_.end()) return {};
+    if (const auto custom = customLabels_.find(id); custom != customLabels_.end()) {
+        return custom->second;
+    }
+    return it->second.title.empty() ? it->second.appName : it->second.title;
+}
+
+void Coordinator::ApplyPins() {
+    if (!started_ || !pinBackend_) return;
+    pinBackend_->Apply(pins_.Snapshot());
+}
+
+void Coordinator::PrunePins() {
+    if (pins_.Empty()) return;
+    for (const auto& record : pins_.Snapshot()) {
+        if (windows_.contains(record.windowId)) continue;
+        // Gone for good. No restore: the window took its own style with it, and calling
+        // SetWindowPos on a dead handle would just fail.
+        pins_.Remove(record.windowId);
+    }
+}
+
 void Coordinator::ApplyBorders() {
     if (!started_ || !borderBackend_) return;
+    // A pinned window that has since closed must not keep a slot in the registry, and this
+    // runs on every structural change, which is exactly when that becomes true.
+    PrunePins();
     borderBackend_->Apply(BuildBorderModels());
 }
 
 std::vector<BorderModel> Coordinator::BuildBorderModels() const {
     std::vector<BorderModel> models;
-    if (!settings_.border.enabled) return models;
+    // Note what is *not* checked here: settings_.border.enabled. A pinned window is
+    // outlined whichever way that switch is set, because the outline is the only feedback
+    // that the pin worked. With borders off, this list is exactly the pinned windows.
+    const bool bordersOn = settings_.border.enabled;
+    if (!bordersOn && pins_.Empty()) return models;
 
     models.reserve(windows_.size());
     for (const auto& [id, window] : windows_) {
@@ -386,11 +476,14 @@ std::vector<BorderModel> Coordinator::BuildBorderModels() const {
         // model: every border costs a window plus a bitmap, and a desktop full of
         // minimized windows would pay for outlines nobody can see.
         if (!window.visible || window.minimized) continue;
+        const bool pinned = pins_.Contains(id);
+        if (!bordersOn && !pinned) continue;
 
         BorderModel model;
         model.windowId = id;
         model.frame = window.frame;
         model.active = id == activeWindow_;
+        model.pinned = pinned;
         model.visible = true;
         models.push_back(model);
     }

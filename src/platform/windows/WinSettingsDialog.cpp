@@ -211,6 +211,17 @@ const Field kFields[] = {
      L"类名", 0, 0, nullptr, nullptr, nullptr, nullptr, 0,
      [](const Settings& s) { return JoinClasses(s.tracking.excludeClasses); },
      [](Settings& s, const std::wstring& v) { s.tracking.excludeClasses = SplitClasses(v); }},
+
+    // --- 窗口置顶 ---
+    {FieldKind::Bool, SettingsPage::Pinning, L"窗口置顶", L"启用置顶", 0, 1,
+     [](const Settings& s) { return s.pin.enabled ? 1 : 0; },
+     [](Settings& s, int v) { s.pin.enabled = v != 0; }, nullptr},
+    {FieldKind::Color, SettingsPage::Pinning, L"窗口置顶", L"高亮颜色", 0, 0,
+     [](const Settings& s) { return static_cast<int>(s.pin.color); },
+     [](Settings& s, int v) { s.pin.color = static_cast<unsigned>(v); }, L"#RRGGBB[AA]"},
+    {FieldKind::Int, SettingsPage::Pinning, L"窗口置顶", L"线宽", 1, 20,
+     [](const Settings& s) { return s.pin.width; },
+     [](Settings& s, int v) { s.pin.width = v; }, L"px  比普通边框粗"},
 };
 
 // Column assignment is by group, chosen so the two columns end at roughly the same
@@ -218,7 +229,7 @@ const Field kFields[] = {
 // everything else stacks on the right. Getting this wrong pushes the taller column
 // down into the button row.
 bool IsLeftColumn(const Field& field) {
-    if (field.page == SettingsPage::Borders) {
+    if (field.page != SettingsPage::Bookmarks) {
         return true;  // single column; every group stacks
     }
     return wcscmp(field.group, L"书签") == 0 || wcscmp(field.group, L"书签外观") == 0;
@@ -434,8 +445,9 @@ private:
 
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME, kSettingsClass,
-            page_ == SettingsPage::Borders ? L"WindowMark - 窗口边框设置"
-                                           : L"WindowMark - 书签设置",
+            page_ == SettingsPage::Pinning  ? L"WindowMark - 窗口置顶设置"
+            : page_ == SettingsPage::Borders ? L"WindowMark - 窗口边框设置"
+                                             : L"WindowMark - 书签设置",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
             x, y, outerW, outerH,
             owner_, nullptr, GetModuleHandleW(nullptr), this);
@@ -744,7 +756,12 @@ private:
     [[nodiscard]] static constexpr PageMetrics MetricsFor(SettingsPage page) {
         PageMetrics m{};
         bool hasColour = false;
-        if (page == SettingsPage::Borders) {
+        if (page == SettingsPage::Pinning) {
+            m.labelW = 66;   // 「高亮颜色」
+            m.hintW = 116;   // 「px  比普通边框粗」
+            m.columns = 1;
+            hasColour = true;
+        } else if (page == SettingsPage::Borders) {
             m.labelW = 66;   // 「自定义圆角」「非活动窗口」
             m.hintW = 116;   // 「px  仅「自定义」时」
             m.columns = 1;   // eight fields; two columns left half the window empty

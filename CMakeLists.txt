@@ -11,6 +11,7 @@ add_library(windowmark_core STATIC
     src/core/Coordinator.cpp
     src/core/DrawerState.cpp
     src/core/LayoutEngine.cpp
+    src/core/PinRegistry.cpp
     src/core/Settings.cpp
     src/core/Types.cpp
 )
@@ -55,6 +56,7 @@ if(WIN32)
         src/platform/windows/WinBorderBackend.cpp
         src/platform/windows/WinWindowBackend.cpp
         src/platform/windows/WinOverlayBackend.cpp
+        src/platform/windows/WinPinBackend.cpp
         src/platform/windows/WinPreviewBackend.cpp
         src/platform/windows/WinControlWindow.cpp
         src/platform/windows/WinRenameDialog.cpp

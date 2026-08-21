@@ -281,6 +281,19 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     if (const auto it = values.find("border.inactive_color"); it != values.end()) {
         settings.border.inactiveColor = ParseColor(it->second, settings.border.inactiveColor);
     }
+    if (const auto it = values.find("pin.enabled"); it != values.end()) {
+        settings.pin.enabled = ParseBool(it->second, settings.pin.enabled);
+    }
+    settings.pin.width = ParseInt(values, "pin.width", settings.pin.width, 1, 20);
+    if (const auto it = values.find("pin.color"); it != values.end()) {
+        settings.pin.color = ParseColor(it->second, settings.pin.color);
+    }
+    if (const auto it = values.find("pin.show_in_system_menu"); it != values.end()) {
+        settings.pin.showInSystemMenu = ParseBool(it->second, settings.pin.showInSystemMenu);
+    }
+    if (const auto it = values.find("pin.hotkey"); it != values.end()) {
+        settings.pin.hotkey = it->second;
+    }
 
     if (const auto it = values.find("preview.enabled"); it != values.end()) {
         settings.preview.enabled = ParseBool(it->second, settings.preview.enabled);
@@ -358,6 +371,16 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "border.corner_radius=" << settings.border.cornerRadius << "\n";
     output << "border.active_color=" << ColorToString(settings.border.activeColor) << "\n";
     output << "border.inactive_color=" << ColorToString(settings.border.inactiveColor) << "\n\n";
+    output << "\n";
+    output << "# Window pinning. The highlight is deliberately independent of border.enabled:\n";
+    output << "# a pinned window is always outlined, because that outline is the only sign\n";
+    output << "# the pin took effect.\n";
+    output << "pin.enabled=" << (settings.pin.enabled ? "true" : "false") << "\n";
+    output << "pin.color=" << ColorToString(settings.pin.color) << "\n";
+    output << "pin.width=" << settings.pin.width << "\n";
+    output << "pin.show_in_system_menu=" << (settings.pin.showInSystemMenu ? "true" : "false") << "\n";
+    output << "# Empty means no shortcut is registered at all. Format: Ctrl+Alt+T\n";
+    output << "pin.hotkey=" << settings.pin.hotkey << "\n";
 
     output << "preview.enabled=" << (settings.preview.enabled ? "true" : "false") << "\n";
     output << "preview.delay_ms=" << settings.preview.delayMs << "\n";

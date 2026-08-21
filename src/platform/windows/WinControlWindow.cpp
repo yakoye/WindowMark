@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <utility>
 #include <cwchar>
+#include <cstddef>
 #include <iterator>
 
 namespace windowmark::win {
@@ -58,6 +59,14 @@ void WinControlWindow::SetEnabledState(bool enabled) {
 
 void WinControlWindow::SetBorderState(bool enabled) {
     bordersEnabled_ = enabled;
+}
+
+void WinControlWindow::SetPinState(bool enabled) {
+    pinningEnabled_ = enabled;
+}
+
+void WinControlWindow::SetPinnedProvider(PinnedProvider provider) {
+    pinnedProvider_ = std::move(provider);
 }
 
 void WinControlWindow::AddTrayIcon() {
@@ -133,11 +142,42 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(borders), L"窗口边框");
     }
 
+    HMENU pinning = CreatePopupMenu();
+    if (pinning) {
+        AppendMenuW(pinning, MF_STRING | (pinningEnabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    kTogglePinningCommand, L"启用窗口置顶");
+        if (pinningEnabled_) {
+            AppendMenuW(pinning, MF_STRING, kPinForegroundCommand, L"置顶当前窗口");
+        }
+
+        // The pinned list is built fresh here, not cached: it changes whenever a window is
+        // pinned, unpinned or closed, and the menu is the only thing that reads it.
+        pinnedMenuWindows_.clear();
+        if (pinningEnabled_ && pinnedProvider_) {
+            const auto pinned = pinnedProvider_();
+            if (!pinned.empty()) {
+                AppendMenuW(pinning, MF_SEPARATOR, 0, nullptr);
+                for (const auto& [id, title] : pinned) {
+                    if (pinnedMenuWindows_.size() >= kPinnedWindowCommandLimit) break;
+                    const UINT command = kPinnedWindowCommandBase +
+                                         static_cast<UINT>(pinnedMenuWindows_.size());
+                    AppendMenuW(pinning, MF_STRING | MF_CHECKED, command, title.c_str());
+                    pinnedMenuWindows_.push_back(id);
+                }
+                AppendMenuW(pinning, MF_STRING, kUnpinAllCommand, L"全部取消置顶");
+            }
+        }
+
+        AppendMenuW(pinning, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(pinning, MF_STRING, kPinSettingsCommand, L"置顶设置...");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
+    }
+
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     // Master switch above the per-feature ones: one click silences the whole app without
     // having to visit both submenus. The label names what the click will do rather than
     // what the state is - no tick to interpret, and two glyphs instead of five.
-    const bool anythingOn = enabled_ || bordersEnabled_;
+    const bool anythingOn = enabled_ || bordersEnabled_ || pinningEnabled_;
     AppendMenuW(menu, MF_STRING, kToggleAllCommand, anythingOn ? L"暂停所有" : L"启用所有");
     // Top level rather than inside either submenu: it switches the program, not a feature.
     // The tick is read from the registry every time the menu opens instead of being cached,
@@ -204,6 +244,20 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
 
+        // Dynamic block: unpin one particular window. Handled before the fixed table
+        // because these ids are allocated per menu build rather than being constants.
+        {
+            const UINT command = LOWORD(wParam);
+            if (command >= kPinnedWindowCommandBase &&
+                command < kPinnedWindowCommandBase + kPinnedWindowCommandLimit) {
+                const std::size_t index = command - kPinnedWindowCommandBase;
+                if (index < pinnedMenuWindows_.size() && handlers_.onTogglePinWindow) {
+                    handlers_.onTogglePinWindow(pinnedMenuWindows_[index]);
+                }
+                return 0;
+            }
+        }
+
         const std::function<void()>* handler = nullptr;
         switch (LOWORD(wParam)) {
         case kToggleAllCommand:      handler = &handlers_.onToggleAll; break;
@@ -212,6 +266,10 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kSettingsCommand:       handler = &handlers_.onBookmarkSettings; break;
         case kToggleBordersCommand:  handler = &handlers_.onToggleBorders; break;
         case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
+        case kTogglePinningCommand:  handler = &handlers_.onTogglePinning; break;
+        case kPinForegroundCommand:  handler = &handlers_.onPinForeground; break;
+        case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;
+        case kPinSettingsCommand:    handler = &handlers_.onPinSettings; break;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;
         default: break;

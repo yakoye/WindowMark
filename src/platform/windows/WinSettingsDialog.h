@@ -12,6 +12,7 @@ namespace windowmark::win {
 enum class SettingsPage {
     Bookmarks,
     Borders,
+    Pinning,
 };
 
 class WinSettingsDialog {

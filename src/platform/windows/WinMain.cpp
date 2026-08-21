@@ -1,6 +1,7 @@
 #include "WinBorderBackend.h"
 #include "WinControlWindow.h"
 #include "WinOverlayBackend.h"
+#include "WinPinBackend.h"
 #include "WinPreviewBackend.h"
 #include "WinRenameDialog.h"
 #include "WinSelectionDialog.h"
@@ -23,6 +24,8 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 // Without this the app gets comctl32 v5 and the selection panel's tree view renders
 // with pre-XP visuals.
@@ -136,8 +139,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     windowmark::win::WinOverlayBackend overlayBackend;
     windowmark::win::WinPreviewBackend previewBackend;
     windowmark::win::WinBorderBackend borderBackend;
+    windowmark::win::WinPinBackend pinBackend;
     windowmark::Coordinator coordinator(
-        settings, windowBackend, overlayBackend, previewBackend, &borderBackend);
+        settings, windowBackend, overlayBackend, previewBackend, &borderBackend, &pinBackend);
 
     // Declared before Start() so the context-menu handlers below can capture it; it is
     // only actually started further down, once the coordinator is running.
@@ -172,6 +176,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
             coordinator.UpdateSettings(draft);
             control.SetBorderState(coordinator.CurrentSettings().border.enabled);
+            control.SetPinState(coordinator.CurrentSettings().pin.enabled);
             persist();
         });
     };
@@ -238,6 +243,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     handlers.onBorderSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Borders);
+    };
+    handlers.onTogglePinning = [&]() {
+        windowmark::Settings draft = coordinator.CurrentSettings();
+        draft.pin.enabled = !draft.pin.enabled;
+        // UpdateSettings releases every pinned window when this goes false - the switch
+        // that could let them go is the one being turned off.
+        coordinator.UpdateSettings(draft);
+        control.SetPinState(draft.pin.enabled);
+        persist();
+    };
+    handlers.onTogglePinWindow = [&](windowmark::WindowId id) { coordinator.TogglePin(id); };
+    handlers.onPinForeground = [&]() {
+        if (const auto id = coordinator.ActiveWindow(); id != 0) coordinator.TogglePin(id);
+    };
+    handlers.onUnpinAll = [&]() { coordinator.UnpinAll(); };
+    handlers.onPinSettings = [&]() {
+        openSettingsPage(windowmark::win::SettingsPage::Pinning);
     };
     handlers.onAbout = [&]() {
         // A TaskDialog does not even disable its owner, so this one also remembers its own
@@ -313,6 +335,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 6;
     }
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);
+    control.SetPinState(coordinator.CurrentSettings().pin.enabled);
+    control.SetPinnedProvider([&]() {
+        std::vector<std::pair<windowmark::WindowId, std::wstring>> out;
+        for (const auto& record : coordinator.PinnedWindows()) {
+            std::wstring title = windowmark::win::Utf8ToWide(coordinator.PinnedTitle(record.windowId));
+            // A window can vanish between being pinned and the menu being opened; keep the
+            // entry so the user can still release it, just without a name to show.
+            if (title.empty()) title = L"(已关闭的窗口)";
+            if (title.size() > 40) title = title.substr(0, 39) + L"…";
+            out.emplace_back(record.windowId, std::move(title));
+        }
+        return out;
+    });
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

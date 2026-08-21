@@ -1,6 +1,7 @@
 #pragma once
 
 #include "windowmark/core/Interfaces.h"
+#include "windowmark/core/PinRegistry.h"
 #include "windowmark/core/Settings.h"
 #include "windowmark/core/Types.h"
 
@@ -20,7 +21,8 @@ public:
         IWindowBackend& windowBackend,
         IOverlayBackend& overlayBackend,
         IPreviewBackend& previewBackend,
-        IBorderBackend* borderBackend = nullptr);
+        IBorderBackend* borderBackend = nullptr,
+        IPinBackend* pinBackend = nullptr);
 
     bool Start();
     void Stop() noexcept;
@@ -28,6 +30,18 @@ public:
     // the settings checkbox cannot disagree and the choice survives a restart.
     void SetOverlayEnabled(bool enabled);
     [[nodiscard]] bool OverlayEnabled() const noexcept { return settings_.drawer.enabled; }
+
+    // Pinning. Every entry point in the platform layer routes here, so there is exactly
+    // one place that decides whether a window is pinned.
+    void TogglePin(WindowId id);
+    void UnpinAll();
+    [[nodiscard]] std::vector<PinRecord> PinnedWindows() const { return pins_.Snapshot(); }
+    [[nodiscard]] bool IsPinned(WindowId id) const { return pins_.Contains(id); }
+    // The window the user last worked in. Not GetForegroundWindow() at click time: opening
+    // the tray menu makes the tray window itself the foreground one.
+    [[nodiscard]] WindowId ActiveWindow() const noexcept { return activeWindow_; }
+    // Title for the tray submenu. Empty when the window is no longer tracked.
+    [[nodiscard]] std::string PinnedTitle(WindowId id) const;
 
     // Selection is intentionally exposed as platform-neutral data so each OS can
     // build its own native settings UI without pulling platform types into Core.
@@ -58,6 +72,10 @@ private:
     void RefreshGeometry(WindowId id);
     void ApplyModels();
     void ApplyBorders();
+    void ApplyPins();
+    // Drops pins for windows that are gone, restoring nothing - they took their state
+    // with them.
+    void PrunePins();
     [[nodiscard]] std::vector<OverlayModel> BuildModels();
     // Borders cover every tracked top-level window, with no grouping: a single-window app
     // gets a border even though it never gets a bookmark strip.
@@ -72,12 +90,14 @@ private:
     IOverlayBackend& overlaysBackend_;
     IPreviewBackend& previewBackend_;
     IBorderBackend* borderBackend_{};
+    IPinBackend* pinBackend_{};
 
     std::unordered_map<WindowId, WindowInfo> windows_;
     std::unordered_map<WindowId, std::size_t> stableOrder_;
     std::unordered_map<WindowId, std::size_t> colorSlots_;
     std::unordered_set<WindowId> disabledWindowIds_;
     std::unordered_map<WindowId, std::string> customLabels_;
+    PinRegistry pins_;
     std::function<void(WindowId)> onRename_;
     std::function<void()> onOpenSettings_;
     std::size_t nextStableOrder_{0};
