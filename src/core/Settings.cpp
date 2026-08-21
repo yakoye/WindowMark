@@ -286,7 +286,11 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     }
     settings.pin.width = ParseInt(values, "pin.width", settings.pin.width, 1, 20);
     if (const auto it = values.find("pin.color"); it != values.end()) {
-        settings.pin.color = ParseColor(it->second, settings.pin.color);
+        // "accent" is a keyword, not a colour: it defers to whatever the system accent
+        // is at the moment the highlight is drawn, so it follows a theme change.
+        settings.pin.color = it->second == "accent"
+                                 ? PinSettings::kAccentColor
+                                 : ParseColor(it->second, settings.pin.color);
     }
     if (const auto it = values.find("pin.show_in_system_menu"); it != values.end()) {
         settings.pin.showInSystemMenu = ParseBool(it->second, settings.pin.showInSystemMenu);
@@ -376,7 +380,11 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "# a pinned window is always outlined, because that outline is the only sign\n";
     output << "# the pin took effect.\n";
     output << "pin.enabled=" << (settings.pin.enabled ? "true" : "false") << "\n";
-    output << "pin.color=" << ColorToString(settings.pin.color) << "\n";
+    output << "# accent = 跟随系统强调色；也可以写死成 #RRGGBB\n";
+    output << "pin.color="
+           << (settings.pin.color == PinSettings::kAccentColor ? std::string("accent")
+                                                               : ColorToString(settings.pin.color))
+           << "\n";
     output << "pin.width=" << settings.pin.width << "\n";
     output << "pin.show_in_system_menu=" << (settings.pin.showInSystemMenu ? "true" : "false") << "\n";
     output << "# Empty means no shortcut is registered at all. Format: Ctrl+Alt+T\n";
