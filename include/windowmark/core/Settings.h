@@ -100,11 +100,15 @@ struct PinSettings {
     // it to a feature that ships turned off would mean pressing the shortcut does
     // nothing visible.
     bool enabled{true};
-    // Red, because it has to read as "this one is different" against the active and
-    // inactive blues the border already uses.
-    unsigned color{0xFFE74C3C};
-    // Thicker than the ordinary border (4) so the difference survives a glance.
-    int width{6};
+    // kAccentColor means "whatever the system accent colour is right now". Chosen as the
+    // default over a fixed colour so a pinned window looks like it belongs to the desktop
+    // it is sitting on, and so it tracks the user's own theme - which is what PowerToys
+    // does and what this was measured against.
+    static constexpr unsigned kAccentColor = 0;
+    unsigned color{kAccentColor};
+    // Wide enough to read as a deliberate highlight rather than a slightly heavier border.
+    // 6 was tried first and looked like the ordinary outline; PowerToys uses 15.
+    int width{15};
     bool showInSystemMenu{true};
     // Empty by default. RegisterHotKey claims a combination process-wide and the
     // loser fails silently, so this app does not take one unless asked.

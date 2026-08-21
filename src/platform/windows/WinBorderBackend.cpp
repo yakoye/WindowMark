@@ -62,6 +62,28 @@ constexpr double kMinMoveIntervalMs = 15.0;
     return (static_cast<double>(now.QuadPart) * 1000.0) / frequency;
 }
 
+// The system accent colour, as 0xAARRGGBB.
+//
+// Read on demand rather than cached: this is only reached when a pinned outline actually
+// repaints, which happens on pin, unpin, resize and activation - never per frame, because
+// a move does not repaint. A registry query at that rate is free, and reading it fresh is
+// what makes the highlight follow a theme change without any plumbing to notice one.
+[[nodiscard]] unsigned SystemAccentColor() {
+    // DWM stores it as ABGR, which is why the red and blue bytes come out swapped from
+    // the order the name suggests.
+    DWORD abgr = 0;
+    DWORD size = sizeof(abgr);
+    DWORD type = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\Microsoft\Windows\DWM", L"AccentColor",
+                     RRF_RT_REG_DWORD, &type, &abgr, &size) != ERROR_SUCCESS) {
+        return 0xFF0078D4u;  // Windows' own default blue, for a machine with no override.
+    }
+    const unsigned r = abgr & 0xFFu;
+    const unsigned g = (abgr >> 8) & 0xFFu;
+    const unsigned b = (abgr >> 16) & 0xFFu;
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
 HWND HwndFromId(WindowId id) {
     return reinterpret_cast<HWND>(static_cast<std::uintptr_t>(id));
 }
@@ -355,7 +377,9 @@ private:
 
     [[nodiscard]] unsigned StrokeColor() const {
         const auto& s = owner_.settings_;
-        if (model_.pinned) return s.pin.color;
+        if (model_.pinned) {
+            return s.pin.color == PinSettings::kAccentColor ? SystemAccentColor() : s.pin.color;
+        }
         return model_.active ? s.border.activeColor : s.border.inactiveColor;
     }
 
