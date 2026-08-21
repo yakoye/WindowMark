@@ -25,7 +25,6 @@ public:
         std::function<void()> onBorderSettings;
         std::function<void()> onTogglePinning;
         std::function<void(WindowId)> onTogglePinWindow;
-        std::function<void()> onPinForeground;
         // Crosshair grab. Preview fires as the cursor crosses windows, commit when the
         // user settles on one, cancel on right-click or if capture is taken away.
         std::function<void(WindowId)> onGrabPreview;
@@ -62,7 +61,6 @@ private:
     static constexpr UINT kToggleAllCommand = 1009;
     static constexpr UINT kTogglePinningCommand = 1010;
     static constexpr UINT kGrabToPinCommand = 1011;
-    static constexpr UINT kPinForegroundCommand = 1012;
     static constexpr UINT kPinSettingsCommand = 1013;
     static constexpr UINT kUnpinAllCommand = 1014;
     // Dynamic block: one command per currently pinned window, allocated when the menu is
