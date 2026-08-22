@@ -205,7 +205,10 @@ void WinPinBackend::UpdateSystemMenuItem(HWND window) const {
     info.fMask = MIIM_ID | MIIM_STATE | MIIM_STRING | MIIM_DATA;
     info.wID = kPinMenuCommand;
     info.fState = IsPinned(IdFromHwnd(window)) ? MFS_CHECKED : MFS_UNCHECKED;
-    wchar_t text[] = L"置于顶层";
+    // The glyph mirrors the ones Windows puts beside 最小化 / 最大化 / 关闭 in this same
+    // menu, so the added item reads as belonging there rather than being bolted on.
+    // Not const: MENUITEMINFOW::dwTypeData is a non-const pointer even when only read.
+    wchar_t text[] = L"❏置于顶层";
     info.dwTypeData = text;
     info.dwItemData = kPinMenuTag;
 
