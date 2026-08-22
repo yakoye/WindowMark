@@ -30,6 +30,11 @@ public:
         std::function<void(WindowId)> onGrabPreview;
         std::function<void(WindowId)> onGrabCommit;
         std::function<void()> onGrabCancel;
+        // Whether a window can be pinned at all. Without this the crosshair would commit
+        // whatever WindowFromPoint returned, and anything that appears under the cursor
+        // mid-aim - a tooltip, a floating toolbar, the taskbar sliding up - silently
+        // becomes the target and the pin does nothing.
+        std::function<bool(WindowId)> isPinnable;
         std::function<void()> onUnpinAll;
         std::function<void()> onPinSettings;
         std::function<void()> onAbout;

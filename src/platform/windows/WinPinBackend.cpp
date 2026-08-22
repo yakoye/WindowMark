@@ -1,6 +1,9 @@
 #include "WinPinBackend.h"
 
+#include "PinDiag.h"
+
 #include <cstdint>
+#include <iterator>
 #include <utility>
 
 namespace windowmark::win {
@@ -30,13 +33,21 @@ bool WinPinBackend::Start(const Settings& settings, PinCallbacks callbacks) {
 // changing nothing. That rule governs moving within a band, not entering the topmost one.
 std::optional<bool> WinPinBackend::SetTopmost(WindowId id, bool topmost) {
     HWND hwnd = HwndFromId(id);
-    if (!IsWindow(hwnd)) return std::nullopt;
+    if (!IsWindow(hwnd)) {
+        PinDiag(L"SetTopmost: hwnd 已失效 id=%llu", (unsigned long long)id);
+        return std::nullopt;
+    }
 
     const bool was = IsTopmost(hwnd);
     if (was == topmost) return was;
 
+    wchar_t cls[128]{};
+    GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
     SetWindowPos(hwnd, topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+    const bool now = IsTopmost(hwnd);
+    PinDiag(L"SetTopmost: %ls 目标=%d 之前=%d 之后=%d 最小化=%d", cls, topmost ? 1 : 0,
+            was ? 1 : 0, now ? 1 : 0, IsIconic(hwnd) ? 1 : 0);
     return was;
 }
 

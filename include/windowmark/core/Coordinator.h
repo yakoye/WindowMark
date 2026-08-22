@@ -37,6 +37,9 @@ public:
     void UnpinAll();
     [[nodiscard]] std::vector<PinRecord> PinnedWindows() const { return pins_.Snapshot(); }
     [[nodiscard]] bool IsPinned(WindowId id) const { return pins_.Contains(id); }
+    // Whether this window is one of the ones being tracked at all. Pinning refuses windows
+    // that are not, so this is the first thing to check when a pin appears to do nothing.
+    [[nodiscard]] bool IsTracked(WindowId id) const { return windows_.contains(id); }
     // The window the user last worked in. Not GetForegroundWindow() at click time: opening
     // the tray menu makes the tray window itself the foreground one.
     // Rendered exactly like a real pin - same colour, same width - because that is the
