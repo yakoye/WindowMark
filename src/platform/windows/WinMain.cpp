@@ -1,6 +1,7 @@
 #include "WinBorderBackend.h"
 #include "WinControlWindow.h"
 #include "WinOverlayBackend.h"
+#include "PinDiag.h"
 #include "WinPinBackend.h"
 #include "WinPreviewBackend.h"
 #include "WinRenameDialog.h"
@@ -255,8 +256,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     handlers.onTogglePinWindow = [&](windowmark::WindowId id) { coordinator.TogglePin(id); };
     handlers.onGrabPreview = [&](windowmark::WindowId id) { coordinator.SetPinPreview(id); };
-    handlers.onGrabCommit = [&](windowmark::WindowId id) { coordinator.TogglePin(id); };
+    handlers.onGrabCommit = [&](windowmark::WindowId id) {
+        windowmark::win::PinDiag(L"GrabCommit: id=%llu 被跟踪=%d 已置顶=%d 置顶功能开=%d",
+                                 static_cast<unsigned long long>(id),
+                                 coordinator.IsTracked(id) ? 1 : 0,
+                                 coordinator.IsPinned(id) ? 1 : 0,
+                                 coordinator.CurrentSettings().pin.enabled ? 1 : 0);
+        coordinator.TogglePin(id);
+    };
     handlers.onGrabCancel = [&]() { coordinator.SetPinPreview(0); };
+    handlers.isPinnable = [&](windowmark::WindowId id) { return coordinator.IsTracked(id); };
     handlers.onPinSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Pinning);
     };

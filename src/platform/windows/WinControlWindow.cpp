@@ -2,6 +2,7 @@
 
 #include "AppIdentity.h"
 #include "AutoStart.h"
+#include "PinDiag.h"
 #include "Resource.h"
 
 #include <shellapi.h>
@@ -140,10 +141,21 @@ void WinControlWindow::UpdateGrabTarget() {
     // The cursor is redrawn here rather than from WM_SETCURSOR: while a window holds the
     // mouse capture, the system stops asking it what cursor to use.
     if (grabCursor_) SetCursor(grabCursor_);
-    const WindowId target = WindowUnderCursor();
-    if (target == grabTarget_) return;
-    grabTarget_ = target;
-    if (handlers_.onGrabPreview) handlers_.onGrabPreview(target);
+
+    const WindowId candidate = WindowUnderCursor();
+    // Anything that cannot be pinned leaves the current target alone rather than clearing
+    // it. Transient windows appear over the one being aimed at all the time - PDF-XChange
+    // floats a toolbar on hover, tooltips arrive after a second of stillness, an auto-hide
+    // taskbar slides up - and clearing on those made the click land on nothing. Keeping the
+    // last valid target also makes the highlight honest: whatever is outlined is what gets
+    // pinned.
+    if (candidate == 0) return;
+    if (handlers_.isPinnable && !handlers_.isPinnable(candidate)) return;
+    if (candidate == grabTarget_) return;
+
+    grabTarget_ = candidate;
+    PinDiag(L"准星指向 %llu", static_cast<unsigned long long>(candidate));
+    if (handlers_.onGrabPreview) handlers_.onGrabPreview(candidate);
 }
 
 void WinControlWindow::BeginGrabFromMenu() {
@@ -169,6 +181,7 @@ void WinControlWindow::EndGrab(bool commit) {
     // Clear the preview before committing, so the window ends up drawn from the real
     // pinned set rather than briefly from both.
     if (handlers_.onGrabPreview) handlers_.onGrabPreview(0);
+    PinDiag(L"EndGrab: commit=%d target=%llu", commit ? 1 : 0, (unsigned long long)target);
     if (commit && target != 0) {
         if (handlers_.onGrabCommit) handlers_.onGrabCommit(target);
     } else if (handlers_.onGrabCancel) {
