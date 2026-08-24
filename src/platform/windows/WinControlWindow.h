@@ -1,5 +1,6 @@
 #pragma once
 
+#include "windowmark/core/Hotkey.h"
 #include "windowmark/core/Types.h"
 
 #include <windows.h>
@@ -36,6 +37,11 @@ public:
         // becomes the target and the pin does nothing.
         std::function<bool(WindowId)> isPinnable;
         std::function<void()> onUnpinAll;
+        // The global shortcut. Unlike the tray menu this does not steal the foreground,
+        // so the window the user is looking at is still the foreground window when it
+        // fires - which is the whole reason a shortcut can pin "the current window" and
+        // a menu item cannot.
+        std::function<void()> onPinHotkey;
         std::function<void()> onPinSettings;
         std::function<void()> onAbout;
         std::function<void()> onExit;
@@ -46,6 +52,13 @@ public:
     void SetEnabledState(bool enabled);
     void SetBorderState(bool enabled);
     void SetPinState(bool enabled);
+    // Registers `hotkey`, replacing whatever was registered before. An empty Hotkey just
+    // unregisters. Returns false when Windows refused the combination - always because
+    // another process already owns it, since RegisterHotKey is first-come, first-served
+    // for the whole session. The caller is expected to say so out loud: a shortcut that
+    // silently does nothing is worse than not offering one.
+    bool SetPinHotkey(const Hotkey& hotkey);
+    [[nodiscard]] Hotkey CurrentPinHotkey() const noexcept { return pinHotkey_; }
     // The pinned list is read when the menu opens rather than pushed on every change:
     // it changes far more often than the menu is looked at, and a stale copy here would
     // be a second source of truth for something the Coordinator already owns.
@@ -76,6 +89,8 @@ private:
     // capture, so if it ever failed to end the user would be left clicking into nothing
     // with no obvious way out. Fifteen seconds is far longer than aiming at a window takes
     // and far shorter than anyone would spend wondering what broke.
+    // Only one hotkey, so a fixed id is enough. Ids are per-window, not global.
+    static constexpr int kPinHotkeyId = 1;
     static constexpr UINT_PTR kGrabTimeoutTimer = 90;
     static constexpr UINT kGrabTimeoutMs = 15000;
 
@@ -86,26 +101,36 @@ private:
     void RemoveTrayIcon();
     void ShowAlreadyRunningHint();
 
-    // Crosshair grab, DeskPins style: point at a window and it gets pinned.
+    // Crosshair grab, Spy++ style: the menu puts up a draggable crosshair, the user drags
+    // it onto a window, and whatever it is released over gets pinned.
     //
-    // Two ways in, one state machine. Dragging off the tray icon is the quick one; the
-    // menu item is the reliable one, because a tray icon folded into the overflow flyout
-    // is awkward to drag out of.
-    enum class GrabState { None, PendingDrag, Grabbing };
+    // One way in, on purpose. Dragging off the tray icon was tried and dropped: the icon
+    // is often folded into the overflow flyout, and starting a drag there meant an
+    // ordinary left click on the icon had to be told apart from the beginning of a
+    // gesture. The handle also fixes the real defect - it is a visible window of ours, so
+    // pressing on it makes this process foreground and hands it the mouse, and SetCapture
+    // cannot fail. The old menu path called SetForegroundWindow on the hidden 0x0 control
+    // window instead, which a background process is allowed to lose.
+    enum class GrabState { None, Grabbing };
 
     void BeginGrabFromMenu();
+    void ShowGrabHandle();
+    void DestroyGrabHandle() noexcept;
+    void StartGrabFromHandle();
+    static LRESULT CALLBACK GrabHandleProc(HWND, UINT, WPARAM, LPARAM);
+    void PaintGrabHandle(HWND) const;
     void EndGrab(bool commit);
     void UpdateGrabTarget();
     [[nodiscard]] WindowId WindowUnderCursor() const;
 
     GrabState grabState_{GrabState::None};
-    POINT grabStart_{};
-    // The menu path arrives with no button held, so the click that selects a window has to
-    // start with a press. Without this, the button-up that dismissed the menu would land
-    // here and instantly pin whatever happened to be under the cursor.
-    bool grabNeedsPress_{false};
     WindowId grabTarget_{};
     HCURSOR grabCursor_{};
+    // The draggable crosshair. Only exists between the menu item and the release.
+    HWND grabHandle_{};
+    // Whichever window holds the mouse capture for the grab in progress. Stored rather
+    // than assumed, so releasing it cannot get out of step with taking it.
+    HWND grabCapture_{};
 
     HWND hwnd_{};
     UINT requestQuitMessage_{};
@@ -115,6 +140,9 @@ private:
     bool bordersEnabled_{false};
     bool pinningEnabled_{true};
     PinnedProvider pinnedProvider_;
+    // What is currently registered, so a settings change can unregister the old one before
+    // claiming the new one. Empty means nothing is registered.
+    Hotkey pinHotkey_{};
     // Index -> WindowId for the dynamic block, rebuilt every time the menu opens.
     std::vector<WindowId> pinnedMenuWindows_;
 };

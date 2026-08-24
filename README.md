@@ -1,4 +1,4 @@
-# WindowMark v0.3.7
+# WindowMark v0.4.1
 
 WindowMark is a lightweight **same-application multi-window bookmark layer**.
 
@@ -66,6 +66,69 @@ implementation here is native rather than a bundled copy of it. That project is 
 this one is C++, so bundling would have meant a second process with its own window hooks
 and tray icon, doubling the event handling for something this app's window tracking and
 layered rendering already do.
+
+## 窗口置顶
+
+把任意窗口钉在最上层，并给它画一条高亮边框作为「已置顶」的提示。
+
+**三种触发方式**，都不需要往别的程序里注入任何东西：
+
+1. **标题栏右击 →「❏置于顶层」**。最顺手的一种。WindowMark 用 `GetSystemMenu` +
+   `InsertMenuItemW` 往对方的系统菜单里插一项，点击通过 `EVENT_OBJECT_INVOKED` 收到——
+   全程只用公开 API，不加载 DLL，不改对方的窗口过程。
+2. **托盘 →「窗口置顶」→「⊕抓取窗口置顶...」**。屏幕上出现一个准星手柄，**按住它拖到目标
+   窗口上松开**即可，跟 Spy++ 找窗口是同一个手势。拖动过程中被指到的窗口会实时高亮，所以
+   松手前就能确认钉的是哪个。Esc、在手柄上右键、15 秒无操作都可取消。
+3. **全局快捷键**（默认不设）。在「置顶设置」里按下想要的组合键即可，退格清除。
+
+置顶状态**只存在于本次会话**。程序退出时会把每个窗口恢复成置顶之前的样子——包括本来就
+是置顶的那些，它们不会被误取消。
+
+### 已知限制
+
+UWP / WinUI 窗口（「设置」、部分商店应用）**加不上菜单项**，这是平台限制不是缺陷：
+
+- `Windows.UI.Core.CoreWindow`：`GetSystemMenu` 直接返回 0
+- `ApplicationFrameWindow`：返回一个非空句柄，但 `GetMenuItemCount` 是 -1、
+  `InsertMenuItemW` 报 `1401 ERROR_INVALID_MENU_HANDLE`——那个菜单归 `ApplicationFrameHost`
+  所有，跨进程写不了
+
+PowerToys 也进不去。这类窗口请用准星或快捷键。
+
+### 颜色怎么选
+
+边框和置顶的颜色都是一排色卡：**6 个预设 + 1 个自定义**。
+
+| 位置 | 内容 |
+|---|---|
+| 第 1 格 | 该项原来的默认值——边框活动 `#6274E7`、边框非活动 `#7080AA`、置顶「跟随系统强调色」 |
+| 第 2–6 格 | 红 `#E81123`、橙 `#F7630C`、黄 `#FFB900`、绿 `#16C60C`、紫 `#8E4EC6` |
+| 第 7 格「⋯」 | 打开系统取色器，任意颜色 |
+
+白色不在预设里：白边框在浅色桌面上等于没画。
+
+色卡右边写着当前色值。置顶那一项写的是「跟随系统 #0078D4」——**后面那个值是实时从注册表读的
+真实强调色**，不是占位符。换了系统主题，这里和边框一起跟着变。
+
+键盘：Tab 进焦点，← → 切换，空格/回车确认，Home/End 跳到两端。
+
+配置文件里仍然是纯文本，可以手改：`pin.color=accent` 或 `pin.color=#E81123`。
+
+### 快捷键
+
+默认**不占用**任何组合键。`RegisterHotKey` 是先到先得且**输的一方不会收到任何通知**，
+所以除非你明说，这个程序不会去抢。
+
+- 设置位置：托盘 →「窗口置顶」→「置顶设置...」→「快捷键」
+- 直接按下想要的组合键，框里会显示规范写法；**退格键清除**
+- 必须带至少一个修饰键。否则等于把一个光秃秃的按键从全系统抢走
+- 组合已被别的程序占用时，会**明确弹框告诉你**，而不是留一个按了没反应的快捷键
+- 手改配置文件也行：`pin.hotkey=Ctrl+Alt+T`。大小写随意，`Win`/`Windows`/`Meta` 等价，
+  支持 `F1`–`F24`、字母数字和 `Space`/`Enter`/`Home`/`PageUp` 这类具名键。写错等于不设，
+  不会导致启动失败
+
+快捷键作用于**当前前台窗口**。托盘菜单做不到这一点——菜单一打开，前台就变成 WindowMark
+自己了，没有「当前窗口」可读；快捷键不夺取前台，所以可以。
 
 ## Settings, renaming and the context menu
 
@@ -227,11 +290,28 @@ preview.width=480
 preview.height=300
 preview.corner_radius=12
 
+pin.enabled=true
+pin.color=accent
+pin.width=10
+pin.show_in_system_menu=true
+# 空 = 不占用任何快捷键。见「窗口置顶」一节。
+pin.hotkey=
+
 performance.geometry_throttle_ms=33
 
 # Extra window classes to ignore completely - no bookmark, no border. Adds to the
 # built-in list. Run WindowMarkInspect.exe to find a class name.
+#
+# 注意：类名往往不足以区分。Chrome、Claude、ChatGPT 和它们的悬停浮窗都是
+# Chrome_WidgetWin_1，按类名排除会把正常窗口一起干掉。浮窗是靠
+# WS_EX_NOACTIVATE / WS_EX_TRANSPARENT 排除的，不在这个列表里。
 tracking.exclude_classes=
+
+# 自绘阴影内缩，格式 类名:左,上,右,下，多个用 | 分隔。
+# GTK 这类应用把投影画在自己的窗口矩形里，那圈边距透明且没有任何 Windows 接口能报出来，
+# 于是边框看起来离窗口很远。最大化时自动忽略。
+# 双击 measure_shadow_inset.bat 可以量出该填什么。
+tracking.shadow_insets=
 
 # Filled automatically when apps are unchecked in the selection panel.
 selection.disabled_apps=
@@ -256,6 +336,9 @@ would change one of them needs to be raised first, not decided in passing.
 | `border.width` + `border.offset` | **4 / -1** | `Reach = 4 + (-1) = 3`：窗口外 3px，再压住窗口自身边缘 1px。`offset=0` 会让 Windows 自己那条 1px 边框露出来变成灰缝（实测 `#4F5255`/`#646765`） |
 | `placement` | **bottom** | `auto` 会随窗口移动在左右之间跳，找不着 |
 | `drawer.active_window_only` | **true** | 只有前台窗口显示书签条 |
+| `pin.width` | **10** | 置顶高亮的线宽。6 看着和普通边框没区别；PowerToys 用 15，偏重了 |
+| `pin.color` | **accent** | 跟随系统强调色，置顶窗口看起来像属于这个桌面 |
+| `pin.hotkey` | **空** | 全局快捷键先到先得，不主动从别的程序手里抢 |
 
 Same rule for the settings dialog's layout numbers in
 `src/platform/windows/WinSettingsDialog.cpp` — the label/hint column widths were measured

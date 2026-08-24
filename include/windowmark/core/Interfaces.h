@@ -24,6 +24,8 @@ public:
     // Extra window classes never to report, on top of whatever the backend excludes by
     // itself. Not pure: a backend with nothing shell-specific to hide needs no opinion.
     virtual void SetExcludedClasses(const std::vector<std::string>& classes) { (void)classes; }
+    // Entries of the form "class:left,top,right,bottom". See TrackingSettings::shadowInsets.
+    virtual void SetShadowInsets(const std::vector<std::string>& entries) { (void)entries; }
     virtual void Stop() noexcept = 0;
     [[nodiscard]] virtual std::vector<WindowInfo> EnumerateWindows() = 0;
     [[nodiscard]] virtual std::optional<WindowInfo> QueryWindow(WindowId id) = 0;

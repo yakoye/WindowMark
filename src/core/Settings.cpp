@@ -314,6 +314,9 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     if (const auto it = values.find("tracking.exclude_classes"); it != values.end()) {
         settings.tracking.excludeClasses = ParseEncodedList(it->second);
     }
+    if (const auto it = values.find("tracking.shadow_insets"); it != values.end()) {
+        settings.tracking.shadowInsets = ParseEncodedList(it->second);
+    }
 
     if (settings.drawer.expandedExtent < settings.drawer.collapsedExtent) {
         settings.drawer.expandedExtent = settings.drawer.collapsedExtent;
@@ -403,6 +406,13 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "# the number. Needed because the built-in list was measured on one Windows\n";
     output << "# build with one set of IMEs, and neither of those travels.\n";
     output << "tracking.exclude_classes=" << EncodeList(settings.tracking.excludeClasses) << "\n\n";
+    output << "# Applications that paint their own shadow inside their window rect - GTK does -\n";
+    output << "# leave a transparent margin that no Windows API reports, so the outline ends up\n";
+    output << "# floating away from the visible window. Give the margin here as\n";
+    output << "#   class:left,top,right,bottom\n";
+    output << "# separated by '|'. Ignored while a window is maximized, because the shadow is\n";
+    output << "# not drawn then. Run WindowMarkInspect.exe to measure one.\n";
+    output << "tracking.shadow_insets=" << EncodeList(settings.tracking.shadowInsets) << "\n\n";
     output << "# Application selections are persistent. Individual-window selections are session-only.\n";
     output << "selection.disabled_apps=" << EncodeList(settings.selection.disabledAppKeys) << "\n";
     return static_cast<bool>(output);

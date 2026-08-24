@@ -11,6 +11,7 @@
 #include "WinWindowBackend.h"
 
 #include "windowmark/core/Coordinator.h"
+#include "windowmark/core/Hotkey.h"
 #include "windowmark/core/Settings.h"
 
 #include "AppIdentity.h"
@@ -21,7 +22,9 @@
 #include <shellapi.h>
 #include <windows.h>
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -169,6 +172,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         dialogOpen = false;
     };
 
+    // Assigned once the control window exists, because registering a shortcut needs its
+    // HWND. Declared here so the settings dialog - which is wired up before that - can
+    // re-apply the shortcut the moment the user changes it.
+    std::function<void()> reapplyHotkey;
+
     const auto openSettingsPage = [&](windowmark::win::SettingsPage page) {
         exclusive([&] {
             windowmark::Settings draft = coordinator.CurrentSettings();
@@ -178,6 +186,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             coordinator.UpdateSettings(draft);
             control.SetBorderState(coordinator.CurrentSettings().border.enabled);
             control.SetPinState(coordinator.CurrentSettings().pin.enabled);
+            if (reapplyHotkey) reapplyHotkey();
             persist();
         });
     };
@@ -265,9 +274,30 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         coordinator.TogglePin(id);
     };
     handlers.onGrabCancel = [&]() { coordinator.SetPinPreview(0); };
+    handlers.onUnpinAll = [&]() { coordinator.UnpinAll(); };
     handlers.isPinnable = [&](windowmark::WindowId id) { return coordinator.IsTracked(id); };
     handlers.onPinSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Pinning);
+    };
+    // The shortcut acts on whatever the user is looking at. This works where the tray
+    // menu's equivalent did not: opening the menu makes WindowMark the foreground process,
+    // so by the time the handler runs there is no user window left to read. A hotkey
+    // leaves the foreground exactly where it was.
+    handlers.onPinHotkey = [&]() {
+        const HWND foreground = GetForegroundWindow();
+        if (!foreground) return;
+        // Walk to the root: pressed while a child control or an owned dialog has focus,
+        // the shortcut should still pin the window the user thinks of as "this one".
+        const HWND root = GetAncestor(foreground, GA_ROOT);
+        const auto id =
+            static_cast<windowmark::WindowId>(reinterpret_cast<std::uintptr_t>(root));
+        wchar_t cls[64]{};
+        GetClassNameW(root, cls, static_cast<int>(std::size(cls)));
+        const bool tracked = coordinator.IsTracked(id);
+        windowmark::win::PinDiag(L"快捷键触发: %s id=%llu 可置顶=%d", cls,
+                static_cast<unsigned long long>(id), tracked ? 1 : 0);
+        if (!tracked) return;
+        coordinator.TogglePin(id);
     };
     handlers.onAbout = [&]() {
         // A TaskDialog does not even disable its owner, so this one also remembers its own
@@ -325,7 +355,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         // TDN_CREATED is the only place the dialog's own HWND is handed out, and it is
         // what the duplicate check above needs.
         config.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR data) -> HRESULT {
-            if (msg == TDN_CREATED) *reinterpret_cast<HWND*>(data) = hwnd;
+            if (msg == TDN_CREATED) {
+                *reinterpret_cast<HWND*>(data) = hwnd;
+                // Same reason as the settings window: a pinned window sits in the topmost
+                // band and nothing below it can be raised above it. TaskDialog has no flag
+                // for this, so it is done here, the one place its HWND is available.
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
             return S_OK;
         };
         config.lpCallbackData = reinterpret_cast<LONG_PTR>(&aboutDialog);
@@ -344,6 +381,30 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);
     control.SetPinState(coordinator.CurrentSettings().pin.enabled);
+
+    // Applies the shortcut from settings, and says so out loud when Windows refuses it.
+    // Refusal always means another process claimed the combination first; the alternative
+    // to telling the user is a shortcut that quietly does nothing, which is
+    // indistinguishable from a broken feature.
+    const auto applyHotkey = [&](bool announceFailure) {
+        const windowmark::Hotkey hotkey =
+            windowmark::ParseHotkey(coordinator.CurrentSettings().pin.hotkey);
+        if (control.SetPinHotkey(hotkey)) return;
+        if (!announceFailure) return;
+        const std::wstring text =
+            L"快捷键 " + windowmark::FormatHotkeyWide(hotkey) +
+            L" 已被其他程序占用，注册失败。\n\n"
+            L"Windows 的全局快捷键先到先得，先注册的程序会一直占着它。"
+            L"请换一个组合。";
+        MessageBoxW(control.NativeHandle(), text.c_str(), L"WindowMark",
+                    MB_OK | MB_ICONWARNING);
+    };
+    // Silent at startup: a message box before the tray icon is even up would be the first
+    // thing seen after logging in, about a shortcut set long ago. The diag log still
+    // records it, and changing it in the dialog does report failure immediately.
+    applyHotkey(false);
+    reapplyHotkey = [&]() { applyHotkey(true); };
+
     control.SetPinnedProvider([&]() {
         std::vector<std::pair<windowmark::WindowId, std::wstring>> out;
         for (const auto& record : coordinator.PinnedWindows()) {

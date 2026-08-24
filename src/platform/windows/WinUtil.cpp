@@ -158,6 +158,24 @@ bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoEx
     const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     if ((exStyle & WS_EX_TOOLWINDOW) != 0) return false;
 
+    // Two bits that say "this is not a window anyone switches to", which is the only kind
+    // this app is about. Both were arrived at by catching an actual offender rather than
+    // by guessing: ChatGPT's hover chip, 61x32 at the cursor, empty title,
+    // style 0x96000000 (WS_POPUP only - no caption, no frame),
+    // ex 0x08200028 (NOACTIVATE | NOREDIRECTIONBITMAP | TRANSPARENT | TOPMOST).
+    //
+    //   WS_EX_NOACTIVATE  - the window refuses activation. Clicking a bookmark activates a
+    //                       window; something that cannot be activated cannot be a target.
+    //   WS_EX_TRANSPARENT - hit-test transparent, so the mouse passes straight through.
+    //                       A window the user cannot even click is not one they mean.
+    //
+    // Note what is *not* used here. Excluding by class name would have taken out Chrome,
+    // Claude and ChatGPT along with it - all three are Chrome_WidgetWin_1, the same class
+    // as the chip. Excluding by size would have taken out every minimized window, whose
+    // DWM extended bounds measure 183x34. Neither is a property of "is this a real
+    // window"; these two flags are.
+    if ((exStyle & (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) != 0) return false;
+
     wchar_t className[128]{};
     GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
     const std::wstring_view cls(className);
@@ -201,6 +219,22 @@ void RemoveStartupRegistration() {
         RegDeleteValueW(key, L"WindowMark");
         RegCloseKey(key);
     }
+}
+
+unsigned SystemAccentColor() {
+    // DWM stores it as ABGR, which is why the red and blue bytes come out swapped from
+    // the order the name suggests.
+    DWORD abgr = 0;
+    DWORD size = sizeof(abgr);
+    DWORD type = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM",
+                     L"AccentColor", RRF_RT_REG_DWORD, &type, &abgr, &size) != ERROR_SUCCESS) {
+        return 0xFF0078D4u;  // Windows' own default blue, for a machine with no override.
+    }
+    const unsigned r = abgr & 0xFFu;
+    const unsigned g = (abgr >> 8) & 0xFFu;
+    const unsigned b = (abgr >> 16) & 0xFFu;
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
 }
 
 void PurgeAllUserData() {

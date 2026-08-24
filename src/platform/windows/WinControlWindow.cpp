@@ -6,7 +6,9 @@
 #include "Resource.h"
 
 #include <shellapi.h>
+#include <shellscalingapi.h>
 #include <utility>
+#include <tuple>
 #include <cwchar>
 #include <cstddef>
 #include <algorithm>
@@ -17,6 +19,15 @@ namespace windowmark::win {
 namespace {
 
 constexpr const wchar_t* kControlClass = app::kControlWindowClass;
+// The "WindowMark." prefix matters: IsOwnWindowClass below keys off it, and that is what
+// keeps the handle from ever becoming its own grab target.
+constexpr wchar_t kGrabHandleClass[] = L"WindowMark.GrabHandle";
+
+// Unscaled layout for the handle, at 96 dpi.
+constexpr int kHandleW = 196;
+constexpr int kHandleH = 58;
+constexpr int kHandlePad = 10;
+constexpr int kHandleCross = 38;
 constexpr UINT kTrayId = 1;
 
 // Anything of ours is not a pin target: the outlines and bookmark strips sit right on top
@@ -27,19 +38,38 @@ bool IsOwnWindowClass(HWND hwnd) {
     return wcsncmp(cls, L"WindowMark.", 11) == 0;
 }
 
-// Far enough that a plain click on the tray icon is never mistaken for a drag, close
-// enough that a deliberate drag feels immediate. The system's own double-click slop is
-// the number Windows already trained everyone on.
-int DragThreshold() {
-    return std::max(4, GetSystemMetrics(SM_CXDRAG) * 2);
-}
-
 } // namespace
 
 WinControlWindow::~WinControlWindow() { Stop(); }
 
 bool WinControlWindow::Start(Handlers handlers) {
     handlers_ = std::move(handlers);
+
+    // Named one by one on purpose. A missing handler is invisible from the outside - the
+    // menu item is there, the click dispatches, nothing happens - so the only way to catch
+    // it is to say so at startup rather than wait for someone to notice.
+    const std::pair<const wchar_t*, bool> wired[] = {
+        {L"onToggleAll", static_cast<bool>(handlers_.onToggleAll)},
+        {L"onToggleBookmarks", static_cast<bool>(handlers_.onToggleBookmarks)},
+        {L"onSelection", static_cast<bool>(handlers_.onSelection)},
+        {L"onBookmarkSettings", static_cast<bool>(handlers_.onBookmarkSettings)},
+        {L"onToggleBorders", static_cast<bool>(handlers_.onToggleBorders)},
+        {L"onBorderSettings", static_cast<bool>(handlers_.onBorderSettings)},
+        {L"onTogglePinning", static_cast<bool>(handlers_.onTogglePinning)},
+        {L"onTogglePinWindow", static_cast<bool>(handlers_.onTogglePinWindow)},
+        {L"onGrabPreview", static_cast<bool>(handlers_.onGrabPreview)},
+        {L"onGrabCommit", static_cast<bool>(handlers_.onGrabCommit)},
+        {L"onGrabCancel", static_cast<bool>(handlers_.onGrabCancel)},
+        {L"isPinnable", static_cast<bool>(handlers_.isPinnable)},
+        {L"onUnpinAll", static_cast<bool>(handlers_.onUnpinAll)},
+        {L"onPinSettings", static_cast<bool>(handlers_.onPinSettings)},
+        {L"onPinHotkey", static_cast<bool>(handlers_.onPinHotkey)},
+        {L"onAbout", static_cast<bool>(handlers_.onAbout)},
+        {L"onExit", static_cast<bool>(handlers_.onExit)},
+    };
+    for (const auto& [name, set] : wired) {
+        if (!set) PinDiag(L"处理器未接上: %s", name);
+    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -57,18 +87,45 @@ bool WinControlWindow::Start(Handlers handlers) {
     requestQuitMessage_ = RegisterWindowMessageW(app::kRequestQuitMessage);
     secondInstanceMessage_ = RegisterWindowMessageW(app::kSecondInstanceMessage);
 
-    // Deliberately no global hotkey. A process-wide RegisterHotKey claims the combination
-    // for the whole session, so whichever app asks first wins and the other silently loses
-    // it - not a trade worth making for a switch that is two clicks away in the tray menu.
+    // No hotkey is claimed here. RegisterHotKey takes a combination away from every other
+    // program for the whole session and the loser is not told, so this app only asks once
+    // the user has actually chosen one - see SetPinHotkey.
     AddTrayIcon();
     return true;
 }
 
 void WinControlWindow::Stop() noexcept {
     if (!hwnd_) return;
+    DestroyGrabHandle();
+    if (!pinHotkey_.Empty()) {
+        UnregisterHotKey(hwnd_, kPinHotkeyId);
+        pinHotkey_ = {};
+    }
     RemoveTrayIcon();
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
+}
+
+bool WinControlWindow::SetPinHotkey(const Hotkey& hotkey) {
+    if (!hwnd_) return false;
+    if (hotkey == pinHotkey_) return true;   // nothing to do; re-registering would fail
+
+    if (!pinHotkey_.Empty()) {
+        UnregisterHotKey(hwnd_, kPinHotkeyId);
+        pinHotkey_ = {};
+    }
+    if (!hotkey.Valid()) return true;   // clearing the shortcut is not a failure
+
+    // MOD_NOREPEAT: without it, holding the keys down toggles the pin over and over.
+    constexpr UINT kNoRepeat = 0x4000;
+    if (!RegisterHotKey(hwnd_, kPinHotkeyId, hotkey.mods | kNoRepeat, hotkey.key)) {
+        PinDiag(L"快捷键注册失败: %s (错误 %lu)",
+                FormatHotkeyWide(hotkey).c_str(), GetLastError());
+        return false;
+    }
+    pinHotkey_ = hotkey;
+    PinDiag(L"快捷键已注册: %s", FormatHotkeyWide(hotkey).c_str());
+    return true;
 }
 
 void WinControlWindow::SetEnabledState(bool enabled) {
@@ -160,14 +217,229 @@ void WinControlWindow::UpdateGrabTarget() {
 
 void WinControlWindow::BeginGrabFromMenu() {
     if (grabState_ != GrabState::None) return;
-    SetForegroundWindow(hwnd_);
-    SetCapture(hwnd_);
+    ShowGrabHandle();
+}
+
+void WinControlWindow::ShowGrabHandle() {
+    if (grabHandle_) {
+        SetForegroundWindow(grabHandle_);
+        return;
+    }
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpfnWndProc = GrabHandleProc;
+    wc.lpszClassName = kGrabHandleClass;
+    wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    if (RegisterClassExW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
+
+    POINT cursor{};
+    GetCursorPos(&cursor);
+
+    UINT dpi = 96;
+    HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    if (monitor) {
+        UINT dx = 96;
+        UINT dy = 96;
+        if (SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dx, &dy))) dpi = dx;
+    }
+    const auto scale = [dpi](int value) { return MulDiv(value, static_cast<int>(dpi), 96); };
+    const int width = scale(kHandleW);
+    const int height = scale(kHandleH);
+
+    // The crosshair lands directly under the cursor, so the gesture is press-and-drag with
+    // no repositioning first - which is the whole point of having a handle.
+    int x = cursor.x - scale(kHandlePad + kHandleCross / 2);
+    int y = cursor.y - scale(kHandlePad + kHandleCross / 2);
+
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (monitor && GetMonitorInfoW(monitor, &info)) {
+        x = std::min(std::max(x, static_cast<int>(info.rcWork.left)),
+                     static_cast<int>(info.rcWork.right) - width);
+        y = std::min(std::max(y, static_cast<int>(info.rcWork.top)),
+                     static_cast<int>(info.rcWork.bottom) - height);
+    }
+
+    grabHandle_ = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kGrabHandleClass, L"", WS_POPUP | WS_BORDER,
+        x, y, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), this);
+    if (!grabHandle_) return;
+    ShowWindow(grabHandle_, SW_SHOWNOACTIVATE);
+    // Activated after showing rather than through the style: if the foreground lock
+    // refuses the activation the handle is still on screen and still draggable, because
+    // the drag needs the mouse, not the keyboard.
+    SetForegroundWindow(grabHandle_);
+    // WS_EX_TOPMOST only puts it in the topmost band, not at the front of it. Without this
+    // nudge another topmost window - a screenshot tool's overlay, a floating palette - can
+    // sit on top of the handle, and the press meant for the crosshair lands there instead.
+    // A background process is not allowed to raise a window, so this can be ignored; it
+    // costs nothing when it is, and the menu path that leads here normally leaves this
+    // process holding the foreground anyway.
+    SetWindowPos(grabHandle_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // Left alone, it should go away by itself rather than sit there forever.
+    SetTimer(grabHandle_, kGrabTimeoutTimer, kGrabTimeoutMs, nullptr);
+    PinDiag(L"抓取句柄已弹出 (%d,%d) %dx%d dpi=%u", x, y, width, height, dpi);
+}
+
+void WinControlWindow::DestroyGrabHandle() noexcept {
+    HWND handle = grabHandle_;
+    grabHandle_ = nullptr;   // cleared first: DestroyWindow re-enters through WM_DESTROY
+    if (handle) {
+        KillTimer(handle, kGrabTimeoutTimer);
+        DestroyWindow(handle);
+    }
+}
+
+void WinControlWindow::StartGrabFromHandle() {
+    if (grabState_ != GrabState::None || !grabHandle_) return;
+    grabCapture_ = grabHandle_;
+    SetCapture(grabHandle_);
     grabState_ = GrabState::Grabbing;
-    SetTimer(hwnd_, kGrabTimeoutTimer, kGrabTimeoutMs, nullptr);
-    grabNeedsPress_ = true;
     grabTarget_ = 0;
+    KillTimer(grabHandle_, kGrabTimeoutTimer);
+    SetTimer(hwnd_, kGrabTimeoutTimer, kGrabTimeoutMs, nullptr);
     if (!grabCursor_) grabCursor_ = LoadCursorW(nullptr, IDC_CROSS);
+    PinDiag(L"抓取开始: 捕获成功=%d", GetCapture() == grabHandle_ ? 1 : 0);
     UpdateGrabTarget();
+}
+
+void WinControlWindow::PaintGrabHandle(HWND handle) const {
+    PAINTSTRUCT ps{};
+    HDC dc = BeginPaint(handle, &ps);
+    RECT client{};
+    GetClientRect(handle, &client);
+    FillRect(dc, &client, GetSysColorBrush(COLOR_WINDOW));
+
+    const int dpi = static_cast<int>(GetDpiForWindow(handle));
+    const auto scale = [dpi](int value) { return MulDiv(value, dpi, 96); };
+
+    // A ring with four ticks pushing past it - what every window-finder tool on Windows
+    // looks like, so it needs no caption of its own to be understood.
+    const int pad = scale(kHandlePad);
+    const int size = scale(kHandleCross);
+    const int cx = pad + size / 2;
+    const int cy = client.bottom / 2;
+    const int radius = size / 3;
+    const int reach = size / 2;
+
+    HPEN pen = CreatePen(PS_SOLID, std::max(1, scale(2)), GetSysColor(COLOR_WINDOWTEXT));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, cx - radius, cy - radius, cx + radius, cy + radius);
+    MoveToEx(dc, cx - reach, cy, nullptr); LineTo(dc, cx - radius, cy);
+    MoveToEx(dc, cx + radius, cy, nullptr); LineTo(dc, cx + reach, cy);
+    MoveToEx(dc, cx, cy - reach, nullptr); LineTo(dc, cx, cy - radius);
+    MoveToEx(dc, cx, cy + radius, nullptr); LineTo(dc, cx, cy + reach);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    HFONT font = nullptr;
+    if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0,
+                                   static_cast<UINT>(dpi))) {
+        font = CreateFontIndirectW(&metrics.lfMessageFont);
+    }
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+    RECT text{pad + size + pad, 0, client.right - pad, client.bottom};
+    DrawTextW(dc, L"按住准星拖到\n目标窗口上松开", -1, &text,
+              DT_LEFT | DT_VCENTER | DT_NOPREFIX | DT_WORDBREAK);
+    if (oldFont) SelectObject(dc, oldFont);
+    if (font) DeleteObject(font);
+
+    EndPaint(handle, &ps);
+}
+
+LRESULT CALLBACK WinControlWindow::GrabHandleProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                                  LPARAM lParam) {
+    auto* self = reinterpret_cast<WinControlWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    if (!self) return DefWindowProcW(hwnd, msg, wParam, lParam);
+
+    switch (msg) {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_KILLFOCUS:
+    case WM_SETFOCUS:
+    case WM_DESTROY:
+    case WM_CAPTURECHANGED:
+    case WM_MOUSEACTIVATE:
+        PinDiag(L"句柄消息 0x%04X wParam=%llu 状态=%d", msg,
+                static_cast<unsigned long long>(wParam),
+                self->grabState_ == GrabState::None ? 0 : 1);
+        break;
+    default:
+        break;
+    }
+
+    switch (msg) {
+    case WM_NCHITTEST:
+        // While dragging, the handle has to be invisible to WindowFromPoint or it would be
+        // the only thing the crosshair ever finds. Capture is unaffected: captured mouse
+        // messages bypass hit-testing entirely.
+        if (self->grabState_ != GrabState::None) return HTTRANSPARENT;
+        return HTCLIENT;
+    case WM_PAINT:
+        self->PaintGrabHandle(hwnd);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_LBUTTONDOWN:
+        self->StartGrabFromHandle();
+        return 0;
+    case WM_RBUTTONDOWN:
+        // Before the drag starts there is no grab for HandleMessage to cancel, so the
+        // right-click has to close the handle here.
+        if (self->grabState_ == GrabState::None) {
+            self->DestroyGrabHandle();
+            return 0;
+        }
+        return self->HandleMessage(msg, wParam, lParam);
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED:
+        // One state machine, one implementation. Forwarding rather than duplicating is
+        // what keeps the handle's behaviour and the control window's from drifting apart.
+        return self->HandleMessage(msg, wParam, lParam);
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            if (self->grabState_ != GrabState::None) self->EndGrab(false);
+            else self->DestroyGrabHandle();
+            return 0;
+        }
+        break;
+    case WM_TIMER:
+        // Only armed while the handle is waiting to be picked up; once the drag starts the
+        // timeout moves to the control window.
+        if (wParam == kGrabTimeoutTimer && self->grabState_ == GrabState::None) {
+            self->DestroyGrabHandle();
+            return 0;
+        }
+        break;
+    // No WM_KILLFOCUS handling. Destroying the handle on focus loss was tried and it ate
+    // the handle before the user could press on it: if some other topmost window is
+    // covering the crosshair, the press lands there, that window takes the focus, and the
+    // handle deletes itself - so the gesture failed with nothing on screen to explain why.
+    // Losing focus is not a decision; Esc, a right-click, and the timeout are.
+    case WM_DESTROY:
+        if (self->grabHandle_ == hwnd) self->grabHandle_ = nullptr;
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 void WinControlWindow::EndGrab(bool commit) {
@@ -175,9 +447,10 @@ void WinControlWindow::EndGrab(bool commit) {
     const WindowId target = grabTarget_;
     grabState_ = GrabState::None;
     KillTimer(hwnd_, kGrabTimeoutTimer);
-    grabNeedsPress_ = false;
     grabTarget_ = 0;
-    if (GetCapture() == hwnd_) ReleaseCapture();
+    if (grabCapture_ && GetCapture() == grabCapture_) ReleaseCapture();
+    grabCapture_ = nullptr;
+    DestroyGrabHandle();
     // Clear the preview before committing, so the window ends up drawn from the real
     // pinned set rather than briefly from both.
     if (handlers_.onGrabPreview) handlers_.onGrabPreview(0);
@@ -228,7 +501,9 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(pinning, MF_STRING | (pinningEnabled_ ? MF_CHECKED : MF_UNCHECKED),
                     kTogglePinningCommand, L"启用窗口置顶");
         if (pinningEnabled_) {
-            AppendMenuW(pinning, MF_STRING, kGrabToPinCommand, L"抓取窗口置顶...");
+            // The glyph is the affordance: it says "this one hands you a crosshair",
+            // the way 「❏置于顶层」 marks the system-menu item as ours.
+            AppendMenuW(pinning, MF_STRING, kGrabToPinCommand, L"\u2295抓取窗口置顶...");
         }
 
         // The pinned list is built fresh here, not cached: it changes whenever a window is
@@ -305,6 +580,16 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 
     switch (msg) {
+    case WM_HOTKEY:
+        // Deliberately not gated on pinningEnabled_. If the user pressed the shortcut they
+        // want the window pinned; silently doing nothing because a submenu switch is off
+        // is the failure mode this whole feature exists to avoid.
+        PinDiag(L"收到 WM_HOTKEY id=%d 有处理器=%d", static_cast<int>(wParam),
+                handlers_.onPinHotkey ? 1 : 0);
+        if (static_cast<int>(wParam) == kPinHotkeyId && handlers_.onPinHotkey) {
+            handlers_.onPinHotkey();
+        }
+        return 0;
     case WM_TIMER:
         if (wParam == kGrabTimeoutTimer) {
             EndGrab(false);
@@ -312,37 +597,15 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         break;
     case WM_MOUSEMOVE:
-        if (grabState_ == GrabState::PendingDrag) {
-            POINT pt{};
-            GetCursorPos(&pt);
-            if (std::abs(pt.x - grabStart_.x) + std::abs(pt.y - grabStart_.y) >= DragThreshold()) {
-                grabState_ = GrabState::Grabbing;
-                if (!grabCursor_) grabCursor_ = LoadCursorW(nullptr, IDC_CROSS);
-            }
-        }
         if (grabState_ == GrabState::Grabbing) {
-            UpdateGrabTarget();
-            return 0;
-        }
-        break;
-    case WM_LBUTTONDOWN:
-        if (grabState_ == GrabState::Grabbing) {
-            grabNeedsPress_ = false;
             UpdateGrabTarget();
             return 0;
         }
         break;
     case WM_LBUTTONUP:
-        if (grabState_ == GrabState::PendingDrag) {
-            // Never became a drag, so it was an ordinary click on the tray icon. Do
-            // nothing rather than pin whatever the cursor happens to be over.
-            EndGrab(false);
-            return 0;
-        }
+        // The button went down on the handle, so the release is the confirmation - there
+        // is no stray button-up from a dismissed menu to guard against any more.
         if (grabState_ == GrabState::Grabbing) {
-            // In the menu path the button-up that dismissed the menu arrives here first;
-            // waiting for a press of its own is what stops it pinning something at random.
-            if (grabNeedsPress_) return 0;
             EndGrab(true);
             return 0;
         }
@@ -359,17 +622,11 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         if (grabState_ != GrabState::None) EndGrab(false);
         return 0;
     case kTrayMessage:
-        if (lParam == WM_LBUTTONDOWN && grabState_ == GrabState::None && pinningEnabled_) {
-            // Drag off the icon to aim at a window. Capture starts now rather than after
-            // the threshold, because without it no further mouse messages arrive at all.
-            GetCursorPos(&grabStart_);
-            SetForegroundWindow(hwnd_);
-            SetCapture(hwnd_);
-            grabState_ = GrabState::PendingDrag;
-            SetTimer(hwnd_, kGrabTimeoutTimer, kGrabTimeoutMs, nullptr);
-            grabTarget_ = 0;
-            return 0;
-        }
+        // No left-button gesture here on purpose. Dragging off the tray icon was tried and
+        // dropped: the icon is usually folded into the overflow flyout, and claiming the
+        // left button meant an ordinary click on it had to be told apart from the start of
+        // a drag. The crosshair handle in the menu does the same job without either
+        // problem.
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
             ShowMenu();
             return 0;
@@ -424,7 +681,11 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         default: break;
         }
         if (handler) {
+            // An unset handler used to be silent, and 「全部取消置顶」 spent its whole life
+            // that way: the menu item was there, the click dispatched, and nothing at all
+            // happened - no error, no log, nothing to notice.
             if (*handler) (*handler)();
+            else PinDiag(L"菜单命令 %u 没有接上处理器", LOWORD(wParam));
             return 0;
         }
         break;

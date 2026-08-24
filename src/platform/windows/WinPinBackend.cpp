@@ -2,6 +2,8 @@
 
 #include "PinDiag.h"
 
+#include <algorithm>
+
 #include <cstdint>
 #include <iterator>
 #include <utility>
@@ -10,6 +12,14 @@ namespace windowmark::win {
 namespace {
 
 // The events the system menu path needs, on top of what the window backend already hooks.
+//
+// EVENT_SYSTEM_FOREGROUND is in here for timing rather than for information. Hooks are
+// WINEVENT_OUTOFCONTEXT, so events arrive asynchronously on this thread - and by the time
+// a MENUSTART has been picked up, the target application has already built and drawn its
+// menu. The item lands after the menu is on screen, which is why the first right-click
+// showed nothing and the second one worked. Adding the item when the window becomes
+// foreground puts it in place long before any right-click; MENUSTART then only refreshes
+// the tick.
 //
 // MENUSTART rather than MENUPOPUPSTART, which is the pairing that looks obvious and never
 // fires. Measured sequence when a title bar is right-clicked:
@@ -21,8 +31,8 @@ namespace {
 // So MENUPOPUPSTART reports the popup window and OBJID_CLIENT - the combination of it with
 // OBJID_SYSMENU is never true. MENUSTART names the window the menu belongs to, and arrives
 // before the popup window even exists, which is exactly when the item has to be added.
+constexpr DWORD kForeground = 0x0003;  // EVENT_SYSTEM_FOREGROUND
 constexpr DWORD kMenuStart = 0x0004;   // EVENT_SYSTEM_MENUSTART
-constexpr DWORD kMenuEnd = 0x0005;     // EVENT_SYSTEM_MENUEND
 
 // The command id for our system menu item. Must stay below 0xF000, where the system SC_*
 // commands begin. Collisions with an item the application itself owns are checked for.
@@ -68,12 +78,34 @@ WinPinBackend* g_instance = nullptr;
 
 WinPinBackend::~WinPinBackend() { RemoveHooks(); }
 
+// Windows that already existed when this started have never raised a foreground event, so
+// without this the item shows up only after the user activates them once - and a title-bar
+// right-click activates and opens the menu in a single gesture, far too fast for an
+// out-of-context hook to get there first. Seeding at startup removes that race outright.
+void WinPinBackend::SeedExistingWindows() {
+    EnumWindows(
+        [](HWND window, LPARAM param) -> BOOL {
+            auto* self = reinterpret_cast<WinPinBackend*>(param);
+            if (!IsWindowVisible(window)) return TRUE;
+            DWORD pid = 0;
+            GetWindowThreadProcessId(window, &pid);
+            // The hooks carry WINEVENT_SKIPOWNPROCESS; skipping our own windows here keeps
+            // the two paths agreeing about what is out of scope.
+            if (pid == GetCurrentProcessId()) return TRUE;
+            self->EnsureSystemMenuItem(window, false);
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(this));
+    PinDiag(L"启动播种完成，已装入 %zu 个窗口", touchedWindows_.size());
+}
+
 bool WinPinBackend::Start(const Settings& settings, PinCallbacks callbacks) {
     settings_ = settings;
     callbacks_ = std::move(callbacks);
     g_instance = this;
     started_ = true;
     InstallHooks();
+    SeedExistingWindows();
     return true;
 }
 
@@ -106,26 +138,31 @@ void WinPinBackend::Apply(const std::vector<PinRecord>& pinned) {
     pinned_ = pinned;
     // A system menu that is open right now has a stale tick the moment the set changes,
     // which is exactly what happens when the click came from that menu.
-    if (menuWindow_ && IsWindow(menuWindow_)) UpdateSystemMenuItem(menuWindow_);
+    if (lastTouchedWindow_ && IsWindow(lastTouchedWindow_)) UpdateSystemMenuItem(lastTouchedWindow_);
 }
 
 void WinPinBackend::UpdateSettings(const Settings& settings) {
     const bool wasShowing = settings_.pin.showInSystemMenu;
     settings_ = settings;
     if (!started_) return;
-    if (wasShowing && !settings_.pin.showInSystemMenu && menuWindow_ && IsWindow(menuWindow_)) {
-        RemoveSystemMenuItem(menuWindow_);
+    if (wasShowing && !settings_.pin.showInSystemMenu && lastTouchedWindow_ && IsWindow(lastTouchedWindow_)) {
+        RemoveSystemMenuItem(lastTouchedWindow_);
     }
 }
 
 void WinPinBackend::Stop() noexcept {
     RemoveHooks();
+    // Take the items back out. They live in the windows, not in this process, so without
+    // this they survive the app and stay clickable while doing nothing at all - the exact
+    // confusion a stale entry from another tool caused on this machine.
+    for (HWND window : touchedWindows_) RemoveSystemMenuItem(window);
+    touchedWindows_.clear();
     // No unpinning here. The Coordinator owns the registry and restores every window before
     // it stops the backends, because it is the only side that knows what each window was
     // before it was pinned.
     pinned_.clear();
     callbacks_ = {};
-    menuWindow_ = nullptr;
+    lastTouchedWindow_ = nullptr;
     started_ = false;
     if (g_instance == this) g_instance = nullptr;
 }
@@ -137,7 +174,7 @@ void WinPinBackend::InstallHooks() {
     constexpr DWORD flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
     // Spelled out as an array rather than a braced list: EVENT_OBJECT_INVOKED is a plain
     // int macro, so a mixed list gives the loop nothing to deduce a type from.
-    const DWORD events[] = {kMenuStart, kMenuEnd,
+    const DWORD events[] = {kForeground, kMenuStart,
                             static_cast<DWORD>(EVENT_OBJECT_INVOKED)};
     for (const DWORD event : events) {
         HWINEVENTHOOK hook = SetWinEventHook(event, event, nullptr, HookProc, 0, 0, flags);
@@ -162,12 +199,10 @@ void CALLBACK WinPinBackend::HookProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LON
     // which is how an earlier version of this came to require it and never fire once.
     //
     // What the event does name reliably is the window whose menu is opening, so the check
-    // moves there: OnMenuOpened takes only top-level windows that have a system menu.
+    // moves there: EnsureSystemMenuItem only takes top-level windows that have a system menu.
+    case kForeground:
     case kMenuStart:
-        g_instance->OnMenuOpened(hwnd);
-        return;
-    case kMenuEnd:
-        if (hwnd == g_instance->menuWindow_) g_instance->menuWindow_ = nullptr;
+        g_instance->EnsureSystemMenuItem(hwnd);
         return;
     case EVENT_OBJECT_INVOKED:
         g_instance->OnMenuItemInvoked(hwnd, idChild);
@@ -177,23 +212,29 @@ void CALLBACK WinPinBackend::HookProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LON
     }
 }
 
-// The item is added when the menu opens rather than kept there permanently. A menu nobody
-// has opened is a menu nobody is looking at, and leaving items in the menus of other
-// applications for a whole session is a bigger footprint than this feature is worth.
-void WinPinBackend::OnMenuOpened(HWND window) {
+// The item is added for the window the user is currently in, and refreshed when a menu
+// opens. Not installed into every window ever seen: a window nobody has switched to is a
+// window nobody is about to right-click, and leaving items in the menus of every
+// application on the desktop for a whole session is a bigger footprint than this feature
+// is worth.
+void WinPinBackend::EnsureSystemMenuItem(HWND window, bool remember) {
     if (!started_ || !settings_.pin.enabled || !settings_.pin.showInSystemMenu) return;
     // MENUSTART fires for every menu, including an application's own menu bar, so the
     // window has to be vetted here rather than by the event's idObject.
     if (GetAncestor(window, GA_ROOT) != window) return;
     if (!GetSystemMenu(window, FALSE)) return;
-    menuWindow_ = window;
+    if (remember) lastTouchedWindow_ = window;
     UpdateSystemMenuItem(window);
 }
 
-void WinPinBackend::UpdateSystemMenuItem(HWND window) const {
+void WinPinBackend::UpdateSystemMenuItem(HWND window) {
     if (!IsWindow(window)) return;
     HMENU menu = GetSystemMenu(window, FALSE);
     if (!menu) return;   // WinUI and UWP windows have none at all; nothing to do for them
+    // UWP hosted in ApplicationFrameHost hands back a handle that is not ours to write:
+    // GetMenuItemCount says -1 and InsertMenuItemW fails with ERROR_INVALID_MENU_HANDLE.
+    // Measured on 设置. Bailing here keeps the log honest instead of retrying forever.
+    if (GetMenuItemCount(menu) < 0) return;
 
     if (CommandIdTaken(menu)) {
         PinDiag(L"系统菜单: 命令 id 0x%X 已被该应用占用，跳过", kPinMenuCommand);
@@ -216,11 +257,21 @@ void WinPinBackend::UpdateSystemMenuItem(HWND window) const {
         // Only the tick can have changed; rewriting the whole item would move it.
         info.fMask = MIIM_STATE | MIIM_STRING;
         SetMenuItemInfoW(menu, kPinMenuCommand, FALSE, &info);
+        // Adopt it. An item can already be here because a previous run was killed rather
+        // than closed, and its Stop() never got to take it back out. Without this the
+        // orphan is never recorded, so the *next* graceful exit leaves it behind too and
+        // it survives forever - a menu entry that looks live and does nothing.
+        if (std::find(touchedWindows_.begin(), touchedWindows_.end(), window) ==
+            touchedWindows_.end()) {
+            touchedWindows_.push_back(window);
+        }
         return;
     }
     // Before SC_CLOSE rather than appended: 关闭 is conventionally last, and an item after
     // it reads as belonging to something else.
-    InsertMenuItemW(menu, SC_CLOSE, FALSE, &info);
+    if (InsertMenuItemW(menu, SC_CLOSE, FALSE, &info)) {
+        touchedWindows_.push_back(window);
+    }
 }
 
 void WinPinBackend::RemoveSystemMenuItem(HWND window) const {
@@ -245,7 +296,7 @@ void WinPinBackend::OnMenuItemInvoked(HWND eventWindow, LONG commandId) {
 
     // The event does not reliably name the window whose menu it was, so try the candidates
     // in order of confidence and take the first that actually carries our item.
-    const HWND candidates[] = {menuWindow_, eventWindow, GetForegroundWindow()};
+    const HWND candidates[] = {lastTouchedWindow_, eventWindow, GetForegroundWindow()};
     for (HWND candidate : candidates) {
         if (!candidate || !IsWindow(candidate)) continue;
         HMENU menu = GetSystemMenu(candidate, FALSE);

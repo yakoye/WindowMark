@@ -1,6 +1,9 @@
 #include "WinBorderBackend.h"
 
 #include "WinUtil.h"
+#include "PinDiag.h"
+
+#include <cstdio>
 
 #include "AppIdentity.h"
 
@@ -68,20 +71,50 @@ constexpr double kMinMoveIntervalMs = 15.0;
 // repaints, which happens on pin, unpin, resize and activation - never per frame, because
 // a move does not repaint. A registry query at that rate is free, and reading it fresh is
 // what makes the highlight follow a theme change without any plumbing to notice one.
-[[nodiscard]] unsigned SystemAccentColor() {
-    // DWM stores it as ABGR, which is why the red and blue bytes come out swapped from
-    // the order the name suggests.
-    DWORD abgr = 0;
-    DWORD size = sizeof(abgr);
-    DWORD type = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\Microsoft\Windows\DWM", L"AccentColor",
-                     RRF_RT_REG_DWORD, &type, &abgr, &size) != ERROR_SUCCESS) {
-        return 0xFF0078D4u;  // Windows' own default blue, for a machine with no override.
+// Every window that ever gets an outline passes through Apply's creation branch, so one
+// line written there is a *complete* record. An external poller cannot match that: at one
+// sample per ~170ms it can miss a popup that only lives 0.2s, and then "not captured"
+// looks exactly like "never bordered".
+[[nodiscard]] std::wstring DescribeBorderedWindow(HWND hwnd) {
+    if (!IsWindow(hwnd)) return L"(窗口已消失)";
+
+    wchar_t cls[128]{};
+    GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
+    wchar_t title[96]{};
+    GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
+
+    RECT frame{};
+    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame,
+                                     sizeof(frame)))) {
+        GetWindowRect(hwnd, &frame);
     }
-    const unsigned r = abgr & 0xFFu;
-    const unsigned g = (abgr >> 8) & 0xFFu;
-    const unsigned b = (abgr >> 16) & 0xFFu;
-    return 0xFF000000u | (r << 16) | (g << 8) | b;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    std::wstring exe = QueryProcessPath(pid);
+    if (const auto slash = exe.find_last_of(L"/\\"); slash != std::wstring::npos) {
+        exe = exe.substr(slash + 1);
+    }
+    if (exe.empty()) exe = L"?";
+
+    const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+    wchar_t buffer[640]{};
+    swprintf_s(buffer,
+               L"%s [%s] %ldx%ld @(%ld,%ld) pid=%lu style=0x%08lX ex=0x%08lX%s%s%s%s%s "
+               L"标题「%s」",
+               exe.c_str(), cls,
+               frame.right - frame.left, frame.bottom - frame.top, frame.left, frame.top,
+               pid,
+               static_cast<unsigned long>(style), static_cast<unsigned long>(exStyle),
+               (style & WS_CAPTION) == WS_CAPTION ? L" CAPTION" : L"",
+               (style & WS_THICKFRAME) != 0 ? L" THICKFRAME" : L"",
+               (style & WS_POPUP) != 0 ? L" POPUP" : L"",
+               (exStyle & WS_EX_NOACTIVATE) != 0 ? L" NOACTIVATE" : L"",
+               IsIconic(hwnd) ? L" 最小化" : L"",
+               title);
+    return buffer;
 }
 
 HWND HwndFromId(WindowId id) {
@@ -573,6 +606,8 @@ void WinBorderBackend::Apply(const std::vector<BorderModel>& models) {
         if (it == windows_.end()) {
             auto border = std::make_unique<BorderWindow>(*this, model);
             if (border->Create()) {
+                PinDiag(L"描边 %s",
+                        DescribeBorderedWindow(HwndFromId(model.windowId)).c_str());
                 windows_.emplace(model.windowId, std::move(border));
             }
         } else {
@@ -581,7 +616,14 @@ void WinBorderBackend::Apply(const std::vector<BorderModel>& models) {
     }
 
     for (auto it = windows_.begin(); it != windows_.end();) {
-        it = desired.contains(it->first) ? std::next(it) : windows_.erase(it);
+        if (desired.contains(it->first)) {
+            ++it;
+            continue;
+        }
+        // Paired with the 描边 line above, this gives the outline's lifetime - which is
+        // what tells a real window apart from a popup that flashed for a moment.
+        PinDiag(L"撤边 hwnd=%llu", static_cast<unsigned long long>(it->first));
+        it = windows_.erase(it);
     }
 }
 

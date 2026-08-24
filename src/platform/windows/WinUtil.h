@@ -24,6 +24,11 @@ std::filesystem::path LocalDataRoot();
                                             const std::vector<std::wstring>& alsoExclude = {});
 [[nodiscard]] Rect ExtendedFrame(HWND hwnd);
 [[nodiscard]] Rect WorkAreaFor(HWND hwnd);
+// The system accent colour as 0xAARRGGBB, read fresh from the registry every call so a
+// theme change is picked up without any plumbing to notice one. Shared rather than
+// duplicated: the registry path is a wide string full of backslashes, and having a second
+// copy of it is how the "accent never applied" bug would come back.
+[[nodiscard]] unsigned SystemAccentColor();
 void PurgeAllUserData();
 void RemoveStartupRegistration();
 
