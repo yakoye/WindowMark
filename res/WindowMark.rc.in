@@ -1,4 +1,5 @@
-// Generated into the build directory by CMake with the icon's absolute path substituted.
+// Generated into the build directory by CMake with the icon's absolute path and the
+// version substituted.
 //
 // Why generated rather than checked in: rc.exe resolves a relative resource path against
 // its own include path, not against the .rc file, and passing /I through MSBuild's
@@ -9,3 +10,42 @@
 // IDI_APPICON in src/shared/Resource.h, and it must stay the *lowest* icon id in the
 // binary, because that is the one Explorer shows as the program's file icon.
 1 ICON "@WINDOWMARK_ICON@"
+
+// The version block is what Explorer's properties page and every installer-inspection tool
+// read. Without it a release binary reports no version at all.
+//
+// Both numbers come from kProductVersion in src/shared/AppIdentity.h - CMake reads that
+// header and fails the configure step if project(VERSION) disagrees with it, so there is
+// exactly one place to edit and no way for the two to drift apart silently.
+1 VERSIONINFO
+FILEVERSION @WINDOWMARK_VERSION_COMMA@
+PRODUCTVERSION @WINDOWMARK_VERSION_COMMA@
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 040904b0 = US English, Unicode. The strings themselves are Chinese where that is
+        // what the user sees; the language id describes the code page, not the prose.
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "yekoye"
+            VALUE "FileDescription",  "WindowMark - 窗口书签 / 边框 / 置顶"
+            VALUE "FileVersion",      "@WINDOWMARK_VERSION_STRING@"
+            // No OriginalFilename: WindowMark.exe, WindowMarkSetup.exe and
+            // WindowMarkUninstall.exe share this one resource, so any value here would be
+            // false for two of them.
+            VALUE "InternalName",     "WindowMark"
+            VALUE "LegalCopyright",   "yekoye"
+            VALUE "ProductName",      "WindowMark"
+            VALUE "ProductVersion",   "@WINDOWMARK_VERSION_STRING@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

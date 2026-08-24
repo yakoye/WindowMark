@@ -56,3 +56,9 @@ diag.log
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Release packages built by the packaging step
+/dist/
+
+# Python bytecode from the tools/ scripts
+__pycache__/

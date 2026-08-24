@@ -20,6 +20,7 @@ public:
     bool Start(EventSink sink) override;
     void SetGeometrySink(GeometrySink sink) override;
     void SetExcludedClasses(const std::vector<std::string>& classes) override;
+    void SetShadowInsets(const std::vector<std::string>& entries) override;
     void Stop() noexcept override;
     [[nodiscard]] std::vector<WindowInfo> EnumerateWindows() override;
     [[nodiscard]] std::optional<WindowInfo> QueryWindow(WindowId id) override;
@@ -86,6 +87,16 @@ private:
     // The user's own exclusions, kept as wide strings so the per-window check is a
     // straight comparison against the class name rather than a conversion each time.
     std::vector<std::wstring> excludedClasses_;
+    // Parsed once from settings rather than per frame. Looked up by class name only when a
+    // window's frame is recalibrated - on first sight and on resize - not on every move.
+    struct ShadowInset {
+        std::wstring className;
+        int left{};
+        int top{};
+        int right{};
+        int bottom{};
+    };
+    std::vector<ShadowInset> shadowInsets_;
     std::atomic_bool geometryTimerArmed_{false};
 };
 

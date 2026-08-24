@@ -96,6 +96,7 @@ bool Coordinator::Start() {
     }
 
     windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
+    windowsBackend_.SetShadowInsets(settings_.tracking.shadowInsets);
     if (!windowsBackend_.Start([this](const WindowEvent& event) { OnWindowEvent(event); })) {
         if (borderBackend_) borderBackend_->Stop();
     if (pinBackend_) pinBackend_->Stop();
@@ -254,6 +255,7 @@ void Coordinator::UpdateSettings(Settings settings) {
     // A newly excluded class has to disappear from the tracked set, not just stop being
     // added, so re-enumerate rather than repaint what is already there.
     windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
+    windowsBackend_.SetShadowInsets(settings_.tracking.shadowInsets);
     RefreshAll();
 }
 

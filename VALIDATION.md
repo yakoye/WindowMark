@@ -1,4 +1,4 @@
-# 验证状态 — v0.3.7
+# 验证状态 — v0.4.1
 
 rc3 是第一个在 Windows 上真实构建并运行过的版本。rc1/rc2 只在 Linux 容器里验证过平台无关的 Core。
 
@@ -13,6 +13,224 @@ rc3 是第一个在 Windows 上真实构建并运行过的版本。rc1/rc2 只�
 125% 缩放这一点很关键：rc2 的渲染缺陷只在非 100% 缩放下才会暴露。
 
 ## 已验证通过
+
+### 窗口置顶（v0.4.0 新增）
+
+#### 系统菜单条目的完整生命周期
+
+`check-lifecycle.ps1` / `check-seed.ps1`，每种情况 3 次：
+
+| 阶段 | 结果 |
+|---|---|
+| 手工清干净后 | 3/3 无条目（起点确实是干净的） |
+| 启动 WindowMark，**不切前台、不开任何菜单** | 2/3 已装上 |
+| 从托盘正常退出 | 3/3 已收回，无残留 |
+
+第二行是「第一次右击看不到」的修复点：条目必须在右击**之前**就装好。落空的那一个是
+「设置」（UWP），见下。
+
+#### UWP 为什么进不去（实测，非推测）
+
+| 窗口 | 类 | `GetSystemMenu` | `GetMenuItemCount` | `InsertMenuItemW` |
+|---|---|---|---|---|
+| 设置 | `Windows.UI.Core.CoreWindow` | **0** | — | — |
+| 设置 | `ApplicationFrameWindow` | 0xA403E3（非空） | **-1** | **False，1401 ERROR_INVALID_MENU_HANDLE** |
+| 普通 Win32 / Electron | 各类 | 非空 | 正常 | True |
+
+「句柄非空」不等于「能写」。代码里因此多判一条 `GetMenuItemCount(menu) < 0`。
+本机 13 个窗口里 9 个可插入。
+
+#### 全局快捷键
+
+不碰键盘的注册验证（`check-hotkey-reg.ps1`）：
+
+| 时机 | 另一个进程能否抢到 `Ctrl+Alt+F9` | 说明 |
+|---|---|---|
+| WindowMark 启动前 | True（err=0） | 组合确实是空闲的 |
+| WindowMark 启动后 | **False，err=1409** | `ERROR_HOTKEY_ALREADY_REGISTERED`，确实占住了 |
+
+真按键（`check-hotkey-target.ps1`）：
+
+```
+目标: LongShotStitch  类=Chrome_WidgetWin_1
+  按之前     topmost = False
+  第一次按后 topmost = True
+  第二次按后 topmost = False
+```
+
+日志同时确认了整条链路：
+
+```
+收到 WM_HOTKEY id=1 有处理器=1
+快捷键触发: Chrome_WidgetWin_1 id=265320 可置顶=1
+SetTopmost: Chrome_WidgetWin_1 目标=1 之前=0 之后=1 最小化=0
+```
+
+前台是不可置顶的窗口时（实测撞上 Snipaste 的 `Qt624QWindowToolSaveBits`），
+日志记 `可置顶=0` 并原样返回——不是失败，是正确拒绝。
+
+#### 自绘阴影内缩（Czkawka / GTK4）
+
+先证明没有自动手段（三条路各测一遍）：
+
+| 手段 | 结果 |
+|---|---|
+| `GetWindowRect` | (751,148)-(1897,999) 1146x851 |
+| `DWMWA_EXTENDED_FRAME_BOUNDS` | **完全相同**，四边差值 0 |
+| `GetClientRect` 转屏幕坐标 | **完全相同** |
+| `GetWindowRgn` | 没有设置窗口区域 |
+| 命中测试从四边往里探 | 左 0 右 0 上 0 下 0 —— 阴影不是 `HTTRANSPARENT` |
+
+对照：资源管理器的 DWM 边界比 `GetWindowRect` 每边内缩 8px（左8 上0 右8 下8），
+说明测量方法本身没问题。
+
+`PrintWindow` + alpha 通道在 Czkawka 上可用，但**不通用**：
+
+| 窗口 | alpha 内缩(左上右下) | 耗时 |
+|---|---|---|
+| Czkawka | 22,12,22,38 | — |
+| Claude | 150,150,150,150（扫到上限都没有不透明像素） | 10ms |
+| ChatGPT | 150,150,150,150 | 8ms |
+| 资源管理器 | 0,150,0,0（上边是垃圾） | 59ms |
+| PowerToys 设置 | 0,150,0,0 | 18ms |
+
+59ms 说明它在逼对方重绘，与独立性原则冲突，因此只放进手动工具。
+
+Czkawka 的测量本身极稳定——扫描线全部给出同一个值：
+
+```
+扫描样本数: 左103 上138 右103 下138
+众数内缩量: 左22 上12 右22 下38
+    左 出现过的值: 22
+    上 出现过的值: 12
+    右 出现过的值: 22
+    下 出现过的值: 38
+```
+
+配置 `tracking.shadow_insets=gdkSurfaceToplevel:22,12,22,38` 后：
+
+```
+Czkawka 窗口矩形  (521,105)-(1667,956)
+边框应在          (540,114)-(1648,921)
+实际边框          (540,114)-(1648,921)   四边总误差 0px
+```
+
+#### GTK 窗口没有系统菜单
+
+```
+窗口「Czkawka (打嗝)」 类=gdkSurfaceToplevel
+  是根窗口: True
+  GetSystemMenu = 0x0
+```
+
+style `0x16000000` 里没有 `WS_SYSMENU`。标题栏右键看到的菜单是 GTK 自绘的仿制品。
+准星抓取和全局快捷键在该窗口上均已实测可用。
+
+#### 悬停浮窗不再被跟踪
+
+用程序自己写的无损记录抓到的真凶（`show_border_log.bat` 实时跟随）：
+
+```
+描边 ChatGPT.exe [Chrome_WidgetWin_1] 61x32 @(1224,516) pid=40856
+     style=0x96000000 ex=0x08200028 POPUP NOACTIVATE 标题「」
+撤边 hwnd=4393422
+```
+
+解码：
+
+| 值 | 含义 |
+|---|---|
+| `style=0x96000000` | `WS_POPUP｜VISIBLE｜CLIPSIBLINGS｜CLIPCHILDREN` —— 无 caption、无边框 |
+| `ex=0x08200028` | `NOACTIVATE｜NOREDIRECTIONBITMAP｜TRANSPARENT｜TOPMOST` |
+
+同一时刻量的 13 个正常窗口（`census.ps1`）：
+
+| 项目 | 结果 |
+|---|---|
+| 带 `CAPTION｜THICKFRAME` | **13 / 13** |
+| 带 `WS_EX_NOACTIVATE` | **0 / 13** |
+| 带 `WS_EX_TRANSPARENT` | **0 / 13** |
+| 最小的「真实窗口」 | 183x26（VS Code，**最小化**状态的 DWM 边界） |
+
+最后一行是为什么不能按尺寸过滤：最小化窗口量出来就是 183x34 这种尺寸。
+不能按类名过滤则更直接——Chrome、Claude、ChatGPT 和这个浮窗同为 `Chrome_WidgetWin_1`。
+
+修复后用户实测确认：浮窗不再有边框，也不再出现在书签列表里。
+
+#### 排查方法本身的教训
+
+先用外部轮询工具查了两轮都没抓到：30 秒采样 175 次（约 170ms 一次），浮窗可能整个落在
+两次采样之间；抓到的那一次事后去查进程得到的是 `Idle`（PID 0，窗口已消失）。
+我据此推断「它只活 0.2 秒、偶发」——**这个推断是错的**，用户指出它只要鼠标不动就一直显示。
+换成程序内部在建轮廓那一刻写日志（无损），一次就抓到了。
+
+#### 抓取置顶（拖动准星）
+
+`grab-3x.ps1`，每轮：弹手柄 → 在准星上按下 → 拖到目标窗口中心 → 松开 → 查置顶 →
+「全部取消置顶」。
+
+| 轮次 | 拖动置顶 | 全部取消 |
+|---|---|---|
+| 1 | True | True |
+| 2 | True | True |
+| 3 | True | True |
+
+日志确认了整条链路，中途还能看到准星跨过窗口时目标在换：
+
+```
+抓取句柄已弹出 (672,919) 245x73 dpi=120
+句柄消息 0x0201 ...            <- WM_LBUTTONDOWN
+抓取开始: 捕获成功=1
+准星指向 265320
+准星指向 1510222               <- 光标移到目标窗口上
+句柄消息 0x0202 ...            <- WM_LBUTTONUP
+EndGrab: commit=1 target=1510222
+SetTopmost: Chrome_WidgetWin_1 目标=1 之前=0 之后=1
+SetTopmost: Chrome_WidgetWin_1 目标=0 之前=1 之后=0   <- 全部取消置顶
+```
+
+改之前跑同样三轮是 **2/3**，失败那轮的日志里根本没有 `WM_LBUTTONDOWN`，只有
+`WM_KILLFOCUS`(0x0008) 紧接 `WM_DESTROY`(0x0002)——按下落到了盖在准星上面的另一个置顶窗口，
+它拿走焦点，手柄的 `WM_KILLFOCUS` 处理把自己销毁了。两处都改掉之后 3/3。
+
+注意这三轮是用 `PostMessage(WM_COMMAND, kGrabToPinCommand)` 直接触发的，没走真实的
+`TrackPopupMenu`。真实菜单路径唯一可能不同的地方是菜单收尾时释放捕获——而新实现的
+`BeginGrabFromMenu` 只是弹出手柄，**完全不碰捕获**，那个竞态在结构上已经不存在了。
+
+#### 颜色色卡
+
+逐像素扫描色卡条中线（`scan-swatches.ps1`），读到什么就是画了什么：
+
+```
+置顶「高亮颜色」  #0078D4 #E81123 #F7630C #FFB900 #16C60C #8E4EC6 [⋯]
+边框「活动窗口」  #6274E7 #E81123 #F7630C #FFB900 #16C60C #8E4EC6 [⋯]
+边框「非活动窗口」#7080AA #E81123 #F7630C #FFB900 #16C60C #8E4EC6 [⋯]
+```
+
+第一格分别是三者原来的默认值；置顶那一格是**当前真实的系统强调色** `#0078D4`
+（注册表里 `0xFFD47800` ABGR），不是硬编码。旁边的说明文字写「跟随系统 #0078D4」。
+修复前这里显示的是 `#00000000`，因为 accent 内部存 0。
+
+七个格子等距，`check-click2.ps1` 实测中心 x = 12/44/76/108/140/172/204（间距 32px，
+125% DPI 下 18px 格 + 7px 间距的缩放结果）。点第 7 格：
+
+```
+点第 7 格（自定义）x=204
+取色器已打开：「颜色」
+```
+
+对话框宽度 488→506（含边框），最右侧控件右边缘 482 < 客户区 488，没有画出界。
+
+这一轮探针自己错了两次，都记在 `docs/Windows开发避坑规则.md` 里了：
+先是按猜的格子尺寸采样（DPI 缩放后实际间距 32px 而不是猜的 30px），
+后是把背景色采在 (0,2)——那个点正好落在选中环上，于是整条都被判成「非背景」。
+
+#### 强调色（修复验证）
+
+本机 `HKCU\Software\Microsoft\Windows\DWM\AccentColor` = `0xFFD47800`（ABGR），
+解出来正好是 `#0078D4`，和修复前那个兜底值**一模一样**——所以这个 bug 在这台机器上
+肉眼看不出来。换一个强调色才会暴露：置顶边框会固执地停在蓝色。
+
 
 ### 构建
 

@@ -82,8 +82,10 @@ public:
             y = std::max(0, (sh - static_cast<int>(bounds.bottom - bounds.top)) / 2);
         }
 
+        // Same reason as the settings window: a pinned window sits in the topmost band,
+        // and a normal window cannot be raised above it.
         hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME,
+            WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
             kSelectionClass,
             L"WindowMark - 选择需要书签的应用/窗口",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,

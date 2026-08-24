@@ -1,5 +1,6 @@
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/DrawerState.h"
+#include "windowmark/core/Hotkey.h"
 #include "windowmark/core/LayoutEngine.h"
 #include "windowmark/core/PinRegistry.h"
 #include "windowmark/core/Settings.h"
@@ -697,6 +698,65 @@ void TestLayout() {
     CHECK(bounds.width() > 0 && bounds.height() > 0);
 }
 
+void TestHotkeyParsing() {
+    // 基本形态，以及「打出来什么顺序都归一到同一个规范写法」
+    const Hotkey ctrlAltT = ParseHotkey("Ctrl+Alt+T");
+    CHECK(ctrlAltT.Valid());
+    CHECK(ctrlAltT.key == 'T');
+    CHECK(ctrlAltT.mods == (Hotkey::kCtrl | Hotkey::kAlt));
+    CHECK(FormatHotkey(ctrlAltT) == "Ctrl+Alt+T");
+
+    CHECK(ParseHotkey("alt+ctrl+t") == ctrlAltT);
+    CHECK(ParseHotkey("  CTRL + ALT + T  ") == ctrlAltT);
+    CHECK(ParseHotkey("Control+Menu+T") == ctrlAltT);
+    CHECK(FormatHotkey(ParseHotkey("alt+ctrl+t")) == "Ctrl+Alt+T");
+
+    // Win 键的几种叫法
+    CHECK(ParseHotkey("Win+T") == ParseHotkey("Windows+T"));
+    CHECK(ParseHotkey("Win+T") == ParseHotkey("Meta+T"));
+    CHECK(FormatHotkey(ParseHotkey("Super+Ctrl+T")) == "Ctrl+Win+T");
+
+    // 功能键与具名键
+    CHECK(ParseHotkey("Ctrl+F12").key == 0x70u + 11u);
+    CHECK(FormatHotkey(ParseHotkey("ctrl+f12")) == "Ctrl+F12");
+    CHECK(FormatHotkey(ParseHotkey("Ctrl+Shift+Space")) == "Ctrl+Shift+SPACE");
+    CHECK(ParseHotkey("Ctrl+PgUp") == ParseHotkey("Ctrl+PageUp"));
+    CHECK(ParseHotkey("Alt+Return") == ParseHotkey("Alt+Enter"));
+
+    // 数字键
+    CHECK(ParseHotkey("Ctrl+Alt+1").key == '1');
+
+    // 无效输入一律当成「没设快捷键」，不是启动失败
+    CHECK(ParseHotkey("").Empty());
+    CHECK(ParseHotkey("T").Empty());              // 没有修饰键，会把 T 从全系统抢走
+    CHECK(ParseHotkey("Ctrl").Empty());           // 只有修饰键
+    CHECK(ParseHotkey("Ctrl+").Empty());
+    CHECK(ParseHotkey("+T").Empty());
+    CHECK(ParseHotkey("Ctrl++T").Empty());
+    CHECK(ParseHotkey("Ctrl+Ctrl+T").Empty());    // 重复修饰键
+    CHECK(ParseHotkey("Ctrl+T+Alt").Empty());     // 键必须在最后
+    CHECK(ParseHotkey("Ctrl+F25").Empty());       // 超出 F1..F24
+    CHECK(ParseHotkey("Ctrl+F0").Empty());
+    CHECK(ParseHotkey("Ctrl+Nonsense").Empty());
+    CHECK(FormatHotkey(Hotkey{}) == "");
+
+    // 往返：规范写法再解析回去必须一模一样
+    const char* roundTrip[] = {"Ctrl+Alt+T", "Ctrl+Shift+F5", "Alt+Win+DELETE",
+                               "Ctrl+Alt+Shift+Win+9", "Shift+HOME"};
+    for (const char* text : roundTrip) {
+        const Hotkey parsed = ParseHotkey(text);
+        CHECK(parsed.Valid());
+        CHECK(FormatHotkey(parsed) == text);
+        CHECK(ParseHotkey(FormatHotkey(parsed)) == parsed);
+    }
+
+    // 位值必须和 Win32 的 MOD_* 对得上，平台层是直接透传给 RegisterHotKey 的
+    CHECK(Hotkey::kAlt == 0x0001u);
+    CHECK(Hotkey::kCtrl == 0x0002u);
+    CHECK(Hotkey::kShift == 0x0004u);
+    CHECK(Hotkey::kWin == 0x0008u);
+}
+
 } // namespace
 
 int main() {
@@ -713,6 +773,7 @@ int main() {
     TestRowPlacementMetrics();
     TestLayout();
     TestDrawerState();
+    TestHotkeyParsing();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }

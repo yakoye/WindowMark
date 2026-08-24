@@ -1,12 +1,16 @@
 #include "WinSettingsDialog.h"
 
+#include "windowmark/core/Hotkey.h"
+
 #include "AppIdentity.h"
 #include "AutoStart.h"
 #include "Resource.h"
 #include "WinUtil.h"
 
 #include <commctrl.h>
+#include <commdlg.h>
 #include <shellscalingapi.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <array>
@@ -23,7 +27,7 @@ constexpr int kOkId = 3900;
 constexpr int kCancelId = 3901;
 constexpr int kResetId = 3902;
 
-enum class FieldKind { Int, Bool, Choice, Color, Text };
+enum class FieldKind { Int, Bool, Choice, Palette, Text, Hotkey };
 
 // The whole dialog is generated from this table. Accessors are captureless lambdas so
 // they decay to plain function pointers and the table stays a static array.
@@ -49,6 +53,10 @@ struct Field {
     // get/set are ignored.
     int (*getExternal)(){};
     void (*setExternal)(int){};
+    // Only for FieldKind::Palette: the six presets shown as swatches. A seventh cell,
+    // 自定义, is always appended by the control itself.
+    const unsigned* swatches{};
+    int swatchCount{};
 };
 
 // Nothing uses the external channel today - start-with-Windows lives in the tray menu,
@@ -87,6 +95,362 @@ std::vector<std::string> SplitClasses(const std::wstring& text) {
     }
     return out;
 }
+
+// The shortcut box records a key combination instead of accepting typed text. Subclassing
+// an EDIT rather than using the stock hotkey control: that one insists on its own idea of
+// which combinations are legal and cannot be cleared, and it renders modifiers in an order
+// this app does not use.
+bool IsModifierKey(unsigned vk) {
+    return vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU ||
+           vk == VK_LSHIFT || vk == VK_RSHIFT ||
+           vk == VK_LCONTROL || vk == VK_RCONTROL ||
+           vk == VK_LMENU || vk == VK_RMENU ||
+           vk == VK_LWIN || vk == VK_RWIN;
+}
+
+LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                UINT_PTR, DWORD_PTR) {
+    switch (msg) {
+    case WM_GETDLGCODE:
+        // Without this the dialog manager swallows Tab, Enter, Escape and the arrow keys
+        // before the control sees them - and every one of those is bindable.
+        return DLGC_WANTALLKEYS;
+    case WM_CHAR:
+    case WM_SYSCHAR:
+        return 0;   // nothing is ever typed in here
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: {
+        const unsigned vk = static_cast<unsigned>(wParam);
+        // Backspace and Delete clear the box. Both are bindable in principle, but a field
+        // that cannot be emptied is worse than two keys that cannot be bound.
+        if (vk == VK_BACK || vk == VK_DELETE) {
+            SetWindowTextW(hwnd, L"");
+            return 0;
+        }
+        if (IsModifierKey(vk)) return 0;   // hold; the real key has not arrived yet
+        windowmark::Hotkey hotkey{};
+        if (GetKeyState(VK_CONTROL) < 0) hotkey.mods |= windowmark::Hotkey::kCtrl;
+        if (GetKeyState(VK_MENU) < 0) hotkey.mods |= windowmark::Hotkey::kAlt;
+        if (GetKeyState(VK_SHIFT) < 0) hotkey.mods |= windowmark::Hotkey::kShift;
+        if (GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) {
+            hotkey.mods |= windowmark::Hotkey::kWin;
+        }
+        hotkey.key = vk;
+        // An empty result means no modifier was held, or the key has no name this can
+        // round-trip. Both are refused by leaving the box alone rather than showing
+        // something that would not survive a save.
+        const std::wstring text = windowmark::FormatHotkeyWide(hotkey);
+        if (!text.empty()) SetWindowTextW(hwnd, text.c_str());
+        return 0;
+    }
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        return 0;
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
+// 色卡条：六个预设 + 一个「自定义」。
+//
+// 取代原来的 #RRGGBB 输入框。输入框有两个问题：要用户自己想出一个颜色值，而且
+// 「跟随系统强调色」内部存的是 0，画出来就成了 #00000000 —— 用户看到的是黑色，
+// 而实际生效的是强调色。色卡把实际在用的颜色直接画出来，旁边写上真实色值。
+// ---------------------------------------------------------------------------
+
+// Defined further down with the other colour helpers; the swatch strip needs it here.
+std::wstring ColorToText(int argb);
+
+constexpr wchar_t kSwatchClass[] = L"WindowMark.Swatches";
+
+struct SwatchData {
+    unsigned value{};
+    const unsigned* presets{};
+    int presetCount{};
+    // True when presets[0] is PinSettings::kAccentColor, i.e. this field understands
+    // "follow the system". Border colours do not, so a stored 0 there is just black.
+    bool accentFirst{};
+    int focus{};
+    // Physical pixels, computed by the dialog which is the side that knows the DPI.
+    int cell{16};
+    int gap{7};
+    // Distance from the cell edge to the selection ring, in physical pixels. Hardcoding it
+    // made the ring hug the swatch at 125% DPI and read as a black border on the colour
+    // rather than a ring around it.
+    int ring{4};
+    int textX{};
+    HFONT font{};
+};
+
+SwatchData* SwatchOf(HWND hwnd) {
+    return reinterpret_cast<SwatchData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+// What to actually paint for a stored value.
+unsigned ResolveSwatch(const SwatchData& data, unsigned value) {
+    if (data.accentFirst && value == PinSettings::kAccentColor) return SystemAccentColor();
+    return value;
+}
+
+COLORREF ToColorRef(unsigned argb) {
+    return RGB((argb >> 16) & 0xFFu, (argb >> 8) & 0xFFu, argb & 0xFFu);
+}
+
+// -1 when the value is not one of the presets, which is what puts it in the 自定义 cell.
+int SwatchIndexOf(const SwatchData& data, unsigned value) {
+    for (int i = 0; i < data.presetCount; ++i) {
+        if (data.presets[i] == value) return i;
+    }
+    return -1;
+}
+
+std::wstring SwatchCaption(const SwatchData& data) {
+    const unsigned shown = ResolveSwatch(data, data.value);
+    const std::wstring hex = ColorToText(static_cast<int>(shown));
+    if (data.accentFirst && data.value == PinSettings::kAccentColor) {
+        // The whole point of showing the hex here: "跟随系统" alone leaves the user
+        // guessing which colour that actually is right now.
+        return L"跟随系统 " + hex;
+    }
+    return hex;
+}
+
+void SwatchPaint(HWND hwnd, SwatchData& data) {
+    PAINTSTRUCT ps{};
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+
+    // Painted into a memory DC first: the cells are redrawn on every arrow key and the
+    // dialog background shows through the gaps, so drawing straight to the screen flickers.
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, client.right, client.bottom);
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    HBRUSH back = GetSysColorBrush(COLOR_3DFACE);
+    FillRect(mem, &client, back);
+
+    const int selected = SwatchIndexOf(data, data.value);
+    const int cells = data.presetCount + 1;   // +1 for 自定义
+    const int top = (client.bottom - data.cell) / 2;
+
+    HPEN edgePen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DSHADOW));
+    HPEN ringPen = CreatePen(PS_SOLID, 2, GetSysColor(COLOR_WINDOWTEXT));
+
+    for (int i = 0; i < cells; ++i) {
+        const int x = i * (data.cell + data.gap);
+        const RECT box{x, top, x + data.cell, top + data.cell};
+        const bool isCustom = (i == data.presetCount);
+        const bool chosen = isCustom ? (selected < 0) : (i == selected);
+
+        if (isCustom && selected >= 0) {
+            // Nothing custom is in force, so this cell is a door rather than a value:
+            // a neutral tile with an ellipsis, matching how "更多" reads elsewhere.
+            HBRUSH fill = GetSysColorBrush(COLOR_WINDOW);
+            FillRect(mem, &box, fill);
+            HGDIOBJ oldPen = SelectObject(mem, edgePen);
+            HGDIOBJ oldBrush = SelectObject(mem, GetStockObject(NULL_BRUSH));
+            Rectangle(mem, box.left, box.top, box.right, box.bottom);
+            SelectObject(mem, oldBrush);
+            SelectObject(mem, oldPen);
+            SetBkMode(mem, TRANSPARENT);
+            SetTextColor(mem, GetSysColor(COLOR_WINDOWTEXT));
+            HGDIOBJ oldFont = data.font ? SelectObject(mem, data.font) : nullptr;
+            RECT text = box;
+            DrawTextW(mem, L"\u00b7\u00b7\u00b7", -1, &text,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            if (oldFont) SelectObject(mem, oldFont);
+        } else {
+            const unsigned argb =
+                isCustom ? ResolveSwatch(data, data.value)
+                         : ResolveSwatch(data, data.presets[i]);
+            HBRUSH fill = CreateSolidBrush(ToColorRef(argb));
+            HGDIOBJ oldPen = SelectObject(mem, edgePen);
+            HGDIOBJ oldBrush = SelectObject(mem, fill);
+            Rectangle(mem, box.left, box.top, box.right, box.bottom);
+            SelectObject(mem, oldBrush);
+            SelectObject(mem, oldPen);
+            DeleteObject(fill);
+        }
+
+        if (chosen) {
+            // Ring outside the cell rather than a border on it: a border would change the
+            // apparent size of the colour and make two adjacent swatches look different.
+            RECT ring{box.left - data.ring, box.top - data.ring,
+                      box.right + data.ring, box.bottom + data.ring};
+            HGDIOBJ oldPen = SelectObject(mem, ringPen);
+            HGDIOBJ oldBrush = SelectObject(mem, GetStockObject(NULL_BRUSH));
+            Rectangle(mem, ring.left, ring.top, ring.right, ring.bottom);
+            SelectObject(mem, oldBrush);
+            SelectObject(mem, oldPen);
+        }
+        if (GetFocus() == hwnd && i == data.focus) {
+            const int inset = data.ring - 2;
+            RECT focus{box.left - inset, box.top - inset,
+                       box.right + inset, box.bottom + inset};
+            DrawFocusRect(mem, &focus);
+        }
+    }
+
+    DeleteObject(edgePen);
+    DeleteObject(ringPen);
+
+    SetBkMode(mem, TRANSPARENT);
+    SetTextColor(mem, GetSysColor(COLOR_WINDOWTEXT));
+    HGDIOBJ oldFont = data.font ? SelectObject(mem, data.font) : nullptr;
+    RECT caption{data.textX, 0, client.right, client.bottom};
+    const std::wstring text = SwatchCaption(data);
+    DrawTextW(mem, text.c_str(), -1, &caption,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    if (oldFont) SelectObject(mem, oldFont);
+
+    BitBlt(dc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    EndPaint(hwnd, &ps);
+}
+
+// The 16 slots the common dialog remembers between openings. Static because the dialog
+// has nowhere to keep them and losing them every time would be its own annoyance.
+COLORREF g_customColors[16] = {
+    RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255),
+    RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255),
+    RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255),
+    RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255),
+};
+
+void SwatchPickCustom(HWND hwnd, SwatchData& data) {
+    CHOOSECOLORW cc{};
+    cc.lStructSize = sizeof(cc);
+    cc.hwndOwner = GetParent(hwnd);
+    cc.lpCustColors = g_customColors;
+    cc.rgbResult = ToColorRef(ResolveSwatch(data, data.value));
+    cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
+    if (!ChooseColorW(&cc)) return;   // cancelled; leave the value alone
+    // Alpha is not something the common dialog offers, and every preset is opaque, so the
+    // result is stored opaque. A translucent value can still be hand-written in the file.
+    data.value = 0xFF000000u | (static_cast<unsigned>(GetRValue(cc.rgbResult)) << 16) |
+                 (static_cast<unsigned>(GetGValue(cc.rgbResult)) << 8) |
+                 static_cast<unsigned>(GetBValue(cc.rgbResult));
+    data.focus = data.presetCount;
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+void SwatchActivate(HWND hwnd, SwatchData& data, int index) {
+    if (index < 0 || index > data.presetCount) return;
+    data.focus = index;
+    if (index == data.presetCount) {
+        SwatchPickCustom(hwnd, data);
+        return;
+    }
+    data.value = data.presets[index];
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+LRESULT CALLBACK SwatchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* data = SwatchOf(hwnd);
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        break;
+    }
+    case WM_DESTROY:
+        delete data;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        return 0;
+    case WM_PAINT:
+        if (data) { SwatchPaint(hwnd, *data); return 0; }
+        break;
+    case WM_ERASEBKGND:
+        return 1;   // WM_PAINT fills the whole client area itself
+    case WM_GETDLGCODE:
+        // The arrows move between swatches, so the dialog manager must not take them to
+        // move between controls.
+        return DLGC_WANTARROWS | DLGC_WANTCHARS;
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+        InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
+    case WM_LBUTTONDOWN: {
+        if (!data) break;
+        SetFocus(hwnd);
+        const int x = GET_X_LPARAM(lParam);
+        const int stride = data->cell + data->gap;
+        const int index = stride > 0 ? x / stride : -1;
+        // Reject the gap between two cells rather than rounding to a neighbour: a click
+        // that lands between swatches should do nothing, not pick the one on the left.
+        if (index >= 0 && index <= data->presetCount && (x % stride) < data->cell) {
+            SwatchActivate(hwnd, *data, index);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN: {
+        if (!data) break;
+        const int last = data->presetCount;
+        switch (wParam) {
+        case VK_LEFT:
+        case VK_UP:
+            if (data->focus > 0) { --data->focus; InvalidateRect(hwnd, nullptr, TRUE); }
+            return 0;
+        case VK_RIGHT:
+        case VK_DOWN:
+            if (data->focus < last) { ++data->focus; InvalidateRect(hwnd, nullptr, TRUE); }
+            return 0;
+        case VK_HOME:
+            data->focus = 0; InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        case VK_END:
+            data->focus = last; InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        case VK_SPACE:
+        case VK_RETURN:
+            SwatchActivate(hwnd, *data, data->focus);
+            return 0;
+        default:
+            break;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool RegisterSwatchClass() {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpfnWndProc = SwatchProc;
+    wc.lpszClassName = kSwatchClass;
+    wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
+    return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+// 六个预设，白色不在其中：白色边框在浅色桌面上等于没画。
+// 第一格是各自原来的默认值，升级上来的配置不会突然在色卡里找不到自己。
+constexpr unsigned kSwatchRed = 0xFFE81123u;
+constexpr unsigned kSwatchOrange = 0xFFF7630Cu;
+constexpr unsigned kSwatchYellow = 0xFFFFB900u;
+constexpr unsigned kSwatchGreen = 0xFF16C60Cu;
+constexpr unsigned kSwatchPurple = 0xFF8E4EC6u;
+
+constexpr unsigned kBorderActiveSwatches[] = {
+    0xFF6274E7u, kSwatchRed, kSwatchOrange, kSwatchYellow, kSwatchGreen, kSwatchPurple,
+};
+constexpr unsigned kBorderInactiveSwatches[] = {
+    0xFF7080AAu, kSwatchRed, kSwatchOrange, kSwatchYellow, kSwatchGreen, kSwatchPurple,
+};
+// The first cell here is 跟随系统强调色, stored as 0. It is painted with whatever the
+// accent is right now, which is also what the caption spells out.
+constexpr unsigned kPinSwatches[] = {
+    PinSettings::kAccentColor, kSwatchRed, kSwatchOrange, kSwatchYellow, kSwatchGreen,
+    kSwatchPurple,
+};
 
 constexpr const wchar_t* kPlacementChoices[] = {L"自动", L"左侧", L"右侧", L"顶部", L"底部"};
 constexpr const wchar_t* kCornerChoices[] = {L"跟随系统", L"直角", L"圆角", L"小圆角", L"自定义"};
@@ -196,12 +560,16 @@ const Field kFields[] = {
      [](const Settings& s) { return s.border.cornerRadius; },
      [](Settings& s, int v) { s.border.cornerRadius = v; }, L"px  仅「自定义」时"},
 
-    {FieldKind::Color, SettingsPage::Borders, L"颜色", L"活动窗口", 0, 0,
+    {FieldKind::Palette, SettingsPage::Borders, L"颜色", L"活动窗口", 0, 0,
      [](const Settings& s) { return static_cast<int>(s.border.activeColor); },
-     [](Settings& s, int v) { s.border.activeColor = static_cast<unsigned>(v); }, L"#RRGGBB[AA]"},
-    {FieldKind::Color, SettingsPage::Borders, L"颜色", L"非活动窗口", 0, 0,
+     [](Settings& s, int v) { s.border.activeColor = static_cast<unsigned>(v); },
+     nullptr, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
+     kBorderActiveSwatches, static_cast<int>(std::size(kBorderActiveSwatches))},
+    {FieldKind::Palette, SettingsPage::Borders, L"颜色", L"非活动窗口", 0, 0,
      [](const Settings& s) { return static_cast<int>(s.border.inactiveColor); },
-     [](Settings& s, int v) { s.border.inactiveColor = static_cast<unsigned>(v); }, L"#RRGGBB[AA]"},
+     [](Settings& s, int v) { s.border.inactiveColor = static_cast<unsigned>(v); },
+     nullptr, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
+     kBorderInactiveSwatches, static_cast<int>(std::size(kBorderInactiveSwatches))},
 
     // --- 排除窗口 ---
     // Lives on the border page because that is where an unwanted outline is noticed, but
@@ -216,12 +584,24 @@ const Field kFields[] = {
     {FieldKind::Bool, SettingsPage::Pinning, L"窗口置顶", L"启用置顶", 0, 1,
      [](const Settings& s) { return s.pin.enabled ? 1 : 0; },
      [](Settings& s, int v) { s.pin.enabled = v != 0; }, nullptr},
-    {FieldKind::Color, SettingsPage::Pinning, L"窗口置顶", L"高亮颜色", 0, 0,
+    {FieldKind::Palette, SettingsPage::Pinning, L"窗口置顶", L"高亮颜色", 0, 0,
      [](const Settings& s) { return static_cast<int>(s.pin.color); },
-     [](Settings& s, int v) { s.pin.color = static_cast<unsigned>(v); }, L"#RRGGBB[AA]"},
+     [](Settings& s, int v) { s.pin.color = static_cast<unsigned>(v); },
+     nullptr, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
+     kPinSwatches, static_cast<int>(std::size(kPinSwatches))},
     {FieldKind::Int, SettingsPage::Pinning, L"窗口置顶", L"线宽", 1, 20,
      [](const Settings& s) { return s.pin.width; },
      [](Settings& s, int v) { s.pin.width = v; }, L"px  比普通边框粗"},
+    // Empty by default. RegisterHotKey is first-come, first-served for the whole session,
+    // so this app does not take a combination away from anything else unless asked to.
+    {FieldKind::Hotkey, SettingsPage::Pinning, L"窗口置顶", L"快捷键", 0, 0,
+     nullptr, nullptr, L"退格键清除", nullptr, 0,
+     [](const Settings& s) { return FormatHotkeyWide(ParseHotkey(s.pin.hotkey)); },
+     [](Settings& s, const std::wstring& v) {
+         // Normalised on the way in so the settings file never records a spelling the
+         // parser would later read back differently.
+         s.pin.hotkey = FormatHotkey(ParseHotkey(WideToUtf8(v)));
+     }},
 };
 
 // Column assignment is by group, chosen so the two columns end at roughly the same
@@ -384,7 +764,10 @@ private:
         wc.lpszClassName = kSettingsClass;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DFACE + 1);
-        return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+        if (RegisterClassExW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return false;
+        }
+        return RegisterSwatchClass();
     }
 
     HWND Add(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id) {
@@ -443,8 +826,12 @@ private:
         x = std::clamp(x, workLeft, std::max(workLeft, workRight - outerW));
         y = std::clamp(y, workTop, std::max(workTop, workBottom - outerH));
 
+        // WS_EX_TOPMOST because this app can put other windows in the topmost band.
+        // A normal window can never be raised above a topmost one, so once anything
+        // is pinned the settings window opens underneath it and reads as "the menu
+        // item did nothing". The rename dialog already carries this for the same reason.
         hwnd_ = CreateWindowExW(
-            WS_EX_DLGMODALFRAME, kSettingsClass,
+            WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, kSettingsClass,
             page_ == SettingsPage::Pinning  ? L"WindowMark - 窗口置顶设置"
             : page_ == SettingsPage::Borders ? L"WindowMark - 窗口边框设置"
                                              : L"WindowMark - 书签设置",
@@ -523,15 +910,30 @@ private:
                         controlX + kEditW + kFieldGap, cursor + 3, pm.hintW, kRowH, -1);
                 }
                 break;
-            case FieldKind::Color:
-                // Not ES_NUMBER: this takes "#RRGGBB".
-                controls_.push_back(Add(L"EDIT", L"", WS_TABSTOP | WS_BORDER,
-                                        controlX, cursor, kColorEditW, kRowH, id));
-                if (field.hint) {
-                    Add(L"STATIC", field.hint, SS_LEFTNOWORDWRAP,
-                        controlX + kColorEditW + kFieldGap, cursor + 3, kColorHintW, kRowH, -1);
-                }
+            case FieldKind::Palette: {
+                // The strip paints its own caption, so there is no separate hint control
+                // to keep in sync with it.
+                auto* data = new SwatchData{};
+                data->presets = field.swatches;
+                data->presetCount = field.swatchCount;
+                data->accentFirst = field.swatchCount > 0 &&
+                                    field.swatches[0] == PinSettings::kAccentColor;
+                data->cell = m_.Scale(kSwatchCell);
+                data->gap = m_.Scale(kSwatchGap);
+                data->ring = m_.Scale(kSwatchRing);
+                data->textX = m_.Scale(kSwatchStripW + kFieldGap);
+                data->font = font_;
+                HWND strip = CreateWindowExW(
+                    0, kSwatchClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                    m_.Scale(controlX), m_.Scale(cursor),
+                    m_.Scale(kSwatchStripW + kFieldGap + kSwatchTextW),
+                    m_.Scale(kPaletteRowH),
+                    hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                    GetModuleHandleW(nullptr), data);
+                if (!strip) delete data;   // no WM_DESTROY will arrive to free it
+                controls_.push_back(strip);
                 break;
+            }
             case FieldKind::Bool:
                 controls_.push_back(Add(L"BUTTON", L"", WS_TABSTOP | BS_AUTOCHECKBOX,
                                         controlX, cursor + 2, kEditW, kRowH, id));
@@ -542,6 +944,26 @@ private:
                 controls_.push_back(Add(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
                                         controlX, cursor, pm.controlSpan, kRowH, id));
                 break;
+            case FieldKind::Hotkey: {
+                HWND edit = Add(L"EDIT", L"", WS_TABSTOP | WS_BORDER, controlX, cursor,
+                                kHotkeyEditW, kRowH, id);
+                if (edit) {
+                    SetWindowSubclass(edit, HotkeyEditProc, 0, 0);
+                    // Grey placeholder while empty, so the box explains itself without
+                    // spending a hint column on it. EM_SETCUEBANNER, spelled out because
+                    // the macro needs a comctl32 version guard this file does not set.
+                    constexpr UINT kSetCueBanner = 0x1500 + 1;
+                    SendMessageW(edit, kSetCueBanner, TRUE,
+                                 reinterpret_cast<LPARAM>(L"按下组合键"));
+                }
+                controls_.push_back(edit);
+                if (field.hint) {
+                    Add(L"STATIC", field.hint, SS_LEFTNOWORDWRAP,
+                        controlX + kHotkeyEditW + kFieldGap, cursor + 3, kHotkeyHintW,
+                        kRowH, -1);
+                }
+                break;
+            }
             case FieldKind::Choice: {
                 HWND combo = Add(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
                                  controlX, cursor, kComboW, kRowH * 8, id);
@@ -554,7 +976,7 @@ private:
             }
             }
             ++id;
-            cursor += kRowH + kRowGap;
+            cursor += (field.kind == FieldKind::Palette ? kPaletteRowH : kRowH) + kRowGap;
         }
 
         // Guard the invariant this layout depends on: neither column may reach the footer.
@@ -588,7 +1010,7 @@ private:
             const auto& field = kFields[i];
             HWND control = controls_[i];
             if (!control) continue;
-            if (field.kind == FieldKind::Text) {
+            if (field.kind == FieldKind::Text || field.kind == FieldKind::Hotkey) {
                 SetWindowTextW(control, field.getText(source).c_str());
                 continue;
             }
@@ -597,8 +1019,15 @@ private:
             case FieldKind::Int:
                 SetWindowTextW(control, std::to_wstring(value).c_str());
                 break;
-            case FieldKind::Color:
-                SetWindowTextW(control, ColorToText(value).c_str());
+            case FieldKind::Palette:
+                if (auto* data = SwatchOf(control)) {
+                    data->value = static_cast<unsigned>(value);
+                    // Park the focus ring on whatever is selected, so arrowing starts from
+                    // the current colour rather than from the left edge.
+                    const int index = SwatchIndexOf(*data, data->value);
+                    data->focus = index < 0 ? data->presetCount : index;
+                    InvalidateRect(control, nullptr, TRUE);
+                }
                 break;
             case FieldKind::Bool:
                 SendMessageW(control, BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -622,7 +1051,7 @@ private:
             HWND control = controls_[i];
             if (!control) continue;
 
-            if (field.kind == FieldKind::Text) {
+            if (field.kind == FieldKind::Text || field.kind == FieldKind::Hotkey) {
                 // No length cap on the class list beyond this buffer; a few dozen class
                 // names is far more than anyone will ever exclude.
                 std::wstring text(1024, L'\0');
@@ -649,17 +1078,11 @@ private:
                 }
                 break;
             }
-            case FieldKind::Color: {
-                wchar_t buffer[32]{};
-                GetWindowTextW(control, buffer, static_cast<int>(std::size(buffer)));
-                value = ColorFromText(buffer);
-                if (value < 0) {
-                    const std::wstring text =
-                        std::wstring(L"「") + field.label + L"」需要形如 #RRGGBB 的颜色值。";
-                    MessageBoxW(hwnd_, text.c_str(), L"WindowMark 设置", MB_OK | MB_ICONWARNING);
-                    SetFocus(control);
-                    return false;
-                }
+            case FieldKind::Palette: {
+                // Nothing to validate: every value the strip can hold came from a preset
+                // or from the system colour picker, so there is no typo to catch.
+                auto* data = SwatchOf(control);
+                value = data ? static_cast<int>(data->value) : 0;
                 break;
             }
             case FieldKind::Bool:
@@ -705,6 +1128,23 @@ private:
     static constexpr int kEditW = 54;
     // "#RRGGBBAA" plus the caret.
     static constexpr int kColorEditW = 78;
+    // 色卡条：6 个预设 + 1 个自定义 = 7 格。格子 18px，间距 7px，
+    // 选中环画在格子外面，所以行高比普通行多 4px。
+    static constexpr int kSwatchCell = 18;
+    static constexpr int kSwatchGap = 7;
+    // 色块到选中环之间留出的空隙。行高要容得下 kSwatchCell + kSwatchRing*2 + 环宽。
+    static constexpr int kSwatchRing = 4;
+    static constexpr int kSwatchCount = 7;
+    static constexpr int kSwatchStripW =
+        kSwatchCell * kSwatchCount + kSwatchGap * (kSwatchCount - 1);
+    // 「跟随系统 #RRGGBB」是最长的一种说明文字。
+    static constexpr int kSwatchTextW = 118;
+    static constexpr int kPaletteRowH = 30;
+    // Wide enough for the combinations anyone actually binds ("Ctrl+Shift+F12"); the
+    // pathological "Ctrl+Alt+Shift+Win+PAGEDOWN" scrolls, which beats widening the whole
+    // dialog for a case nobody types.
+    static constexpr int kHotkeyEditW = 132;
+    static constexpr int kHotkeyHintW = 66;   // 「退格键清除」
     // "#RRGGBB[AA]", the only hint that ever sits next to a colour. SS_LEFTNOWORDWRAP
     // clips rather than wraps, so these have to be measured generously - 78 lost the
     // closing bracket.
@@ -746,7 +1186,7 @@ private:
                 currentGroup = field.group;
                 cursor += kGroupGap + kRowH + 2 + 1 + 6;
             }
-            cursor += kRowH + kRowGap;
+            cursor += (field.kind == FieldKind::Palette ? kPaletteRowH : kRowH) + kRowGap;
         }
         const int tallest = leftY > rightY ? leftY : rightY;
         // Room below the last field for the footer line and the button row.
@@ -755,8 +1195,10 @@ private:
 
     [[nodiscard]] static constexpr PageMetrics MetricsFor(SettingsPage page) {
         PageMetrics m{};
-        bool hasColour = false;
+        bool hasColour = false;   // 现在指的是色卡条
+        bool hasHotkey = false;
         if (page == SettingsPage::Pinning) {
+            hasHotkey = true;
             m.labelW = 66;   // 「高亮颜色」
             m.hintW = 116;   // 「px  比普通边框粗」
             m.columns = 1;
@@ -773,8 +1215,10 @@ private:
         }
         m.height = PageHeight(page, m.columns);
         const int numberSpan = kEditW + kFieldGap + m.hintW;
-        const int colourSpan = hasColour ? kColorEditW + kFieldGap + kColorHintW : 0;
+        const int colourSpan = hasColour ? kSwatchStripW + kFieldGap + kSwatchTextW : 0;
+        const int hotkeySpan = hasHotkey ? kHotkeyEditW + kFieldGap + kHotkeyHintW : 0;
         m.controlSpan = numberSpan > colourSpan ? numberSpan : colourSpan;
+        if (hotkeySpan > m.controlSpan) m.controlSpan = hotkeySpan;
         m.columnW = kIndent + m.labelW + m.controlSpan;
         const int content = kPad * 2 + m.columnW * m.columns + kColumnGap * (m.columns - 1);
         // The button row has its own minimum. Fields alone made the single-column border

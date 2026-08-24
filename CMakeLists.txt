@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(WindowMark VERSION 0.3.7 LANGUAGES CXX)
+project(WindowMark VERSION 0.4.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +10,7 @@ option(WINDOWMARK_BUILD_TESTS "Build WindowMark core tests" ON)
 add_library(windowmark_core STATIC
     src/core/Coordinator.cpp
     src/core/DrawerState.cpp
+    src/core/Hotkey.cpp
     src/core/LayoutEngine.cpp
     src/core/PinRegistry.cpp
     src/core/Settings.cpp
@@ -22,10 +23,13 @@ target_include_directories(windowmark_core PUBLIC
 
 target_compile_features(windowmark_core PUBLIC cxx_std_20)
 
+# /WX：警告即错误。C4129（非法转义）曾把 L"Software\Microsoft..." 悄悄折成
+# "SoftwareMicrosoft..."，注册表读不到，强调色一直走兜底分支却没人发现。
+# 这类问题编译器本来就报了，只是没人把它当回事，所以直接让它拦下构建。
 if(MSVC)
-    target_compile_options(windowmark_core PRIVATE /W4 /permissive-)
+    target_compile_options(windowmark_core PRIVATE /W4 /WX /permissive-)
 else()
-    target_compile_options(windowmark_core PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(windowmark_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 if(WIN32)
@@ -48,6 +52,27 @@ if(WIN32)
     if(NOT EXISTS "${WINDOWMARK_ICON}")
         message(FATAL_ERROR "找不到图标 ${WINDOWMARK_ICON}")
     endif()
+    # The version has exactly one source of truth: kProductVersion in AppIdentity.h, which
+    # is the string the About box and the tray menu show. Read it here rather than repeat
+    # it, and fail loudly if project(VERSION) has drifted from it - a release binary whose
+    # properties page disagrees with its own About box is worse than one with no version.
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/shared/AppIdentity.h" WINDOWMARK_APPIDENTITY)
+    string(REGEX MATCH "kProductVersion\\[\\][ \t]*=[ \t]*L\"([^\"]+)\""
+           WINDOWMARK_VERSION_MATCH "${WINDOWMARK_APPIDENTITY}")
+    set(WINDOWMARK_VERSION_STRING "${CMAKE_MATCH_1}")
+    if(NOT WINDOWMARK_VERSION_STRING)
+        message(FATAL_ERROR "读不出 src/shared/AppIdentity.h 里的 kProductVersion")
+    endif()
+    if(NOT WINDOWMARK_VERSION_STRING MATCHES "^${PROJECT_VERSION}")
+        message(FATAL_ERROR
+            "版本不一致: project() 写的是 ${PROJECT_VERSION}，"
+            "AppIdentity.h 写的是 ${WINDOWMARK_VERSION_STRING}")
+    endif()
+    # VERSIONINFO needs four integers; a suffix like -rc1 has no place in them.
+    string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)"
+           WINDOWMARK_VERSION_PARTS "${WINDOWMARK_VERSION_STRING}")
+    set(WINDOWMARK_VERSION_COMMA "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},0")
+
     configure_file(res/WindowMark.rc.in "${CMAKE_CURRENT_BINARY_DIR}/WindowMark.rc" @ONLY)
     set(WINDOWMARK_RC "${CMAKE_CURRENT_BINARY_DIR}/WindowMark.rc")
 
@@ -81,7 +106,7 @@ if(WIN32)
     )
 
     if(MSVC)
-        target_compile_options(WindowMark PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_compile_options(WindowMark PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
     endif()
 
     target_link_libraries(WindowMark PRIVATE
@@ -90,6 +115,7 @@ if(WIN32)
         gdi32
         shell32
         comctl32
+        comdlg32
         ole32
         advapi32
         dwmapi
@@ -112,7 +138,7 @@ if(WIN32)
         UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(WindowMarkInspect PRIVATE user32 gdi32 dwmapi)
     if(MSVC)
-        target_compile_options(WindowMarkInspect PRIVATE /W4 /permissive- /EHsc /utf-8)
+        target_compile_options(WindowMarkInspect PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
     endif()
 
     # Installer and uninstaller are standalone GUI executables. They deliberately do
@@ -124,9 +150,12 @@ if(WIN32)
             set(tool_main src/installer/UninstallMain.cpp)
         endif()
 
+        # The rc goes in these too: WindowMarkSetup.exe is the file a user actually sees
+        # in Explorer, and without it the installer has neither an icon nor a version.
         add_executable(${tool_target} WIN32
             ${tool_main}
             src/installer/InstallerCommon.cpp
+            ${WINDOWMARK_RC}
         )
 
         target_include_directories(${tool_target} PRIVATE
@@ -142,7 +171,7 @@ if(WIN32)
         )
 
         if(MSVC)
-            target_compile_options(${tool_target} PRIVATE /W4 /permissive- /EHsc /utf-8)
+            target_compile_options(${tool_target} PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
         endif()
 
         target_link_libraries(${tool_target} PRIVATE

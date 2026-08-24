@@ -107,8 +107,9 @@ struct PinSettings {
     static constexpr unsigned kAccentColor = 0;
     unsigned color{kAccentColor};
     // Wide enough to read as a deliberate highlight rather than a slightly heavier border.
-    // 6 was tried first and looked like the ordinary outline; PowerToys uses 15.
-    int width{15};
+    // 6 was tried first and looked like the ordinary outline; PowerToys uses 15, which the
+    // user found heavier than they wanted. 10 is the value they settled on.
+    int width{10};
     bool showInSystemMenu{true};
     // Empty by default. RegisterHotKey claims a combination process-wide and the
     // loser fails silently, so this app does not take one unless asked.
@@ -147,6 +148,14 @@ struct SelectionSettings {
 // adding it here is what stops needing a rebuild to act on the answer.
 struct TrackingSettings {
     std::vector<std::string> excludeClasses;
+    // "类名:左,上,右,下" - how far inside its own window rect an application paints its
+    // visible edge. Needed for client-side-decorated toolkits: GTK draws its drop shadow
+    // *inside* the window rect, and nothing in Win32 or DWM reports where the opaque part
+    // starts - GetWindowRect, DWMWA_EXTENDED_FRAME_BOUNDS and GetClientRect all return the
+    // same rect, hit-testing covers the shadow too, and PrintWindow's alpha is unusable on
+    // most windows. So the number has to be supplied rather than discovered.
+    // Run WindowMarkInspect.exe to measure one.
+    std::vector<std::string> shadowInsets;
 };
 
 struct Settings {

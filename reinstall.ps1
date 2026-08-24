@@ -57,6 +57,17 @@ if (-not $NoBuild) {
     }
     Write-Host "cmake: $cmake"
     Set-Alias cmake $cmake -Scope Script
+    # 反斜杠体检：/WX 拦得住非法转义，拦不住碰巧合法的（"C:\new" 里的 \n）
+    $py = Get-Command python -EA SilentlyContinue
+    if ($py) {
+        $esc = & $py.Source (Join-Path $PSScriptRoot 'tools\check-escapes.py') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $esc | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            Write-Host '转义检查未通过，没有编译。' -ForegroundColor Red
+            exit 1
+        }
+    }
+
     cmake -S . -B build | Out-Null
     # 只把 error/warning 打出来，成功时保持安静
     $log = cmake --build build --config Release --parallel 2>&1
@@ -66,6 +77,12 @@ if (-not $NoBuild) {
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Host '编译失败，没有安装。' -ForegroundColor Red
+        exit 1
+    }
+    # 开了 /WX 之后警告本来就会让编译失败；这里再兜一层，
+    # 免得哪天有人关掉 /WX，脚本又开始睁眼说瞎话。
+    if ($problems) {
+        Write-Host '编译有警告，没有安装。' -ForegroundColor Red
         exit 1
     }
     Write-Host '编译通过（零错误零警告）' -ForegroundColor Green

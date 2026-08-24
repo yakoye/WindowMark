@@ -80,6 +80,58 @@ void WinWindowBackend::SetGeometrySink(GeometrySink sink) {
     geometrySink_ = std::move(sink);
 }
 
+namespace {
+
+// "class:left,top,right,bottom" -> four ints. Returns false on anything malformed, which
+// is treated as "no entry" rather than an error: the settings file is hand-edited, and a
+// typo should cost the correction, not the app.
+bool ParseInsetValues(const std::string& text, int (&out)[4]) {
+    std::size_t pos = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (pos > text.size()) return false;
+        const std::size_t comma = text.find(',', pos);
+        const std::string piece =
+            text.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        if (piece.empty()) return false;
+        int value = 0;
+        std::size_t digit = 0;
+        const bool negative = piece[0] == '-';
+        if (negative) digit = 1;
+        if (digit >= piece.size()) return false;
+        for (; digit < piece.size(); ++digit) {
+            const char ch = piece[digit];
+            if (ch < '0' || ch > '9') return false;
+            value = value * 10 + (ch - '0');
+            if (value > 10000) return false;
+        }
+        // Negative would grow the outline outwards, which no toolkit needs and a stray
+        // minus sign should not be able to do.
+        out[i] = negative ? 0 : value;
+        if (comma == std::string::npos) return i == 3;
+        pos = comma + 1;
+    }
+    return false;
+}
+
+} // namespace
+
+void WinWindowBackend::SetShadowInsets(const std::vector<std::string>& entries) {
+    shadowInsets_.clear();
+    for (const auto& entry : entries) {
+        // rfind: a class name cannot contain ':' but a future value form might, so the
+        // last colon is the separator.
+        const std::size_t colon = entry.rfind(':');
+        if (colon == std::string::npos || colon == 0) continue;
+        int values[4]{};
+        if (!ParseInsetValues(entry.substr(colon + 1), values)) continue;
+        if (values[0] == 0 && values[1] == 0 && values[2] == 0 && values[3] == 0) continue;
+        shadowInsets_.push_back(ShadowInset{Utf8ToWide(entry.substr(0, colon)), values[0],
+                                            values[1], values[2], values[3]});
+    }
+    // The per-window cache has the old inset baked into it.
+    frameInsets_.clear();
+}
+
 void WinWindowBackend::SetExcludedClasses(const std::vector<std::string>& classes) {
     excludedClasses_.clear();
     excludedClasses_.reserve(classes.size());
@@ -117,10 +169,37 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
         inset.top = frame.top - window.top;
         inset.right = frame.right - window.right;
         inset.bottom = frame.bottom - window.bottom;
+
+        // A client-side-decorated window paints its shadow inside its own rect, and no API
+        // reports where that stops - so the margin comes from settings. Baked into the
+        // cached inset here, which means the class lookup happens on first sight and on
+        // resize, never on a move.
+        //
+        // Skipped while maximized: there is nowhere to draw a shadow then, and GTK does
+        // not. The cache already recalibrates on size change, so maximizing and restoring
+        // both pick up the right answer on their own.
+        if (!shadowInsets_.empty() && !IsZoomed(hwnd)) {
+            wchar_t className[128]{};
+            GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
+            for (const auto& shadow : shadowInsets_) {
+                if (shadow.className != className) continue;
+                // Guarded against a value large enough to invert the rectangle: a typo
+                // should look wrong, not make the outline vanish or draw backwards.
+                if (shadow.left + shadow.right < width && shadow.top + shadow.bottom < height) {
+                    inset.left += shadow.left;
+                    inset.top += shadow.top;
+                    inset.right -= shadow.right;
+                    inset.bottom -= shadow.bottom;
+                }
+                break;
+            }
+        }
+
         inset.width = width;
         inset.height = height;
         frameInsets_[hwnd] = inset;
-        return frame;
+        return Rect{window.left + inset.left, window.top + inset.top,
+                    window.right + inset.right, window.bottom + inset.bottom};
     }
 
     const auto& inset = it->second;
@@ -265,7 +344,11 @@ std::optional<WindowInfo> WinWindowBackend::BuildWindowInfo(HWND hwnd) const {
     info.groupKey = identity->groupKey;
     info.appName = identity->appName;
     info.title = title.empty() ? info.appName : WideToUtf8(title);
-    info.frame = ExtendedFrame(hwnd);
+    // FrameFor, not ExtendedFrame: it is the one that applies the shadow inset and caches
+    // the result. These were two different sources for the same number - QueryFrame used
+    // FrameFor while this used the raw one - so a correction applied mid-drag was absent
+    // from the geometry every window started with.
+    info.frame = FrameFor(hwnd);
     info.workArea = WorkAreaFor(hwnd);
     info.visible = IsWindowVisible(hwnd) != FALSE && !IsCloaked(hwnd);
     info.minimized = IsIconic(hwnd) != FALSE;
