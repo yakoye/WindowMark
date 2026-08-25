@@ -24,6 +24,11 @@ public:
         std::function<void()> onBookmarkSettings;
         std::function<void()> onToggleBorders;
         std::function<void()> onBorderSettings;
+        // 窗口边框 -> 排除应用. Lives in the menu next to the on/off switch rather than
+        // inside the settings window, matching where 书签 keeps its own app picker: both
+        // answer "which windows does this feature apply to", which is a different question
+        // from the numbers on the settings page.
+        std::function<void()> onBorderExcludeApps;
         std::function<void()> onTogglePinning;
         std::function<void(WindowId)> onTogglePinWindow;
         // Crosshair grab. Preview fires as the cursor crosses windows, commit when the
@@ -75,6 +80,7 @@ private:
     static constexpr UINT kExitCommand = 1005;
     static constexpr UINT kToggleBordersCommand = 1006;
     static constexpr UINT kBorderSettingsCommand = 1007;
+    static constexpr UINT kBorderExcludeCommand = 1015;
     static constexpr UINT kAutoStartCommand = 1008;
     static constexpr UINT kToggleAllCommand = 1009;
     static constexpr UINT kTogglePinningCommand = 1010;

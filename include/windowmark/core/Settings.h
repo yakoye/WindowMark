@@ -75,6 +75,19 @@ enum class BorderCorners {
 // Window borders are independent of bookmarks: they apply to every top-level window,
 // including single-window apps that never get a bookmark strip.
 struct BorderSettings {
+    // Applications that never get an outline, keyed the same way the bookmark selection
+    // panel keys its own list: the normalized executable path. That key is what separates
+    // 墨鱼阅读 from Chrome even though both put up Chrome_WidgetWin_1 windows - measured,
+    // six different executables share that one class on this machine.
+    //
+    // Deliberately not the class name and deliberately not the title. The class is too
+    // coarse for exactly that reason, and a title is whatever the app feels like: the
+    // Chrome tab measured here carried fifty invisible characters before its first real
+    // glyph, and it changes every time the user switches page.
+    //
+    // Separate from selection.disabledAppKeys on purpose: that one is the bookmark list,
+    // and wanting no outline around an app is not the same as wanting no bookmark for it.
+    std::vector<std::string> excludedAppKeys;
     bool enabled{false};
     // 4 with an offset of -1, so the outline reaches 3px past the window and covers the
     // last pixel of it. At offset 0 the outline stops one pixel short and the 1px frame

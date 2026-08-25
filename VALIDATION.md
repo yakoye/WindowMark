@@ -1,4 +1,4 @@
-# 验证状态 — v0.4.1
+# 验证状态 — v0.4.2
 
 rc3 是第一个在 Windows 上真实构建并运行过的版本。rc1/rc2 只在 Linux 容器里验证过平台无关的 Core。
 
@@ -68,6 +68,58 @@ SetTopmost: Chrome_WidgetWin_1 目标=1 之前=0 之后=1 最小化=0
 
 前台是不可置顶的窗口时（实测撞上 Snipaste 的 `Qt624QWindowToolSaveBits`），
 日志记 `可置顶=0` 并原样返回——不是失败，是正确拒绝。
+
+#### 边框排除应用
+
+先确认「按类名不够、按 exe 才够」这个前提。枚举所有 `Chrome_WidgetWin_1` 顶层窗口，
+按 exe 路径分组：
+
+```
+chrome.exe        CPU天梯图 / 飞书云文档 / 微信读书
+Typora.exe        PCIe_UIO_支持现状_整理版.md
+Claude.exe        Claude
+ChatGPT.exe       ChatGPT
+Feishu.exe        飞书
+墨鱼阅读.exe       墨鱼阅读
+```
+
+**6 个 exe 共用一个类名。** 飞书云文档那条标题实测在第一个可见字符前带 **50 个不可见字符**，
+与 `Types.h:66` 记录的历史测量一致——标题不能当键。
+
+面板行为（`shoot-exclude.ps1`）：列出了 Feishu、notepad++、PDFXEdit、SiYuan、Typora、
+WindowsTerminal、WINWORD、墨鱼阅读 等**单窗口应用**。书签面板同时截图对照，只列出
+chrome(3) 和 explorer(11)——`members.size() < 2` 的过滤在那边保留、在这边去掉，两张图并排
+可见。
+
+复选框一开始在抓图里一律显示为空。第一反应是抓图不合成树控件状态图标，因为书签面板拍出来
+也是空的——**这个判断错了**。往返测试（开面板、什么都不改、按「应用」、比对配置）证明它是
+真 bug：`TVS_CHECKBOXES` 写在创建样式里，导致所有条目读回来都是未勾选。
+
+```
+按「应用」之前：border.excluded_apps=...墨鱼阅读.exe
+按「应用」之后：border.excluded_apps=
+```
+
+书签面板同一段代码，也就是说在那边原样按一次「应用」会关掉所有书签。改成创建后用
+`SetWindowLong` 设置该样式之后，往返恢复正常（值被 `EncodeList` 百分号编码，解码后与预期
+逐字相同），两个面板的勾选也都正常渲染了。
+
+排除后的实际效果（无损描边日志）：
+
+| 应用 | 结果 |
+|---|---|
+| 墨鱼阅读（已排除） | 不画 |
+| chrome / SiYuan / Feishu / Typora / Claude / ChatGPT / PDFXEdit / WindowsTerminal / explorer | 照常画 |
+
+置顶覆盖规则：
+
+```
+快捷键触发: Chrome_WidgetWin_1 id=6687570 可置顶=1
+SetTopmost: 目标=1 之前=0 之后=1
+描边 墨鱼阅读.exe [Chrome_WidgetWin_1] 1014x740 ...   <- 被排除，但置顶后边框回来
+```
+
+取消置顶后边框再次消失。
 
 #### 自绘阴影内缩（Czkawka / GTK4）
 

@@ -46,8 +46,9 @@ bool GetTreeCheck(HWND tree, HTREEITEM item) {
 
 class DialogState {
 public:
-    DialogState(HWND owner, std::vector<AppSelectionModel>& selection)
-        : owner_(owner), selection_(selection) {}
+    DialogState(HWND owner, std::vector<AppSelectionModel>& selection,
+                const SelectionDialogOptions& options)
+        : owner_(owner), selection_(selection), options_(options) {}
 
     bool Run() {
         INITCOMMONCONTROLSEX icc{};
@@ -87,7 +88,7 @@ public:
         hwnd_ = CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
             kSelectionClass,
-            L"WindowMark - 选择需要书签的应用/窗口",
+            options_.title,
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
             x,
             y,
@@ -146,6 +147,14 @@ private:
         case WM_SIZE:
             LayoutChildren();
             return 0;
+        case WM_NOTIFY: {
+            auto* header = reinterpret_cast<NMHDR*>(lParam);
+            if (header && header->idFrom == kTreeId && header->code == TVN_SELCHANGEDW) {
+                auto* change = reinterpret_cast<NMTREEVIEWW*>(lParam);
+                Highlight(reinterpret_cast<const NodeRef*>(change->itemNew.lParam));
+            }
+            break;
+        }
         case WM_COMMAND:
             if (LOWORD(wParam) == kApplyId) {
                 ReadStates();
@@ -162,6 +171,9 @@ private:
             DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
+            // Clear the highlight before the panel goes: the outline lives in another
+            // process's z-order and nothing else would take it down.
+            if (options_.onHighlight) options_.onHighlight(0);
             hwnd_ = nullptr;
             return 0;
         default:
@@ -175,8 +187,9 @@ private:
             WS_EX_CLIENTEDGE,
             WC_TREEVIEWW,
             L"",
+            // TVS_CHECKBOXES is deliberately absent here - see just below.
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES |
-                TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_CHECKBOXES,
+                TVS_LINESATROOT | TVS_SHOWSELALWAYS,
             0, 0, 100, 100,
             hwnd_,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTreeId)),
@@ -185,7 +198,7 @@ private:
 
         note_ = CreateWindowExW(
             0, L"STATIC",
-            L"说明：应用勾选状态会保存；单个窗口勾选状态只对本次运行有效。应用未勾选时，其下面窗口即使勾选也不会显示书签。",
+            options_.note,
             WS_CHILD | WS_VISIBLE,
             0, 0, 100, 40,
             hwnd_,
@@ -213,11 +226,37 @@ private:
 
         if (!tree_ || !note_ || !apply_ || !cancel_) return false;
 
+        // TVS_CHECKBOXES has to be applied *after* creation and *before* any item is
+        // inserted. Documented, and not cosmetic: set at creation time the control can end
+        // up with every box reading back unchecked no matter what TVM_SETITEM was told, so
+        // pressing 应用 without touching anything wiped the whole list. Caught by a
+        // round-trip test - open the panel, change nothing, press 应用, compare the file.
+        SetWindowLongPtrW(tree_, GWL_STYLE,
+                          GetWindowLongPtrW(tree_, GWL_STYLE) | TVS_CHECKBOXES);
+
         HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         for (HWND control : {tree_, note_, apply_, cancel_}) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
         return true;
+    }
+
+    // Height the note needs at this width, so the layout follows the wording instead of
+    // the wording having to fit the layout.
+    [[nodiscard]] int MeasureNoteHeight(int textWidth) const {
+        if (!note_ || !options_.note || textWidth <= 0) return 42;
+        HDC dc = GetDC(note_);
+        if (!dc) return 42;
+        auto font = reinterpret_cast<HFONT>(SendMessageW(note_, WM_GETFONT, 0, 0));
+        HGDIOBJ previous = font ? SelectObject(dc, font) : nullptr;
+        RECT box{0, 0, textWidth, 0};
+        DrawTextW(dc, options_.note, -1, &box, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+        if (previous) SelectObject(dc, previous);
+        ReleaseDC(note_, dc);
+        const int measured = static_cast<int>(box.bottom - box.top) + 4;
+        // Floor keeps a one-line note from crowding the buttons; ceiling keeps a runaway
+        // string from squeezing the tree out of existence.
+        return std::min(180, std::max(36, measured));
     }
 
     void LayoutChildren() {
@@ -230,7 +269,10 @@ private:
         constexpr int buttonW = 92;
         constexpr int buttonH = 32;
         constexpr int gap = 10;
-        constexpr int noteH = 42;
+        // Measured rather than fixed. It used to be a hardcoded 42, which fits two lines;
+        // a three-line note then painted over the button row and 取消 disappeared. Any
+        // future wording change would have hit the same wall.
+        const int noteH = MeasureNoteHeight(width - margin * 2);
 
         const int bottomY = height - margin - buttonH;
         MoveWindow(tree_, margin, margin, width - margin * 2,
@@ -249,6 +291,14 @@ private:
         insert.item.pszText = const_cast<wchar_t*>(text.c_str());
         insert.item.lParam = reinterpret_cast<LPARAM>(node);
         return TreeView_InsertItem(tree_, &insert);
+    }
+
+    // One place each way round, so the two conversions cannot drift apart.
+    [[nodiscard]] bool ShownAsChecked(bool enabled) const {
+        return options_.checkedMeansExcluded ? !enabled : enabled;
+    }
+    [[nodiscard]] bool EnabledFromCheck(bool checked) const {
+        return options_.checkedMeansExcluded ? !checked : checked;
     }
 
     void Populate() {
@@ -273,7 +323,7 @@ private:
             std::wstring appText = Utf8ToWide(app.appName.empty() ? app.groupKey : app.appName);
             appText += L"  (" + std::to_wstring(app.windows.size()) + L" 个窗口)";
             appNode->item = InsertItem(appText, TVI_ROOT, appNode);
-            SetTreeCheck(tree_, appNode->item, app.enabled);
+            SetTreeCheck(tree_, appNode->item, ShownAsChecked(app.enabled));
 
             for (std::size_t windowIndex = 0; windowIndex < app.windows.size(); ++windowIndex) {
                 const auto& window = app.windows[windowIndex];
@@ -281,16 +331,31 @@ private:
                 NodeRef* windowNode = &nodes_.back();
                 std::wstring title = L"↳ " + Utf8ToWide(window.title);
                 windowNode->item = InsertItem(title, appNode->item, windowNode);
-                SetTreeCheck(tree_, windowNode->item, window.enabled);
+                SetTreeCheck(tree_, windowNode->item, ShownAsChecked(window.enabled));
             }
             TreeView_Expand(tree_, appNode->item, TVE_EXPAND);
         }
     }
 
+    // An app row highlights nothing rather than guessing one of its windows - the row
+    // stands for all of them, and lighting up an arbitrary member would be a lie.
+    void Highlight(const NodeRef* node) {
+        if (!options_.onHighlight) return;
+        WindowId id = 0;
+        if (node && node->kind == NodeRef::Kind::Window &&
+            node->appIndex < selection_.size() &&
+            node->windowIndex < selection_[node->appIndex].windows.size()) {
+            id = selection_[node->appIndex].windows[node->windowIndex].windowId;
+        }
+        if (id == highlighted_) return;
+        highlighted_ = id;
+        options_.onHighlight(id);
+    }
+
     void ReadStates() {
         for (const auto& node : nodes_) {
             if (!node.item) continue;
-            const bool checked = GetTreeCheck(tree_, node.item);
+            const bool checked = EnabledFromCheck(GetTreeCheck(tree_, node.item));
             if (node.kind == NodeRef::Kind::App) {
                 if (node.appIndex < selection_.size()) selection_[node.appIndex].enabled = checked;
             } else if (node.appIndex < selection_.size() &&
@@ -307,14 +372,17 @@ private:
     HWND apply_{};
     HWND cancel_{};
     std::vector<AppSelectionModel>& selection_;
+    SelectionDialogOptions options_;
     std::vector<NodeRef> nodes_;
+    WindowId highlighted_{};
     bool applied_{false};
 };
 
 } // namespace
 
-bool WinSelectionDialog::ShowModal(HWND owner, std::vector<AppSelectionModel>& selection) {
-    DialogState state(owner, selection);
+bool WinSelectionDialog::ShowModal(HWND owner, std::vector<AppSelectionModel>& selection,
+                                   const SelectionDialogOptions& options) {
+    DialogState state(owner, selection, options);
     return state.Run();
 }
 
