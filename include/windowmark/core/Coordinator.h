@@ -52,6 +52,10 @@ public:
     // build its own native settings UI without pulling platform types into Core.
     [[nodiscard]] std::vector<AppSelectionModel> SelectionSnapshot() const;
     void ApplySelection(const std::vector<AppSelectionModel>& selection);
+    // The same pair again for borders. Two lists rather than one shared one: an app can be
+    // worth a bookmark and not worth an outline, and the reverse.
+    [[nodiscard]] std::vector<AppSelectionModel> BorderSelectionSnapshot() const;
+    void ApplyBorderSelection(const std::vector<AppSelectionModel>& selection);
     [[nodiscard]] const Settings& CurrentSettings() const noexcept { return settings_; }
 
     // Pushes edited settings to the backends and redraws, so the settings UI does not
@@ -87,6 +91,8 @@ private:
     [[nodiscard]] std::vector<BorderModel> BuildBorderModels() const;
     [[nodiscard]] Color ColorFor(WindowId id);
     [[nodiscard]] bool IsAppEnabled(const std::string& groupKey) const;
+    [[nodiscard]] bool IsBorderAppEnabled(const std::string& groupKey) const;
+    [[nodiscard]] bool IsBorderWindowEnabled(WindowId id) const;
     [[nodiscard]] bool IsWindowEnabled(WindowId id) const;
     void PruneTransientState();
 
@@ -101,6 +107,9 @@ private:
     std::unordered_map<WindowId, std::size_t> stableOrder_;
     std::unordered_map<WindowId, std::size_t> colorSlots_;
     std::unordered_set<WindowId> disabledWindowIds_;
+    // Session-only, like its bookmark counterpart: an HWND is not the same window after a
+    // restart, so persisting one would silence whatever inherited the number.
+    std::unordered_set<WindowId> borderDisabledWindowIds_;
     std::unordered_map<WindowId, std::string> customLabels_;
     PinRegistry pins_;
     std::function<void(WindowId)> onRename_;

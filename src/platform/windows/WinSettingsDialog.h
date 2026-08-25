@@ -19,6 +19,10 @@ class WinSettingsDialog {
 public:
     // Edits `settings` in place. Returns true when the user accepted, in which case the
     // caller is responsible for persisting and applying the result.
+    //
+    // Only numbers and switches live here. Anything that opens another window - the app
+    // pickers for bookmarks and for border exclusion - sits in the tray menu instead, so
+    // this dialog stays a plain form with no way to reach the Coordinator.
     static bool ShowModal(HWND owner, Settings& settings, SettingsPage page);
 };
 

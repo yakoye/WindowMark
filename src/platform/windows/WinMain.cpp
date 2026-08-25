@@ -177,6 +177,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // re-apply the shortcut the moment the user changes it.
     std::function<void()> reapplyHotkey;
 
+    // 窗口边框 -> 排除应用. Mirrors handlers.onSelection, with two differences: the list is
+    // keyed for borders rather than bookmarks, and the highlight follows the selected row
+    // so the user can see which window a line refers to without any numbering.
+    const auto excludeBorderApps = [&](HWND owner) {
+        auto selection = coordinator.BorderSelectionSnapshot();
+        windowmark::win::SelectionDialogOptions options;
+        options.title = L"WindowMark - 排除不画边框的应用/窗口";
+        options.checkedMeansExcluded = true;
+        options.note =
+            L"说明：勾上 = 不画边框。应用的勾选会保存；单个窗口的勾选只对本次运行有效。"
+            L"勾上的应用，其下面的窗口一律不画。被置顶的窗口仍然会画——那是置顶生效的唯一提示。"
+            L"选中一行时，对应窗口会在屏幕上高亮。";
+        options.onHighlight = [&](windowmark::WindowId id) { coordinator.SetPinPreview(id); };
+        const bool applied =
+            windowmark::win::WinSelectionDialog::ShowModal(owner, selection, options);
+        if (applied) {
+            coordinator.ApplyBorderSelection(selection);
+            persist();
+        }
+        return applied;
+    };
+
     const auto openSettingsPage = [&](windowmark::win::SettingsPage page) {
         exclusive([&] {
             windowmark::Settings draft = coordinator.CurrentSettings();
@@ -250,6 +272,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         coordinator.UpdateSettings(draft);
         control.SetBorderState(draft.border.enabled);
         persist();
+    };
+    handlers.onBorderExcludeApps = [&]() {
+        exclusive([&] { excludeBorderApps(control.NativeHandle()); });
     };
     handlers.onBorderSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Borders);

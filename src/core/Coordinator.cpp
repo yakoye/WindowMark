@@ -237,6 +237,84 @@ void Coordinator::ApplySelection(const std::vector<AppSelectionModel>& selection
     ApplyModels();
 }
 
+std::vector<AppSelectionModel> Coordinator::BorderSelectionSnapshot() const {
+    std::unordered_map<std::string, std::vector<const WindowInfo*>> groups;
+    for (const auto& [_, window] : windows_) {
+        if (!window.groupKey.empty()) {
+            groups[window.groupKey].push_back(&window);
+        }
+    }
+
+    std::vector<AppSelectionModel> result;
+    result.reserve(groups.size());
+    for (auto& [groupKey, members] : groups) {
+        // No `members.size() < 2` filter here, unlike the bookmark snapshot. A same-app
+        // bookmark strip is meaningless for a lone window, but an outline is not: 墨鱼阅读
+        // runs exactly one window and is precisely the app this list exists to silence.
+        std::sort(members.begin(), members.end(), [this](const WindowInfo* a, const WindowInfo* b) {
+            const auto ao = stableOrder_.find(a->id);
+            const auto bo = stableOrder_.find(b->id);
+            const std::size_t av = ao == stableOrder_.end() ? 0 : ao->second;
+            const std::size_t bv = bo == stableOrder_.end() ? 0 : bo->second;
+            return av < bv;
+        });
+
+        AppSelectionModel app;
+        app.groupKey = groupKey;
+        app.appName = members.empty() ? groupKey : members.front()->appName;
+        app.enabled = IsBorderAppEnabled(groupKey);
+        app.windows.reserve(members.size());
+        for (const WindowInfo* window : members) {
+            app.windows.push_back(WindowSelectionModel{
+                window->id,
+                window->title.empty() ? window->appName : window->title,
+                IsBorderWindowEnabled(window->id),
+            });
+        }
+        result.push_back(std::move(app));
+    }
+
+    std::sort(result.begin(), result.end(), [](const AppSelectionModel& a, const AppSelectionModel& b) {
+        const std::string an = LowerAscii(a.appName);
+        const std::string bn = LowerAscii(b.appName);
+        if (an != bn) return an < bn;
+        return a.groupKey < b.groupKey;
+    });
+    return result;
+}
+
+void Coordinator::ApplyBorderSelection(const std::vector<AppSelectionModel>& selection) {
+    for (const auto& app : selection) {
+        auto disabledIt = std::find(
+            settings_.border.excludedAppKeys.begin(),
+            settings_.border.excludedAppKeys.end(),
+            app.groupKey);
+
+        if (app.enabled) {
+            if (disabledIt != settings_.border.excludedAppKeys.end()) {
+                settings_.border.excludedAppKeys.erase(disabledIt);
+            }
+        } else if (disabledIt == settings_.border.excludedAppKeys.end()) {
+            settings_.border.excludedAppKeys.push_back(app.groupKey);
+        }
+
+        for (const auto& window : app.windows) {
+            if (window.enabled) {
+                borderDisabledWindowIds_.erase(window.windowId);
+            } else if (windows_.contains(window.windowId)) {
+                borderDisabledWindowIds_.insert(window.windowId);
+            }
+        }
+    }
+
+    std::sort(settings_.border.excludedAppKeys.begin(), settings_.border.excludedAppKeys.end());
+    settings_.border.excludedAppKeys.erase(
+        std::unique(settings_.border.excludedAppKeys.begin(), settings_.border.excludedAppKeys.end()),
+        settings_.border.excludedAppKeys.end());
+
+    ApplyModels();
+}
+
 void Coordinator::UpdateSettings(Settings settings) {
     // Read before the assignment: turning pinning off has to release the windows it is
     // holding. Otherwise the switch that could let them go is the one that just went away,
@@ -490,6 +568,12 @@ std::vector<BorderModel> Coordinator::BuildBorderModels() const {
         if (!window.visible || window.minimized) continue;
         const bool pinned = pins_.Contains(id) || id == pinPreview_;
         if (!bordersOn && !pinned) continue;
+        // Excluded apps still get an outline while pinned. The pin highlight is the only
+        // feedback that the pin worked, so silencing it would make the pin look broken -
+        // the same reason border.enabled is not consulted for pinned windows above.
+        if (!pinned && (!IsBorderAppEnabled(window.groupKey) || !IsBorderWindowEnabled(id))) {
+            continue;
+        }
 
         BorderModel model;
         model.windowId = id;
@@ -572,6 +656,17 @@ bool Coordinator::IsAppEnabled(const std::string& groupKey) const {
 
 bool Coordinator::IsWindowEnabled(WindowId id) const {
     return !disabledWindowIds_.contains(id);
+}
+
+bool Coordinator::IsBorderAppEnabled(const std::string& groupKey) const {
+    return std::find(
+        settings_.border.excludedAppKeys.begin(),
+        settings_.border.excludedAppKeys.end(),
+        groupKey) == settings_.border.excludedAppKeys.end();
+}
+
+bool Coordinator::IsBorderWindowEnabled(WindowId id) const {
+    return !borderDisabledWindowIds_.contains(id);
 }
 
 void Coordinator::PruneTransientState() {

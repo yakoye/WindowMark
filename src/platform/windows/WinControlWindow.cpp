@@ -55,6 +55,7 @@ bool WinControlWindow::Start(Handlers handlers) {
         {L"onBookmarkSettings", static_cast<bool>(handlers_.onBookmarkSettings)},
         {L"onToggleBorders", static_cast<bool>(handlers_.onToggleBorders)},
         {L"onBorderSettings", static_cast<bool>(handlers_.onBorderSettings)},
+        {L"onBorderExcludeApps", static_cast<bool>(handlers_.onBorderExcludeApps)},
         {L"onTogglePinning", static_cast<bool>(handlers_.onTogglePinning)},
         {L"onTogglePinWindow", static_cast<bool>(handlers_.onTogglePinWindow)},
         {L"onGrabPreview", static_cast<bool>(handlers_.onGrabPreview)},
@@ -491,6 +492,7 @@ void WinControlWindow::ShowMenu() {
     if (borders) {
         AppendMenuW(borders, MF_STRING | (bordersEnabled_ ? MF_CHECKED : MF_UNCHECKED),
                     kToggleBordersCommand, L"启用窗口边框");
+        AppendMenuW(borders, MF_STRING, kBorderExcludeCommand, L"排除应用...");
         AppendMenuW(borders, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(borders, MF_STRING, kBorderSettingsCommand, L"边框设置...");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(borders), L"窗口边框");
@@ -668,6 +670,7 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kSettingsCommand:       handler = &handlers_.onBookmarkSettings; break;
         case kToggleBordersCommand:  handler = &handlers_.onToggleBorders; break;
         case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
+        case kBorderExcludeCommand:  handler = &handlers_.onBorderExcludeApps; break;
         case kTogglePinningCommand:  handler = &handlers_.onTogglePinning; break;
 
         case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;

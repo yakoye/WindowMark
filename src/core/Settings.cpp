@@ -311,6 +311,9 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     if (const auto it = values.find("selection.disabled_apps"); it != values.end()) {
         settings.selection.disabledAppKeys = ParseEncodedList(it->second);
     }
+    if (const auto it = values.find("border.excluded_apps"); it != values.end()) {
+        settings.border.excludedAppKeys = ParseEncodedList(it->second);
+    }
     if (const auto it = values.find("tracking.exclude_classes"); it != values.end()) {
         settings.tracking.excludeClasses = ParseEncodedList(it->second);
     }
@@ -413,6 +416,10 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "# separated by '|'. Ignored while a window is maximized, because the shadow is\n";
     output << "# not drawn then. Run WindowMarkInspect.exe to measure one.\n";
     output << "tracking.shadow_insets=" << EncodeList(settings.tracking.shadowInsets) << "\n\n";
+    output << "# Applications that never get a border, by normalized executable path. Set from\n";
+    output << "# 边框设置 -> 排除应用. Separate from selection.disabled_apps, which is the\n";
+    output << "# bookmark list - not wanting an outline is not the same as not wanting a bookmark.\n";
+    output << "border.excluded_apps=" << EncodeList(settings.border.excludedAppKeys) << "\n\n";
     output << "# Application selections are persistent. Individual-window selections are session-only.\n";
     output << "selection.disabled_apps=" << EncodeList(settings.selection.disabledAppKeys) << "\n";
     return static_cast<bool>(output);

@@ -1,4 +1,4 @@
-# WindowMark v0.4.1
+# WindowMark v0.4.2
 
 WindowMark is a lightweight **same-application multi-window bookmark layer**.
 
@@ -129,6 +129,17 @@ PowerToys 也进不去。这类窗口请用准星或快捷键。
 
 快捷键作用于**当前前台窗口**。托盘菜单做不到这一点——菜单一打开，前台就变成 WindowMark
 自己了，没有「当前窗口」可读；快捷键不夺取前台，所以可以。
+
+### 排除不想要边框的应用
+
+托盘 →「窗口边框」→「排除应用...」，**勾上的应用不画边框**。
+应用层的选择长期保存，单个窗口的选择只在本次运行内有效。选中一行时对应窗口会在屏幕上高亮。
+
+**为什么按应用而不是按类名**：本机实测 6 个不同的 exe 共用 `Chrome_WidgetWin_1` 这一个类名
+（chrome、Typora、Claude、ChatGPT、Feishu、墨鱼阅读）。按类名排会一次干掉六个；
+按 exe 路径排就能只排掉其中一个。标题也不行——它随页面变，而且经常塞满不可见字符。
+
+被排除的应用一旦被置顶仍然会画边框，那是置顶生效的唯一提示。
 
 ## Settings, renaming and the context menu
 
@@ -277,6 +288,9 @@ drawer.bottom_collapsed_thickness=0
 drawer.bottom_active_thickness=23
 
 border.enabled=false
+# 不画边框的应用，按可执行文件路径。用「边框设置 -> 排除应用」勾选。
+# 和 selection.disabled_apps 分开：不想要边框和不想要书签是两回事。
+border.excluded_apps=
 border.width=4
 border.offset=-1
 border.corners=auto
