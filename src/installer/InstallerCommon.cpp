@@ -202,7 +202,6 @@ std::filesystem::path LocatePayload(const wchar_t* fileName) {
 // Both of these live in AutoStart.h now, shared with the app so the settings dialog and
 // the installer cannot drift apart on what "start with Windows" means.
 bool SetStartWithWindows(const std::filesystem::path& exePath, bool enable) {
-    if (enable) app::ClearAutoStartVeto();
     return app::SetAutoStart(exePath.wstring(), enable);
 }
 

@@ -188,7 +188,10 @@
 
 - 系统强调色在 `HKCU\Software\Microsoft\Windows\DWM\AccentColor`，存的是 **ABGR**，红蓝字节和名字的顺序是反的。
 - `DWMWA_CAPTION_BUTTON_BOUNDS` 对自绘标题栏不可靠：Electron / WinUI 会返回 0 宽度或者全 0。别用它猜别人的按钮位置。
-- 开机自启动：`Run` 键之外还有 `StartupApproved\Run`，它的否决字节会**覆盖** `Run` 键。只写 `Run` 键会出现「写了但不启动」。
+- 开机自启动：`Run` 键之外还有 `StartupApproved\Run`，它的否决字节会**覆盖** `Run` 键。
+  状态显示必须同时读两边；启用时先写 Run 命令，再把批准状态写成 `02`，任一步失败都要返回。
+  只看/只写 `Run` 会出现「菜单已勾选，但登录时不启动」。真正的启动命令带 `--autostart`，
+  由程序在 `%LOCALAPPDATA%\WindowMark\startup.log` 留下 `attempt → running`，不要再靠猜。
 
 ---
 

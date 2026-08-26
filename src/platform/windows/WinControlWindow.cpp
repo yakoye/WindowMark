@@ -641,9 +641,14 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         if (LOWORD(wParam) == kAutoStartCommand) {
             const bool turningOn = !app::IsAutoStartEnabled();
             wchar_t exe[MAX_PATH]{};
-            if (GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe))) != 0) {
-                if (turningOn) app::ClearAutoStartVeto();
-                app::SetAutoStart(exe, turningOn);
+            const bool havePath = !turningOn ||
+                GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe))) != 0;
+            if (!havePath || !app::SetAutoStart(exe, turningOn)) {
+                MessageBoxW(hwnd_,
+                            turningOn
+                                ? L"写入 Windows 开机启动设置失败。请检查当前用户的注册表权限。"
+                                : L"删除 Windows 开机启动设置失败。请检查当前用户的注册表权限。",
+                            L"WindowMark", MB_OK | MB_ICONERROR);
             }
             return 0;
         }

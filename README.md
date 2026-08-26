@@ -1,38 +1,43 @@
-# WindowMark v0.4.2
+# WindowMark v0.4.3
 
-WindowMark is a lightweight **same-application multi-window bookmark layer**.
+WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
+borders, and temporary always-on-top pinning**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.3.7 at a glance
+## v0.4.3 at a glance
 
-This Windows release combines two independent tools in one ordinary user process:
+This Windows release combines three independent tools in one ordinary user process:
 
 - **Window bookmarks** for identifying, previewing, renaming, and switching between
   multiple windows of the same application.
 - **Window borders** for outlining every eligible top-level window with separate active
   and inactive colors. Borders are optional and disabled by default.
+- **Window pinning** through the target window's system menu, a crosshair picker, or an
+  optional global hotkey. Pinned windows always receive a visible highlight.
 
-v0.3.7 reworks the tray menu — a **暂停所有 / 启用所有** master switch, **开机启动** (off
-after a fresh install), shorter labels and a left-growing popup — and makes the settings
-dialog's height derive from its field list instead of a hand-tuned constant.
+v0.4.3 fixes **开机启动** reporting and registration. The tray menu now checks both the
+actual Run command and Windows' separate `StartupApproved` veto, enabling writes the Run
+command before clearing that veto, and failures are reported instead of silently ignored.
+Logon launches carry `--autostart` and append their startup phases to
+`%LOCALAPPDATA%\WindowMark\startup.log`, so a failed launch can be distinguished from
+Windows never attempting it.
 
-v0.3.6 fixed the major drag-latency problem caused by assigning cross-process owners to
-bookmark windows, strengthened bookmark/border z-order recovery, created bookmark windows
-only when they are visible, and added build timestamps plus opt-in diagnostic counters.
-See [CHANGELOG.md](CHANGELOG.md) for the measurements and full history.
+v0.4.2 added per-application border exclusions and fixed the shared selection panel's
+checkbox round trip. v0.4.1 added window pinning. See [CHANGELOG.md](CHANGELOG.md) for the
+full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.3.7-Release.zip` from the
-   [v0.3.7 release](https://github.com/yakoye/WindowMark/releases/tag/v0.3.7).
+1. Download `WindowMark-v0.4.3-win64.zip` from the
+   [v0.4.3 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.3).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
-4. Use the tray menu to enable/configure **书签** and the optional **窗口边框** separately.
+4. Use the tray menu to configure **书签**, **窗口边框**, and **窗口置顶** independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.3.7.
+scaffold and does not provide a working macOS application in v0.4.3.
 
 ## Interaction
 
@@ -397,6 +402,12 @@ whatever is already configured on an upgrade — then installs to
 `%LOCALAPPDATA%\Programs\WindowMark`, creates a Start menu shortcut, registers an entry
 under **设置 - 应用**, and starts the app. The same switch is available from the tray menu.
 
+The startup switch reflects Windows' effective state, not merely the presence of a Run
+value. If Task Manager or Settings disables WindowMark, the tray item becomes unchecked.
+Enabling it writes a quoted command ending in `--autostart` and clears the corresponding
+`StartupApproved` veto. After the next sign-in, `%LOCALAPPDATA%\WindowMark\startup.log`
+records `attempt` followed by `running`, or the startup phase that failed.
+
 Uninstall from **设置 - 应用**, from the Start menu, or by running `WindowMarkUninstall.exe`
 in the install directory. Its dialog has a **同时删除我的设置和数据** checkbox; leaving it
 unchecked keeps `%LOCALAPPDATA%\WindowMark`.
@@ -421,8 +432,9 @@ system-wide registry state is ever installed — everything lives under the curr
 ## Validation status
 
 rc3 is the first revision **built and run on Windows**. See [VALIDATION.md](VALIDATION.md) for what was
-exercised: MSVC Release/Debug builds, core tests in both configurations, overlay rendering
-on a 125% display, and full install/reinstall-over-running/uninstall cycles.
+exercised: MSVC Release/Debug builds, core and registry-integration tests in both
+configurations, overlay rendering on a 125% display, startup-command simulation, and full
+install/reinstall-over-running/uninstall cycles.
 
 ## 图标
 
@@ -435,14 +447,14 @@ on a 125% display, and full install/reinstall-over-running/uninstall cycles.
 
 ## Version policy
 
-**v0.3.7** is the current release. It includes the window-border feature developed in the
-v0.3.0 line, configurable exclusions and `WindowMarkInspect.exe` from v0.3.2, the movement
-path improvements from v0.3.5, the cross-process-owner and z-order fixes from v0.3.6, and
-the start-with-Windows switch from v0.3.7.
+**v0.4.3** is the current release. It includes window bookmarks, per-window borders,
+per-application border exclusions, window pinning, `WindowMarkInspect.exe`, and reliable
+start-with-Windows state handling with a login-attempt audit log.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
-v0.2.0. Development revisions v0.3.0, v0.3.2, v0.3.5 and v0.3.6 are retained in the
-changelog so the progression to v0.3.7 remains auditable.
+v0.2.0. All intermediate versions are retained in the changelog so the progression to
+v0.4.3 remains auditable.
 
-Fixes go to `v0.3.x`; new features to `v0.4.0`. See [VALIDATION.md](VALIDATION.md) for what
-is verified and what still is not, and [ROADMAP.md](ROADMAP.md) for what is deferred.
+Fixes go to `v0.4.x`; larger new features go to the next minor line. See
+[VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
+[ROADMAP.md](ROADMAP.md) for what is deferred.
