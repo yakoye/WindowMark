@@ -22,6 +22,7 @@
 #include <shellapi.h>
 #include <windows.h>
 
+#include <cstdio>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -53,6 +54,37 @@ bool HasArgument(const wchar_t* expected) {
     }
     LocalFree(argv);
     return found;
+}
+
+// A Run-key launch is otherwise indistinguishable from "Windows never tried" once the
+// process has disappeared. Keep a tiny append-only audit trail only for --autostart runs;
+// ordinary manual launches stay silent. This deliberately uses LOCALAPPDATA and Win32/C
+// primitives so it also works before COM, the coordinator and the tray window exist.
+void LogAutoStartPhase(bool autoStartLaunch, const wchar_t* phase, DWORD code = 0) {
+    if (!autoStartLaunch) return;
+
+    wchar_t localAppData[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", localAppData, static_cast<DWORD>(std::size(localAppData)));
+    if (length == 0 || length >= static_cast<DWORD>(std::size(localAppData))) return;
+
+    const std::wstring directory = std::wstring(localAppData) + L"\\WindowMark";
+    if (!CreateDirectoryW(directory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        return;
+    }
+
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, (directory + L"\\startup.log").c_str(), L"a, ccs=UTF-8") != 0 ||
+        !file) {
+        return;
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    fwprintf(file, L"%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu phase=%ls code=%lu\n",
+             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
+             now.wMilliseconds, GetCurrentProcessId(), phase, code);
+    fclose(file);
 }
 
 class ScopedCom {
@@ -92,16 +124,22 @@ void NotifyExistingInstance(const wchar_t* messageName) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    const bool autoStartLaunch = HasArgument(L"--autostart");
+    LogAutoStartPhase(autoStartLaunch, L"attempt");
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     ScopedCom com;
     if (!com.ok()) {
+        LogAutoStartPhase(autoStartLaunch, L"com_failed", 2);
         MessageBoxW(nullptr, L"COM 初始化失败。WindowMark 未启动。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 2;
     }
 
     const bool purgeRequested = HasArgument(L"--purge");
     ScopedHandle singleInstance(CreateMutexW(nullptr, FALSE, windowmark::app::kSingletonMutex));
-    if (!singleInstance.get()) return 3;
+    if (!singleInstance.get()) {
+        LogAutoStartPhase(autoStartLaunch, L"mutex_failed", 3);
+        return 3;
+    }
 
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // Being launched twice is normal (double-clicked shortcut, startup entry plus a
@@ -118,6 +156,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             return 0;
         }
         NotifyExistingInstance(windowmark::app::kSecondInstanceMessage);
+        LogAutoStartPhase(autoStartLaunch, L"already_running");
         return 0;
     }
 
@@ -133,6 +172,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     const std::filesystem::path dataRoot = windowmark::win::LocalDataRoot();
     if (dataRoot.empty()) {
+        LogAutoStartPhase(autoStartLaunch, L"data_path_failed", 4);
         MessageBoxW(nullptr, L"无法确定本地配置目录。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 4;
     }
@@ -230,6 +270,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         openBookmarkSettings);
 
     if (!coordinator.Start()) {
+        LogAutoStartPhase(autoStartLaunch, L"coordinator_failed", 5);
         MessageBoxW(nullptr,
                     L"WindowMark 初始化失败。程序已安全退出，不会修改 Explorer、任务栏或系统驱动。",
                     L"WindowMark",
@@ -401,6 +442,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     if (!control.Start(std::move(handlers))) {
         coordinator.Stop();
+        LogAutoStartPhase(autoStartLaunch, L"tray_failed", 6);
         MessageBoxW(nullptr, L"托盘控制器初始化失败，程序已安全退出。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 6;
     }
@@ -429,6 +471,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // records it, and changing it in the dialog does report failure immediately.
     applyHotkey(false);
     reapplyHotkey = [&]() { applyHotkey(true); };
+    LogAutoStartPhase(autoStartLaunch, L"running");
 
     control.SetPinnedProvider([&]() {
         std::vector<std::pair<windowmark::WindowId, std::wstring>> out;

@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
-project(WindowMark VERSION 0.4.2 LANGUAGES CXX)
+project(WindowMark VERSION 0.4.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(WINDOWMARK_BUILD_TESTS "Build WindowMark core tests" ON)
+option(WINDOWMARK_BUILD_TESTS "Build WindowMark tests" ON)
 
 add_library(windowmark_core STATIC
     src/core/Coordinator.cpp
@@ -208,4 +208,18 @@ if(WINDOWMARK_BUILD_TESTS)
     add_executable(windowmark_core_tests tests/core_tests.cpp)
     target_link_libraries(windowmark_core_tests PRIVATE windowmark_core)
     add_test(NAME windowmark_core_tests COMMAND windowmark_core_tests)
+
+    if(WIN32)
+        add_executable(windowmark_autostart_tests tests/autostart_tests.cpp)
+        target_include_directories(windowmark_autostart_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/shared)
+        target_compile_definitions(windowmark_autostart_tests PRIVATE
+            UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(windowmark_autostart_tests PRIVATE advapi32)
+        if(MSVC)
+            target_compile_options(windowmark_autostart_tests PRIVATE
+                /W4 /WX /permissive- /EHsc /utf-8)
+        endif()
+        add_test(NAME windowmark_autostart_tests COMMAND windowmark_autostart_tests)
+    endif()
 endif()
