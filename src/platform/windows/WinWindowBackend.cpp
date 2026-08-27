@@ -153,6 +153,29 @@ bool WinWindowBackend::IsTopLevel(HWND hwnd) const {
     return topLevel;
 }
 
+namespace {
+
+// Is this frame-inset reading one worth remembering?
+//
+// Three ways it is not:
+//   - DWM did not answer, so ExtendedFrame fell back to the raw window rect.
+//   - The window is minimized; its bounds are a placeholder, not where it will be.
+//   - It has WS_THICKFRAME but measured a zero inset. Windows always keeps an invisible
+//     resize border on such a window - 8,0,8,8 on every one of them measured here - so a
+//     zero reading means DWM has not settled on this window yet. A zero inset *is* genuine
+//     for a client-side-decorated window, and those have no thick frame, which is what
+//     lets the two cases be told apart without guessing by class name.
+[[nodiscard]] bool InsetLooksSettled(HWND hwnd, bool fromDwm, const auto& inset) {
+    if (!fromDwm) return false;
+    if (IsIconic(hwnd)) return false;
+    const bool zero =
+        inset.left == 0 && inset.top == 0 && inset.right == 0 && inset.bottom == 0;
+    if (!zero) return true;
+    return (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) == 0;
+}
+
+} // namespace
+
 Rect WinWindowBackend::FrameFor(HWND hwnd) const {
     RECT window{};
     if (!GetWindowRect(hwnd, &window)) return ExtendedFrame(hwnd);
@@ -163,12 +186,19 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
     auto it = frameInsets_.find(hwnd);
     // Recalibrate when the size changes: maximizing or restoring changes the inset.
     if (it == frameInsets_.end() || it->second.width != width || it->second.height != height) {
-        const Rect frame = ExtendedFrame(hwnd);
+        bool fromDwm = false;
+        const Rect frame = ExtendedFrame(hwnd, fromDwm);
         FrameInset inset;
         inset.left = frame.left - window.left;
         inset.top = frame.top - window.top;
         inset.right = frame.right - window.right;
         inset.bottom = frame.bottom - window.bottom;
+
+        // Whether this reading is worth remembering. It is cached until the window changes
+        // size, so a bad one is not a glitch for a frame - it is a border sitting 8px out
+        // for as long as the window keeps its size. Measured: a YeImageViewer window stuck
+        // at 11,3,11,11 instead of 3,3,3,3, and one pixel of resize snapped it back.
+        const bool settled = InsetLooksSettled(hwnd, fromDwm, inset);
 
         // A client-side-decorated window paints its shadow inside its own rect, and no API
         // reports where that stops - so the margin comes from settings. Baked into the
@@ -197,7 +227,10 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
 
         inset.width = width;
         inset.height = height;
-        frameInsets_[hwnd] = inset;
+        // Not cached when the reading cannot be trusted, so the next geometry update tries
+        // again. The outline is momentarily off by the frame inset, which is one tick at
+        // most, rather than wrong until the user happens to resize the window.
+        if (settled) frameInsets_[hwnd] = inset;
         return Rect{window.left + inset.left, window.top + inset.top,
                     window.right + inset.right, window.bottom + inset.bottom};
     }

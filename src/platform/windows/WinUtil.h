@@ -23,6 +23,10 @@ std::filesystem::path LocalDataRoot();
 [[nodiscard]] bool IsEligibleTopLevelWindow(HWND hwnd,
                                             const std::vector<std::wstring>& alsoExclude = {});
 [[nodiscard]] Rect ExtendedFrame(HWND hwnd);
+// Same thing, but says whether DWM actually answered. ExtendedFrame falls back to
+// GetWindowRect on failure and the caller cannot tell the difference - which is how a
+// bogus zero inset ended up cached and a border sat 8px out until the window was resized.
+[[nodiscard]] Rect ExtendedFrame(HWND hwnd, bool& fromDwm);
 [[nodiscard]] Rect WorkAreaFor(HWND hwnd);
 // The system accent colour as 0xAARRGGBB, read fresh from the registry every call so a
 // theme change is picked up without any plumbing to notice one. Shared rather than
