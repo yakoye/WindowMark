@@ -1,4 +1,4 @@
-# WindowMark v0.4.3
+# WindowMark v0.4.4
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, and temporary always-on-top pinning**.

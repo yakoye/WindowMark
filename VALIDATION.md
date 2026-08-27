@@ -1,4 +1,4 @@
-# 验证状态 — v0.4.3
+# 验证状态 — v0.4.4
 
 rc3 是第一个在 Windows 上真实构建并运行过的版本。rc1/rc2 只在 Linux 容器里验证过平台无关的 Core。
 
@@ -13,6 +13,44 @@ rc3 是第一个在 Windows 上真实构建并运行过的版本。rc1/rc2 只�
 125% 缩放这一点很关键：rc2 的渲染缺陷只在非 100% 缩放下才会暴露。
 
 ## 已验证通过
+
+### 边框贴合与覆盖层过滤（v0.4.4）
+
+#### 边框停在旧位置
+
+```
+改尺寸前      11,3,11,11   ← 错，多出的正是 GetWindowRect 与 DWM 边界之差 8,0,8,8
+宽度 +1px 后   3,3,3,3     ← 立刻归位
+改回原尺寸     3,3,3,3     ← 保持
+```
+
+修复后做「最小化 → 还原」三轮，全部 3,3,3,3。同一时刻其余 5 个窗口也都是 3,3,3,3。
+
+支撑「THICKFRAME 却零内缩 = 未就绪」这条判据的实测：本机所有 `WS_THICKFRAME` 窗口的
+DWM 内缩都是 **8,0,8,8**，没有 THICKFRAME 的（CoreWindow、Progman）都是 **0,0,0,0**。
+
+`DwmGetWindowAttribute` 比 `GetWindowRect` 贵约 **28µs**（均含 P/Invoke 开销），
+所以缓存保留，只有异常状态的窗口才每次重查。
+
+#### 托盘弹出的迷你面板
+
+无损描边日志抓到的原窗口：
+
+```
+claude.exe [Chrome_WidgetWin_1] 767x595 @(436,158) style=0x14000000 ex=0x00200008
+```
+
+修复后**正面确认**（不是靠「日志里没有」）：迷你框开着的时候直接查它，
+
+```
+迷你覆盖框  777x603  style=0x14000000 ex=0x00200008
+    CAPTION=False THICKFRAME=False SYSMENU=False NOREDIR=True  -> 判据排除 = True
+普通窗口    1318x955 style=0x14C70000 ex=0x00280100
+    CAPTION=True  THICKFRAME=True                              -> 判据排除 = False
+```
+
+同时日志里没有它的描边记录，主窗口、ChatGPT、explorer、YeImageViewer 照常描边。
+
 
 ### 开机启动（v0.4.3 修复）
 

@@ -176,6 +176,26 @@ bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoEx
     // window"; these two flags are.
     if ((exStyle & (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) != 0) return false;
 
+    // Chromeless composition overlays: the launcher panel an app drops out of its tray
+    // icon, and its like. Measured on Claude's quick-launch box, whose window rect is
+    // 767x595 while only a strip at the top is opaque - it collected an outline several
+    // times its visible size, and a bookmark tab besides.
+    //
+    // All four conditions together, because no one of them is enough:
+    //   no WS_CAPTION and no WS_THICKFRAME - frameless, but so are plenty of real windows
+    //   no WS_SYSMENU               - YeImageViewer and Picasa are frameless yet keep one
+    //   WS_EX_NOREDIRECTIONBITMAP   - renders only through DirectComposition
+    //
+    // WS_EX_TOPMOST separates it just as well and was deliberately not used: pinning a
+    // window *sets* that bit, so a frameless window like Czkawka would drop out of
+    // tracking the moment the user pinned it, taking its own pin with it. Nothing ever
+    // sets WS_EX_NOREDIRECTIONBITMAP on another app's window.
+    const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    const bool frameless = (style & WS_CAPTION) != WS_CAPTION &&
+                           (style & WS_THICKFRAME) == 0 &&
+                           (style & WS_SYSMENU) == 0;
+    if (frameless && (exStyle & WS_EX_NOREDIRECTIONBITMAP) != 0) return false;
+
     wchar_t className[128]{};
     GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
     const std::wstring_view cls(className);
@@ -189,12 +209,17 @@ bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoEx
     return true;
 }
 
-Rect ExtendedFrame(HWND hwnd) {
+Rect ExtendedFrame(HWND hwnd, bool& fromDwm) {
     RECT rect{};
-    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect)))) {
-        GetWindowRect(hwnd, &rect);
-    }
+    fromDwm = SUCCEEDED(
+        DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect)));
+    if (!fromDwm) GetWindowRect(hwnd, &rect);
     return ToCoreRect(rect);
+}
+
+Rect ExtendedFrame(HWND hwnd) {
+    bool ignored = false;
+    return ExtendedFrame(hwnd, ignored);
 }
 
 Rect WorkAreaFor(HWND hwnd) {
