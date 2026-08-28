@@ -102,6 +102,18 @@ if (-not (Test-Path $setup)) {
 
 # ---- 2. 卸载旧版 ----
 Step '卸载旧版'
+
+# 卸载器会关掉开机自启动，这对真正的卸载是对的；但这个脚本是「卸载再装回来」，
+# 用户的自启动设置不该被当成开发流程的耗材。先记下来，装完再恢复。
+# （踩过：这一轮反复 reinstall 把用户的自启动清掉了几十次，事件日志显示它本来是好的。）
+$autoStartRunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$autoStartWasOn = $false
+try {
+    $v = (Get-ItemProperty -Path $autoStartRunKey -Name 'WindowMark' -EA Stop).WindowMark
+    $autoStartWasOn = -not [string]::IsNullOrWhiteSpace($v)
+} catch {}
+if ($autoStartWasOn) { Write-Host '开机自启动当前是开的，装完会恢复' }
+
 if (Test-Path $installedUninstaller) {
     # /Purge 连用户数据一起删；不加则保留 settings.conf
     $args = if ($Fresh) { @('/S', '/Purge') } else { @('/S') }
@@ -177,6 +189,22 @@ if ((Test-Path $installed) -and (Test-Path (Join-Path $release 'WindowMark.exe')
 
 if (Test-Path $settings) {
     Write-Host ''
+    if ($autoStartWasOn) {
+        $exe = Join-Path $env:LOCALAPPDATA 'Programs\WindowMark\WindowMark.exe'
+        if (Test-Path $exe) {
+            # 和 AutoStart.h 写的一模一样：先写命令，再清掉否决字节。
+            Set-ItemProperty -Path $autoStartRunKey -Name 'WindowMark' -Value ('"' + $exe + '" --autostart')
+            $approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+            if (-not (Test-Path $approved)) { New-Item -Path $approved -Force | Out-Null }
+            $bytes = New-Object byte[] 12
+            $bytes[0] = 2
+            Set-ItemProperty -Path $approved -Name 'WindowMark' -Value $bytes -Type Binary
+            Write-Host '开机自启动已恢复'
+        } else {
+            Write-Host '开机自启动恢复失败：找不到安装后的 exe' -ForegroundColor Yellow
+        }
+    }
+
     Write-Host '当前生效的配置：'
     Get-Content $settings | Where-Object { $_ -match '^\s*[a-z]' } | ForEach-Object { Write-Host "  $_" }
 }
