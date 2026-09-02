@@ -1,4 +1,5 @@
 #include "WinBorderBackend.h"
+#include "WinConfigPathDialog.h"
 #include "WinControlWindow.h"
 #include "WinOverlayBackend.h"
 #include "PinDiag.h"
@@ -377,6 +378,50 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (!tracked) return;
         coordinator.TogglePin(id);
     };
+    handlers.onConfigPath = [&]() {
+        exclusive([&] {
+            const auto before = windowmark::win::CurrentConfigLocation();
+            std::filesystem::path chosen;
+            if (!windowmark::win::WinConfigPathDialog::ShowModal(
+                    control.NativeHandle(), before.path, before.source, chosen)) {
+                return;
+            }
+            if (chosen == before.path) return;
+
+            // 先把现有配置搬过去，否则用户改完设置会发现配置「没了」。搬不过去就整个
+            // 放弃，别留下一个指向空位置的注册表值。
+            if (!windowmark::Settings::Save(chosen, coordinator.CurrentSettings())) {
+                MessageBoxW(control.NativeHandle(), L"写入新位置失败，配置位置未改变。",
+                            L"WindowMark", MB_OK | MB_ICONWARNING);
+                return;
+            }
+
+            const auto portable = windowmark::win::PortableConfigPath();
+            const bool choosingPortable = !portable.empty() && chosen == portable;
+
+            // 从便携切走时，exe 旁边那份必须改名。它在查找顺序里排第一，留着的话下次
+            // 启动又会把它选回来，用户改的设置等于没生效。改名而不是删除：那是用户的
+            // 数据，不是我们的。
+            if (before.source == windowmark::ConfigSource::Portable && !choosingPortable) {
+                std::error_code ec;
+                std::filesystem::rename(portable, portable.wstring() + L".disabled", ec);
+            }
+
+            // 注册表只在选「自定义」时才写。选默认位置或程序目录都要清掉它，否则下次
+            // 启动第 2 层会把旧值又捡回来。
+            const auto fallbackRoot = windowmark::win::LocalDataRoot();
+            const auto fallback = fallbackRoot.empty() ? std::filesystem::path{}
+                                                       : fallbackRoot / L"settings.conf";
+            const bool custom = !choosingPortable && chosen != fallback;
+            windowmark::win::WriteConfiguredConfigPath(custom ? chosen
+                                                              : std::filesystem::path{});
+
+            MessageBoxW(control.NativeHandle(),
+                        L"配置位置已更改，重启 WindowMark 后生效。", L"WindowMark",
+                        MB_OK | MB_ICONINFORMATION);
+        });
+    };
+
     handlers.onAbout = [&]() {
         // A TaskDialog does not even disable its owner, so this one also remembers its own
         // HWND and raises the existing box rather than just swallowing the second click.

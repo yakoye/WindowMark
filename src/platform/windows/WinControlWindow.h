@@ -48,6 +48,8 @@ public:
         // a menu item cannot.
         std::function<void()> onPinHotkey;
         std::function<void()> onPinSettings;
+        // 配置文件位置。跟开机启动一样是程序级设置，所以放顶层而不是某个功能的设置页里。
+        std::function<void()> onConfigPath;
         std::function<void()> onAbout;
         std::function<void()> onExit;
     };
@@ -81,6 +83,7 @@ private:
     static constexpr UINT kToggleBordersCommand = 1006;
     static constexpr UINT kBorderSettingsCommand = 1007;
     static constexpr UINT kBorderExcludeCommand = 1015;
+    static constexpr UINT kConfigPathCommand = 1016;
     static constexpr UINT kAutoStartCommand = 1008;
     static constexpr UINT kToggleAllCommand = 1009;
     static constexpr UINT kTogglePinningCommand = 1010;

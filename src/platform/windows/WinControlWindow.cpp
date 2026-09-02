@@ -65,6 +65,7 @@ bool WinControlWindow::Start(Handlers handlers) {
         {L"onUnpinAll", static_cast<bool>(handlers_.onUnpinAll)},
         {L"onPinSettings", static_cast<bool>(handlers_.onPinSettings)},
         {L"onPinHotkey", static_cast<bool>(handlers_.onPinHotkey)},
+        {L"onConfigPath", static_cast<bool>(handlers_.onConfigPath)},
         {L"onAbout", static_cast<bool>(handlers_.onAbout)},
         {L"onExit", static_cast<bool>(handlers_.onExit)},
     };
@@ -545,6 +546,9 @@ void WinControlWindow::ShowMenu() {
     // was the widest label left, and a Win32 menu is exactly as wide as its widest label.
     AppendMenuW(menu, MF_STRING | (app::IsAutoStartEnabled() ? MF_CHECKED : MF_UNCHECKED),
                 kAutoStartCommand, L"开机启动");
+    // 同样是程序级而非功能级的设置。带省略号是「点了会开对话框」的标准约定，代价是它
+    // 比「开机启动」宽了三个点——顶层菜单的宽度由最宽的标签决定，这里是有意付的。
+    AppendMenuW(menu, MF_STRING, kConfigPathCommand, L"配置文件...");
     AppendMenuW(menu, MF_STRING, kAboutCommand, L"关于");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kExitCommand, L"退出");
@@ -684,6 +688,7 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
             // Entered after the menu closes, so the menu's own mouse messages are gone.
             BeginGrabFromMenu();
             return 0;
+        case kConfigPathCommand:     handler = &handlers_.onConfigPath; break;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;
         default: break;
