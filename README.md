@@ -1,4 +1,4 @@
-# WindowMark v0.4.4
+# WindowMark v0.4.5
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, and temporary always-on-top pinning**.
@@ -29,15 +29,15 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.4.3-win64.zip` from the
-   [v0.4.3 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.3).
+1. Download `WindowMark-v0.4.5-win64.zip` from the
+   [v0.4.5 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.5).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
 4. Use the tray menu to configure **书签**, **窗口边框**, and **窗口置顶** independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.4.3.
+scaffold and does not provide a working macOS application in v0.4.5.
 
 ## Interaction
 
@@ -164,9 +164,11 @@ The tray menu itself carries the program-wide switches, above 关于 and 退出:
 WindowMark          greyed header, so 关于/退出 need not repeat the name
 书签              >
 窗口边框           >
+窗口置顶           >
 ──────────
 暂停所有            master switch; reads 启用所有 while paused
 开机启动
+配置文件...         配置文件放在哪，见「配置文件位置」一节
 关于
 ──────────
 退出
@@ -260,6 +262,42 @@ Important safety properties:
 - DWM preview count is globally limited to one.
 - all WinEvent hooks, DWM thumbnails, HWNDs and COM graphics resources are released on normal shutdown; process-owned windows/resources also disappear if the process is force-terminated.
 - **no global hotkey.** `RegisterHotKey` claims a combination process-wide for the session — whoever asks first wins and everyone else silently loses it. Both features are switched from the tray menu instead.
+
+## 配置文件位置
+
+默认位置是 `%LOCALAPPDATA%\WindowMark\settings.conf`。托盘菜单的「配置文件...」可以改，
+三个选项对应三层查找顺序：
+
+```text
+1. exe 同目录的 settings.conf              存在即用（便携，跟着程序走）
+2. HKCU\Software\WindowMark\ConfigPath     「自定义」写在这里
+3. %LOCALAPPDATA%\WindowMark\settings.conf 默认
+```
+
+**便携排在自定义之前**，因为注册表跟着机器走，而 exe 旁边的 conf 跟着程序走——U 盘插到
+别人电脑上，不该去读那台机器上指定的本地路径。这可能反直觉，所以对话框顶部始终显示
+当前实际生效的是哪一份。
+
+切换位置时现有配置会被搬过去。从便携切走时，exe 旁那份会改名为 `settings.conf.disabled`
+而不是删掉，否则下次启动第 1 层又会把它抢回去。
+
+### 如果 C 盘装了还原工具
+
+**只把配置文件挪个位置解决不了这个问题。** WindowMark 默认装在
+`C:\Users\<用户>\AppData\Local\Programs\WindowMark\`，跟配置一样在 C 盘，会被一起还原。
+注册表里的自定义路径同理——`HKCU` 也在 C 盘。
+
+唯一可靠的做法是**把整个 WindowMark 目录拷到非 C 盘**（D 盘或 U 盘），从那里运行，
+配置放在 exe 同目录。三点提醒：
+
+- 是「搬走」不是「多放一份」。C 盘那份如果还在跑，第二个实例会因单例互斥量冲突直接退出。
+- 便携模式下开机自启动写的是当时的绝对路径，**U 盘盘符一变就失效**。
+- `border.excluded_apps` 和 `selection.disabled_apps` 记的是**被排除的那些应用**的 exe
+  绝对路径（Chrome、墨鱼阅读等）。换一台机器路径不同，这两项会**静默失效**——不报错，
+  只是匹配不上。这是按 exe 路径标识应用的固有代价，也正是它能把墨鱼阅读和 Chrome 分开
+  的原因：两者类名同为 `Chrome_WidgetWin_1`。
+
+配置文件里没有任何指向 WindowMark 自身的路径，所以没有可以改成相对路径的东西。
 
 ## Settings
 
@@ -447,13 +485,14 @@ install/reinstall-over-running/uninstall cycles.
 
 ## Version policy
 
-**v0.4.3** is the current release. It includes window bookmarks, per-window borders,
-per-application border exclusions, window pinning, `WindowMarkInspect.exe`, and reliable
-start-with-Windows state handling with a login-attempt audit log.
+**v0.4.5** is the current release. It includes window bookmarks, per-window borders,
+per-application border exclusions, window pinning, `WindowMarkInspect.exe`, reliable
+start-with-Windows state handling with a login-attempt audit log, borders clamped to the
+window's own monitor, and a configurable config-file location (portable or custom path).
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.4.3 remains auditable.
+v0.4.5 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
