@@ -3,6 +3,8 @@
 #include "WinUtil.h"
 #include "PinDiag.h"
 
+#include "windowmark/core/BorderGeometry.h"
+
 #include <cstdio>
 
 #include "AppIdentity.h"
@@ -423,12 +425,25 @@ private:
 
     [[nodiscard]] RECT OuterRect() const {
         const int reach = Reach();
-        return RECT{
+        Rect outer{
             model_.frame.left - reach,
             model_.frame.top - reach,
             model_.frame.right + reach,
             model_.frame.bottom + reach,
         };
+
+        // 夹回窗口所在的监视器，别让那圈外扩落到隔壁屏幕上。用 MonitorFromRect 而不是
+        // MonitorFromWindow：这里只有几何，不依赖那个 HWND 此刻是否还有效。
+        const RECT frameRect = ToWinRect(model_.frame);
+        if (HMONITOR monitor = MonitorFromRect(&frameRect, MONITOR_DEFAULTTONEAREST)) {
+            MONITORINFO info{};
+            info.cbSize = sizeof(info);
+            if (GetMonitorInfoW(monitor, &info)) {
+                outer = ClampBorderToMonitor(model_.frame, outer, ToCoreRect(info.rcMonitor),
+                                             reach);
+            }
+        }
+        return ToWinRect(outer);
     }
 
     void Reposition() {
