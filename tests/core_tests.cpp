@@ -1,4 +1,5 @@
 #include "windowmark/core/BorderGeometry.h"
+#include "windowmark/core/ConfigLocation.h"
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/DrawerState.h"
 #include "windowmark/core/Hotkey.h"
@@ -815,6 +816,84 @@ void TestBorderClamping() {
     }
 }
 
+void TestConfigLocationPriority() {
+    ConfigLocationInputs in;
+    in.portable = "D:/portable/settings.conf";
+    in.configured = "E:/custom/settings.conf";
+    in.fallback = "C:/local/settings.conf";
+
+    // 三个都没命中时用默认位置
+    {
+        in.portableExists = false;
+        in.configuredUsable = false;
+        in.configured.clear();
+        const ConfigLocation got = ResolveConfigLocation(in);
+        CHECK(got.source == ConfigSource::Fallback);
+        CHECK(got.path == in.fallback);
+    }
+
+    // 只有注册表指定了且可用
+    {
+        in.configured = "E:/custom/settings.conf";
+        in.portableExists = false;
+        in.configuredUsable = true;
+        const ConfigLocation got = ResolveConfigLocation(in);
+        CHECK(got.source == ConfigSource::Configured);
+        CHECK(got.path == in.configured);
+    }
+
+    // 便携优先于注册表指定。注册表跟着机器走，exe 旁边的 conf 跟着程序走；
+    // U 盘插到别人电脑上不该去读那台机器的本地路径。
+    {
+        in.portableExists = true;
+        in.configuredUsable = true;
+        const ConfigLocation got = ResolveConfigLocation(in);
+        CHECK(got.source == ConfigSource::Portable);
+        CHECK(got.path == in.portable);
+    }
+
+    // 注册表里有值但那个位置已经用不了（U 盘拔了、目录被删）时回落默认，
+    // 并且要能把「发生了回落」这件事报出去——静默回落等于骗用户。
+    {
+        in.portableExists = false;
+        in.configuredUsable = false;
+        in.configured = "E:/gone/settings.conf";
+        const ConfigLocation got = ResolveConfigLocation(in);
+        CHECK(got.source == ConfigSource::Fallback);
+        CHECK(got.configuredUnavailable);
+    }
+
+    // 便携赢了不算「回落」，不该报警——用户没指望注册表那份生效。
+    {
+        in.portableExists = true;
+        in.configuredUsable = false;
+        in.configured = "E:/gone/settings.conf";
+        const ConfigLocation got = ResolveConfigLocation(in);
+        CHECK(got.source == ConfigSource::Portable);
+        CHECK(!got.configuredUnavailable);
+    }
+
+    // 压根没指定过，也不该报警
+    {
+        ConfigLocationInputs plain;
+        plain.fallback = "C:/local/settings.conf";
+        const ConfigLocation got = ResolveConfigLocation(plain);
+        CHECK(got.source == ConfigSource::Fallback);
+        CHECK(!got.configuredUnavailable);
+    }
+
+    // 防御：标记说存在但路径是空的，不能因此选中一个空路径
+    {
+        ConfigLocationInputs empty;
+        empty.portableExists = true;
+        empty.configuredUsable = true;
+        empty.fallback = "C:/local/settings.conf";
+        const ConfigLocation got = ResolveConfigLocation(empty);
+        CHECK(got.source == ConfigSource::Fallback);
+        CHECK(got.path == empty.fallback);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -833,6 +912,7 @@ int main() {
     TestDrawerState();
     TestHotkeyParsing();
     TestBorderClamping();
+    TestConfigLocationPriority();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }
