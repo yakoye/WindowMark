@@ -86,6 +86,7 @@ if(WIN32)
         src/platform/windows/WinPinBackend.cpp
         src/platform/windows/WinPreviewBackend.cpp
         src/platform/windows/WinControlWindow.cpp
+        src/platform/windows/WinConfigPathDialog.cpp
         src/platform/windows/WinRenameDialog.cpp
         src/platform/windows/WinSelectionDialog.cpp
         src/platform/windows/WinSettingsDialog.cpp
