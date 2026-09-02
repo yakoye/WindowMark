@@ -1,5 +1,7 @@
 #include "WinUtil.h"
 
+#include "AppIdentity.h"
+
 #include <dwmapi.h>
 #include <shlobj.h>
 
@@ -92,6 +94,86 @@ std::filesystem::path InstalledExePath() {
 std::filesystem::path LocalDataRoot() {
     auto base = KnownFolder(FOLDERID_LocalAppData);
     return base.empty() ? std::filesystem::path{} : base / L"WindowMark";
+}
+
+std::filesystem::path PortableConfigPath() {
+    const auto exe = InstalledExePath();
+    if (exe.empty()) return {};
+    return exe.parent_path() / L"settings.conf";
+}
+
+std::filesystem::path ReadConfiguredConfigPath() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, app::kProductKeyPath, 0, KEY_QUERY_VALUE, &key) !=
+        ERROR_SUCCESS) {
+        return {};
+    }
+    DWORD type = 0;
+    DWORD bytes = 0;
+    LSTATUS status =
+        RegQueryValueExW(key, app::kConfigPathValue, nullptr, &type, nullptr, &bytes);
+    if (status != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) ||
+        bytes < sizeof(wchar_t)) {
+        RegCloseKey(key);
+        return {};
+    }
+    std::vector<wchar_t> buffer(bytes / sizeof(wchar_t) + 1, L'\0');
+    status = RegQueryValueExW(key, app::kConfigPathValue, nullptr, &type,
+                              reinterpret_cast<BYTE*>(buffer.data()), &bytes);
+    RegCloseKey(key);
+    if (status != ERROR_SUCCESS || buffer[0] == L'\0') return {};
+    return std::filesystem::path(buffer.data());
+}
+
+bool WriteConfiguredConfigPath(const std::filesystem::path& path) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, app::kProductKeyPath, 0, nullptr, 0, KEY_SET_VALUE,
+                        nullptr, &key, nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    LSTATUS status = ERROR_SUCCESS;
+    if (path.empty()) {
+        status = RegDeleteValueW(key, app::kConfigPathValue);
+        if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
+    } else {
+        const std::wstring text = path.wstring();
+        status = RegSetValueExW(key, app::kConfigPathValue, 0, REG_SZ,
+                                reinterpret_cast<const BYTE*>(text.c_str()),
+                                static_cast<DWORD>((text.size() + 1) * sizeof(wchar_t)));
+    }
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS;
+}
+
+bool IsDirectoryWritable(const std::filesystem::path& directory) {
+    if (directory.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec)) return false;
+    // 真写一次再删掉。只看权限位在网络盘和只读介质上会给出错误答案。
+    const auto probe = directory / L"windowmark-write-probe.tmp";
+    HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    CloseHandle(file);
+    return true;
+}
+
+ConfigLocation CurrentConfigLocation() {
+    ConfigLocationInputs inputs;
+    std::error_code ec;
+
+    inputs.portable = PortableConfigPath();
+    inputs.portableExists =
+        !inputs.portable.empty() && std::filesystem::exists(inputs.portable, ec);
+
+    inputs.configured = ReadConfiguredConfigPath();
+    inputs.configuredUsable =
+        !inputs.configured.empty() && IsDirectoryWritable(inputs.configured.parent_path());
+
+    const auto root = LocalDataRoot();
+    inputs.fallback = root.empty() ? std::filesystem::path{} : root / L"settings.conf";
+
+    return ResolveConfigLocation(inputs);
 }
 
 std::filesystem::path RoamingDataRoot() {

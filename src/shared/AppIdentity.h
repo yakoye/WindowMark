@@ -32,6 +32,13 @@ inline constexpr wchar_t kRunValueName[] = L"WindowMark";
 inline constexpr wchar_t kUninstallKeyPath[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WindowMark";
 
+// WindowMark 自己的注册表根。到 v0.4.4 为止这里只有系统的 Run / Uninstall 键；配置文件
+// 位置是第一件必须由 WindowMark 自己存起来的设置——它不可能存在配置文件里，因为得先
+// 找到配置文件才能读它。ConfigPath 是 REG_SZ，存含文件名的完整路径，值不存在或为空串
+// 等同于「未指定」。
+inline constexpr wchar_t kProductKeyPath[] = L"Software\\WindowMark";
+inline constexpr wchar_t kConfigPathValue[] = L"ConfigPath";
+
 inline constexpr wchar_t kInstallSubdir[] = L"Programs\\WindowMark";
 inline constexpr wchar_t kDataSubdir[] = L"WindowMark";
 inline constexpr wchar_t kMainExeName[] = L"WindowMark.exe";
