@@ -170,13 +170,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
-    const std::filesystem::path dataRoot = windowmark::win::LocalDataRoot();
-    if (dataRoot.empty()) {
+    // 三层查找：exe 同目录 -> 注册表 ConfigPath -> %LOCALAPPDATA%。
+    const windowmark::ConfigLocation configLocation = windowmark::win::CurrentConfigLocation();
+    if (configLocation.path.empty()) {
         LogAutoStartPhase(autoStartLaunch, L"data_path_failed", 4);
-        MessageBoxW(nullptr, L"无法确定本地配置目录。", L"WindowMark", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"无法确定配置文件位置。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 4;
     }
-    const auto settingsPath = dataRoot / L"settings.conf";
+    const auto settingsPath = configLocation.path;
+
+    // 指定过位置但那里已经没了（U 盘拔了、目录被删、变成只读）。这时候用的是默认位置的
+    // 配置，用户看到的会是一套「回到默认」的设置——不说清楚他会以为软件把设置弄丢了。
+    // 开机自启动时也照样弹：这是罕见事件，而后果是整套设置都不是他要的那份。
+    if (configLocation.configuredUnavailable) {
+        MessageBoxW(nullptr,
+                    L"指定的配置文件位置当前不可用，已改用默认位置。\n\n"
+                    L"常见原因：U 盘没插、目录被删、或那个位置变成了只读。\n"
+                    L"接好之后在托盘菜单的「配置文件...」里重新指定即可。",
+                    L"WindowMark", MB_OK | MB_ICONWARNING);
+    }
     const windowmark::Settings settings = windowmark::Settings::LoadOrCreate(settingsPath);
 
     windowmark::win::WinWindowBackend windowBackend(settings.performance.geometryThrottleMs);

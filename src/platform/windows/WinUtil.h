@@ -1,5 +1,6 @@
 #pragma once
 
+#include "windowmark/core/ConfigLocation.h"
 #include "windowmark/core/Types.h"
 
 #include <filesystem>
@@ -18,6 +19,14 @@ namespace windowmark::win {
 [[nodiscard]] std::filesystem::path InstalledExePath();
 std::filesystem::path LocalDataRoot();
 [[nodiscard]] std::filesystem::path RoamingDataRoot();
+
+// 配置文件的三个候选位置。存在性与可写性在这里判断，选哪一个交给 core 的
+// ResolveConfigLocation，那段优先级逻辑因此可以脱离文件系统被单测覆盖。
+[[nodiscard]] std::filesystem::path PortableConfigPath();
+[[nodiscard]] std::filesystem::path ReadConfiguredConfigPath();
+bool WriteConfiguredConfigPath(const std::filesystem::path& path);
+[[nodiscard]] bool IsDirectoryWritable(const std::filesystem::path& directory);
+[[nodiscard]] ConfigLocation CurrentConfigLocation();
 [[nodiscard]] bool IsCloaked(HWND hwnd);
 // `alsoExclude` is the user's own list of window classes, added to the built-in one.
 [[nodiscard]] bool IsEligibleTopLevelWindow(HWND hwnd,
