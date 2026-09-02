@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(WINDOWMARK_BUILD_TESTS "Build WindowMark tests" ON)
 
 add_library(windowmark_core STATIC
+    src/core/BorderGeometry.cpp
     src/core/Coordinator.cpp
     src/core/DrawerState.cpp
     src/core/Hotkey.cpp
