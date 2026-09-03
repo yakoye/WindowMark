@@ -9,9 +9,12 @@
 #include "clipboard.h"
 #include "resource.h"
 
+#include "ClipKeeperIdentity.h"
+
+namespace ck = windowmark::clipkeeper;
+
 namespace {
 
-constexpr wchar_t kClassName[] = L"ClipKeeperMainWindow";
 constexpr wchar_t kAppName[] = L"ClipKeeper 剪贴板守护";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kTimerRescue = 1;
@@ -268,6 +271,25 @@ void Layout(HWND hwnd) {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // 注册消息的值要运行时才知道，进不了 switch 的 case，所以在前面拦。
+    // 函数级 static 保证只注册一次。
+    static const UINT kShowPanel = ::RegisterWindowMessageW(ck::kShowPanelMessage);
+    static const UINT kRequestQuit = ::RegisterWindowMessageW(ck::kRequestQuitMessage);
+
+    // RegisterWindowMessageW 失败返回 0，而 0 就是 WM_NULL——不挡掉的话每个 WM_NULL
+    // 都会被当成这两个命令执行。
+    if (kShowPanel != 0 && msg == kShowPanel) {
+        ShowMainWindow();
+        return 0;
+    }
+    if (kRequestQuit != 0 && msg == kRequestQuit) {
+        // g_exiting 是既有标志：置位后 WM_CLOSE 不再收起到托盘，而是走到 DefWindowProc
+        // -> WM_DESTROY，那里会 ChangeClipboardChain 干净地退出监听链。
+        g_exiting = true;
+        ::DestroyWindow(hwnd);
+        return 0;
+    }
+
     switch (msg) {
     case WM_CREATE: {
         g_hwnd = hwnd;
@@ -415,6 +437,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     auto setDpi = reinterpret_cast<SetDpiAwarenessContextFn>(::GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
     if (setDpi) setDpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    // 起两个实例会有两份都插进 Clipboard Viewer Chain：链结构乱掉，两份缓存互相抢救援。
+    HANDLE singleton = ::CreateMutexW(nullptr, TRUE, ck::kSingletonMutex);
+    if (singleton && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+        // 已经有一个在跑：把它的面板叫出来，自己退场。不用 SetForegroundWindow 抢前台
+        // ——本机实测不可靠（前台锁），让已有实例自己 ShowWindow 就够了。
+        if (const UINT showPanel = ::RegisterWindowMessageW(ck::kShowPanelMessage)) {
+            if (HWND existing = ::FindWindowW(ck::kWindowClass, nullptr)) {
+                ::PostMessageW(existing, showPanel, 0, 0);
+            }
+        }
+        ::CloseHandle(singleton);
+        return 0;
+    }
+
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES};
     ::InitCommonControlsEx(&icc);
 
@@ -427,10 +463,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (!wc.hIcon) wc.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
     wc.hIconSm = wc.hIcon;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    wc.lpszClassName = kClassName;
+    wc.lpszClassName = ck::kWindowClass;
     if (!::RegisterClassExW(&wc)) return 1;
 
-    HWND hwnd = ::CreateWindowExW(0, kClassName, kAppName,
+    HWND hwnd = ::CreateWindowExW(0, ck::kWindowClass, kAppName,
                                   WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
                                   CW_USEDEFAULT, CW_USEDEFAULT, 720, 520,
                                   nullptr, nullptr, instance, nullptr);
@@ -444,5 +480,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         ::TranslateMessage(&msg);
         ::DispatchMessageW(&msg);
     }
+    if (singleton) ::CloseHandle(singleton);
     return static_cast<int>(msg.wParam);
 }
