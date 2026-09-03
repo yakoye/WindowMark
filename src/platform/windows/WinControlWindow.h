@@ -48,6 +48,9 @@ public:
         // a menu item cannot.
         std::function<void()> onPinHotkey;
         std::function<void()> onPinSettings;
+        // 剪贴板守护。开关的是 ClipKeeper 的面板而不是进程——它是独立 exe，有自己的
+        // 托盘图标，停止守护在它自己的面板里做。
+        std::function<void()> onClipKeeper;
         // 配置文件位置。跟开机启动一样是程序级设置，所以放顶层而不是某个功能的设置页里。
         std::function<void()> onConfigPath;
         std::function<void()> onAbout;
@@ -84,6 +87,7 @@ private:
     static constexpr UINT kBorderSettingsCommand = 1007;
     static constexpr UINT kBorderExcludeCommand = 1015;
     static constexpr UINT kConfigPathCommand = 1016;
+    static constexpr UINT kClipKeeperCommand = 1017;
     static constexpr UINT kAutoStartCommand = 1008;
     static constexpr UINT kToggleAllCommand = 1009;
     static constexpr UINT kTogglePinningCommand = 1010;
