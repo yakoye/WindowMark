@@ -144,6 +144,29 @@ if(WIN32)
         target_compile_options(WindowMarkInspect PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
     endif()
 
+    # 剪贴板守护。独立进程而不是 WindowMark 的一部分，两条理由都是硬的：
+    #   1. 它抢占 Clipboard Viewer Chain 的链头，而链头是「谁最后注册谁在前面」。
+    #      WindowMark 开机自启，必然早于 ToDesk；排在后面就来不及在剪贴板被清空前
+    #      存下内容，救援直接失效。独立进程才能在连上 ToDesk 之后再启动。
+    #   2. 它每次剪贴板变化都要 SendMessageTimeout 往下游传（超时 250ms）。放进
+    #      WindowMark 的主消息循环，下游一卡边框刷新就跟着卡。
+    # 版本号独立于 WindowMark，用它自己的 .rc，不接 configure_file 那套版本注入。
+    add_executable(ClipKeeper WIN32
+        src/clipkeeper/main.cpp
+        src/clipkeeper/clipboard.cpp
+        src/clipkeeper/ClipKeeper.rc
+    )
+    target_include_directories(ClipKeeper PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/clipkeeper
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/shared
+    )
+    target_compile_definitions(ClipKeeper PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(ClipKeeper PRIVATE user32 gdi32 shell32 advapi32 comctl32)
+    if(MSVC)
+        target_compile_options(ClipKeeper PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
+    endif()
+
     # Installer and uninstaller are standalone GUI executables. They deliberately do
     # not link windowmark_core: they only need process control, registry and shell APIs.
     foreach(tool_target IN ITEMS WindowMarkSetup WindowMarkUninstall)
