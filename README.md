@@ -1,13 +1,14 @@
-# WindowMark v0.4.5
+# WindowMark v0.4.7
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, and temporary always-on-top pinning**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.4.3 at a glance
+## v0.4.7 at a glance
 
-This Windows release combines three independent tools in one ordinary user process:
+Three window tools in one ordinary user process, plus a separate clipboard guard that ships
+alongside it:
 
 - **Window bookmarks** for identifying, previewing, renaming, and switching between
   multiple windows of the same application.
@@ -15,29 +16,29 @@ This Windows release combines three independent tools in one ordinary user proce
   and inactive colors. Borders are optional and disabled by default.
 - **Window pinning** through the target window's system menu, a crosshair picker, or an
   optional global hotkey. Pinned windows always receive a visible highlight.
+- **剪贴板守护 (ClipKeeper)** — a *separate process* that fixes `Ctrl+V` breaking after a
+  screenshot in ToDesk and other remote sessions. Installed together, started from the tray
+  menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
-v0.4.3 fixes **开机启动** reporting and registration. The tray menu now checks both the
-actual Run command and Windows' separate `StartupApproved` veto, enabling writes the Run
-command before clearing that veto, and failures are reported instead of silently ignored.
-Logon launches carry `--autostart` and append their startup phases to
-`%LOCALAPPDATA%\WindowMark\startup.log`, so a failed launch can be distinguished from
-Windows never attempting it.
+v0.4.7 adds the MIT LICENSE file the repository had been missing.
 
-v0.4.2 added per-application border exclusions and fixed the shared selection panel's
-checkbox round trip. v0.4.1 added window pinning. See [CHANGELOG.md](CHANGELOG.md) for the
-full history.
+v0.4.6 added ClipKeeper and made the tray menu show each feature's enabled state at the top
+level. v0.4.5 clamped borders to their own monitor (they used to spill onto the next screen
+when a window was maximized on a dual-monitor setup) and made the config file location
+configurable — portable next to the exe, or a path you choose. See
+[CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.4.5-win64.zip` from the
-   [v0.4.5 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.5).
+1. Download `WindowMark-v0.4.7-win64.zip` from the
+   [v0.4.7 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.7).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
 4. Use the tray menu to configure **书签**, **窗口边框**, and **窗口置顶** independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.4.5.
+scaffold and does not provide a working macOS application in v0.4.7.
 
 ## Interaction
 
@@ -530,16 +531,26 @@ install/reinstall-over-running/uninstall cycles.
 16 那一档最关键——托盘和标题栏用的就是它，而且代码用 `LoadImage` 按小图标尺寸取，
 不会拿 256 缩下来发虚。留白色底板的话，深色任务栏上会显示成一个白方块。
 
+## License
+
+MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、再分发，只需保留版权声明；
+不提供任何担保。
+
+代码全部原创，没有引入任何 copyleft 许可证的第三方代码。窗口边框的**想法**来自
+[tacky-borders](https://github.com/lukeyou05/tacky-borders)（Rust），这里是独立的原生实现，
+不是它的移植。
+
 ## Version policy
 
-**v0.4.5** is the current release. It includes window bookmarks, per-window borders,
+**v0.4.7** is the current release. It includes window bookmarks, per-window borders,
 per-application border exclusions, window pinning, `WindowMarkInspect.exe`, reliable
 start-with-Windows state handling with a login-attempt audit log, borders clamped to the
-window's own monitor, and a configurable config-file location (portable or custom path).
+window's own monitor, a configurable config-file location (portable or custom path),
+the ClipKeeper clipboard guard, and — as of this release — an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.4.5 remains auditable.
+v0.4.7 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and

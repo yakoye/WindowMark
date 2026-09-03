@@ -1,7 +1,7 @@
 @echo off
 REM Create the GitHub Release for the tag that is already pushed, and upload the zip.
 REM
-REM Everything else is done already: main is pushed, the v0.4.6 tag is on GitHub, and
+REM Everything else is done already: main is pushed, the v0.4.7 tag is on GitHub, and
 REM dist\ holds the package and the release notes. This step needs a GitHub login, which
 REM only you can do.
 REM
@@ -12,9 +12,9 @@ REM and pick GitHub.com -> SSH -> login with a browser.
 setlocal
 cd /d "%~dp0"
 
-set TAG=v0.4.6
-set ZIP=dist\WindowMark-v0.4.6-win64.zip
-set NOTES=dist\release-notes-v0.4.6.md
+set TAG=v0.4.7
+set ZIP=dist\WindowMark-v0.4.7-win64.zip
+set NOTES=dist\release-notes-v0.4.7.md
 
 where gh >nul 2>&1
 if errorlevel 1 (
