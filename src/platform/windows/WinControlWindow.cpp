@@ -2,6 +2,7 @@
 
 #include "AppIdentity.h"
 #include "AutoStart.h"
+#include "ClipKeeperIdentity.h"
 #include "PinDiag.h"
 #include "Resource.h"
 
@@ -65,6 +66,7 @@ bool WinControlWindow::Start(Handlers handlers) {
         {L"onUnpinAll", static_cast<bool>(handlers_.onUnpinAll)},
         {L"onPinSettings", static_cast<bool>(handlers_.onPinSettings)},
         {L"onPinHotkey", static_cast<bool>(handlers_.onPinHotkey)},
+        {L"onClipKeeper", static_cast<bool>(handlers_.onClipKeeper)},
         {L"onConfigPath", static_cast<bool>(handlers_.onConfigPath)},
         {L"onAbout", static_cast<bool>(handlers_.onAbout)},
         {L"onExit", static_cast<bool>(handlers_.onExit)},
@@ -539,6 +541,21 @@ void WinControlWindow::ShowMenu() {
                     reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
     }
 
+    // 剪贴板守护。它是独立进程（ClipKeeper.exe），这一项开关的是它的**面板**：
+    // 对勾 = 面板当前可见，与点击行为一一对应。停止守护在 ClipKeeper 自己的面板里做。
+    //
+    // 它也是顶层唯一能真正点击切换的功能项——上面四个带子菜单，MF_POPUP 项没有命令 ID，
+    // 点击即展开子菜单，没法兼作开关。
+    //
+    // 状态每次开菜单实时查，不缓存：用户可能从 ClipKeeper 自己的托盘把它收起或退出。
+    {
+        namespace ck = windowmark::clipkeeper;
+        const HWND panel = FindWindowW(ck::kWindowClass, nullptr);
+        const bool visible = panel != nullptr && IsWindowVisible(panel) != FALSE;
+        AppendMenuW(menu, MF_STRING | (visible ? MF_CHECKED : MF_UNCHECKED),
+                    kClipKeeperCommand, L"剪贴板守护");
+    }
+
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     // Master switch above the per-feature ones: one click silences the whole app without
     // having to visit both submenus. The label names what the click will do rather than
@@ -695,6 +712,7 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
             // Entered after the menu closes, so the menu's own mouse messages are gone.
             BeginGrabFromMenu();
             return 0;
+        case kClipKeeperCommand:     handler = &handlers_.onClipKeeper; break;
         case kConfigPathCommand:     handler = &handlers_.onConfigPath; break;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;

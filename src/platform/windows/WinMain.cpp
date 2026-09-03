@@ -1,3 +1,4 @@
+#include "ClipKeeperIdentity.h"
 #include "WinBorderBackend.h"
 #include "WinConfigPathDialog.h"
 #include "WinControlWindow.h"
@@ -378,6 +379,49 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (!tracked) return;
         coordinator.TogglePin(id);
     };
+    handlers.onClipKeeper = [&]() {
+        namespace ck = windowmark::clipkeeper;
+        const HWND panel = FindWindowW(ck::kWindowClass, nullptr);
+
+        if (!panel) {
+            // 没在跑：启动它，它自带面板。exe 与 WindowMark.exe 同目录。
+            const auto exe = windowmark::win::InstalledExePath().parent_path() / ck::kExeName;
+            std::error_code ec;
+            if (!std::filesystem::exists(exe, ec)) {
+                MessageBoxW(control.NativeHandle(),
+                            L"找不到 ClipKeeper.exe。\n\n"
+                            L"它应当与 WindowMark.exe 在同一个目录，"
+                            L"重新运行一次安装程序即可补上。",
+                            L"WindowMark", MB_OK | MB_ICONWARNING);
+                return;
+            }
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            std::wstring command = exe.wstring();
+            if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                               nullptr, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            } else {
+                MessageBoxW(control.NativeHandle(), L"启动 ClipKeeper 失败。", L"WindowMark",
+                            MB_OK | MB_ICONWARNING);
+            }
+            return;
+        }
+
+        if (IsWindowVisible(panel)) {
+            // 收起面板。WM_CLOSE 是 ClipKeeper 的既有行为：隐藏窗口，留在托盘里继续守护。
+            PostMessageW(panel, WM_CLOSE, 0, 0);
+            return;
+        }
+
+        // 在托盘里：叫出来。
+        if (const UINT showPanel = RegisterWindowMessageW(ck::kShowPanelMessage)) {
+            PostMessageW(panel, showPanel, 0, 0);
+        }
+    };
+
     handlers.onConfigPath = [&]() {
         exclusive([&] {
             const auto before = windowmark::win::CurrentConfigLocation();
