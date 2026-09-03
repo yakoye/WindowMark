@@ -30,7 +30,7 @@ std::filesystem::path KnownFolder(REFKNOWNFOLDERID id) {
 
 // --- process control -------------------------------------------------------
 
-std::vector<RunningInstance> FindRunningInstances() {
+std::vector<RunningInstance> FindRunningInstances(const wchar_t* exeName) {
     std::vector<RunningInstance> found;
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -43,7 +43,7 @@ std::vector<RunningInstance> FindRunningInstances() {
     if (Process32FirstW(snapshot, &entry)) {
         do {
             if (entry.th32ProcessID == self) continue;
-            if (_wcsicmp(entry.szExeFile, app::kMainExeName) != 0) continue;
+            if (_wcsicmp(entry.szExeFile, exeName) != 0) continue;
 
             RunningInstance instance;
             instance.processId = entry.th32ProcessID;
@@ -67,25 +67,34 @@ std::vector<RunningInstance> FindRunningInstances() {
 
 namespace {
 
+// 窗口类和消息都要传，一个 LPARAM 装不下，所以走结构体指针。
+struct QuitTarget {
+    const wchar_t* windowClass;
+    UINT message;
+};
+
 BOOL CALLBACK PostQuitToControlWindow(HWND hwnd, LPARAM lParam) {
+    const auto* target = reinterpret_cast<const QuitTarget*>(lParam);
     wchar_t className[64]{};
     if (GetClassNameW(hwnd, className, static_cast<int>(std::size(className))) == 0) return TRUE;
-    if (_wcsicmp(className, app::kControlWindowClass) != 0) return TRUE;
-    PostMessageW(hwnd, static_cast<UINT>(lParam), 0, 0);
+    if (_wcsicmp(className, target->windowClass) != 0) return TRUE;
+    PostMessageW(hwnd, target->message, 0, 0);
     return TRUE;
 }
 
 } // namespace
 
-bool StopRunningInstances(unsigned graceMs) {
-    auto instances = FindRunningInstances();
+bool StopRunningInstances(unsigned graceMs, const wchar_t* exeName,
+                          const wchar_t* windowClass, const wchar_t* quitMessage) {
+    auto instances = FindRunningInstances(exeName);
     if (instances.empty()) return true;
 
     // Step 1: ask politely, addressing the tray control window directly instead of
     // broadcasting. It turns this into a normal PostQuitMessage, so the tray icon,
     // hooks and overlays are torn down in the usual order.
-    if (const UINT quitMessage = RegisterWindowMessageW(app::kRequestQuitMessage)) {
-        EnumWindows(PostQuitToControlWindow, static_cast<LPARAM>(quitMessage));
+    if (const UINT message = RegisterWindowMessageW(quitMessage)) {
+        QuitTarget target{windowClass, message};
+        EnumWindows(PostQuitToControlWindow, reinterpret_cast<LPARAM>(&target));
     }
 
     const ULONGLONG deadline = GetTickCount64() + graceMs;

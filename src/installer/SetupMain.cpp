@@ -10,6 +10,7 @@
 #include "InstallerCommon.h"
 
 #include "AppIdentity.h"
+#include "ClipKeeperIdentity.h"
 
 #include <commctrl.h>
 #include <objbase.h>
@@ -177,6 +178,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     const auto sourceExe = setup::LocatePayload(app::kMainExeName);
     const auto sourceUninstaller = setup::LocatePayload(app::kUninstallExeName);
+    const auto sourceClipKeeper = setup::LocatePayload(windowmark::clipkeeper::kExeName);
 
     if (sourceExe.empty()) {
         if (!silent) {
@@ -194,6 +196,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     const auto targetExe = installDir / app::kMainExeName;
     const auto targetUninstaller = installDir / app::kUninstallExeName;
+    const auto targetClipKeeper = installDir / windowmark::clipkeeper::kExeName;
 
     std::error_code ec;
     const bool alreadyInstalled = std::filesystem::exists(targetExe, ec);
@@ -211,6 +214,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     // A running instance is expected, not an error: close it, then replace the files.
     setup::StopRunningInstances(4000);
+    // 同理，运行中的 ClipKeeper 会让它的 exe 覆盖不了。
+    setup::StopRunningInstances(4000, windowmark::clipkeeper::kExeName,
+                                windowmark::clipkeeper::kWindowClass,
+                                windowmark::clipkeeper::kRequestQuitMessage);
 
     std::wstring error;
     if (!setup::EnsureDirectory(installDir, error)) {
@@ -230,6 +237,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         warnings += error + L"\n";
     } else if (!setup::WriteUninstallEntry(installDir, setup::DirectorySizeKb(installDir))) {
         warnings += L"卸载入口注册失败，「设置 - 应用」中可能看不到 WindowMark。\n";
+    }
+
+    // 剪贴板守护是可选组件：装不上只是少一个功能，主程序照常工作，所以走 warning
+    // 而不是像主 exe 那样直接失败返回。
+    if (sourceClipKeeper.empty()) {
+        warnings += L"未找到 " + std::wstring(windowmark::clipkeeper::kExeName) +
+                    L"，剪贴板守护将不可用。\n";
+    } else if (!setup::CopyFileTo(sourceClipKeeper, targetClipKeeper, error)) {
+        warnings += error + L"\n";
     }
 
     if (!setup::SetStartWithWindows(targetExe, startWithWindows)) {
