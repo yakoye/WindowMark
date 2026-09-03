@@ -104,13 +104,17 @@ ClipKeeper 现在**没有任何单例保护**。点两次菜单会起两个实�
 **不用 `SetForegroundWindow` 抢前台**——本机实测它不可靠（前台锁），已在
 `docs/Windows开发避坑规则.md` 记录。让已有实例自己 `ShowWindow` 即可。
 
-### 退出消息（当前无法从外部停止）
+### 两个外部消息（当前一个都没有）
 
-`WM_CLOSE` 现在是最小化到托盘（`main.cpp:393`），不是退出。WindowMark 没有办法停掉它。
+`WM_CLOSE` 现在是收起到托盘（`main.cpp:393`），**这个行为正好是菜单要的「关闭面板」，不改**。
+但还缺两个入口，照搬 WindowMark 已有的 `RegisterWindowMessageW` 模式：
 
-照搬 WindowMark 已有的模式（`AppIdentity.h` 里的 `kRequestQuitMessage`）：注册一个
-`ClipKeeper.RequestQuit.v1` 消息，收到即真正退出。退出路径本来就会
-`ChangeClipboardChain`（`main.cpp:399`）干净地退出监听链，不需要改。
+- **`ClipKeeper.ShowPanel.v1`** — 把收起的面板叫出来。菜单项在「进程在跑但面板收起」时发它，
+  第二个实例启动时也发它（见上）。
+- **`ClipKeeper.RequestQuit.v1`** — 真正退出。**只有卸载器用**：运行中的 exe 删不掉。
+  托盘菜单不用它，停止守护是在 ClipKeeper 面板里做的事。
+
+退出路径本来就会 `ChangeClipboardChain`（`main.cpp:399`）干净地退出监听链，不需要改。
 
 消息名与窗口类名 `ClipKeeperMainWindow` 一起，放进 `src/shared/ClipKeeperIdentity.h`——
 `src/shared/` 是 WindowMark 已有的共享目录，安装器和主程序都从那里取标识字符串。
@@ -141,11 +145,24 @@ WindowMark
 退出
 ```
 
-- **状态实时读，不缓存**：每次打开菜单用 `FindWindowW(L"ClipKeeperMainWindow", nullptr)`
-  查一次。用户可能从 ClipKeeper 自己的托盘退出它，缓存会说谎——与「开机启动」每次读注册表
-  是同一个理由。
-- **点击**：未运行则 `CreateProcess` 启动（exe 与 WindowMark.exe 同目录）；运行中则发退出消息。
-- **不提供「打开面板」入口**：ClipKeeper 有自己的托盘图标，要看面板从那里进。
+这个菜单项是 **ClipKeeper 面板的开关**，不是进程的开关。WindowMark 只负责「把它叫出来」，
+自动救援、历史、退出这些都在 ClipKeeper 自己的面板里操作。
+
+**对勾 = 面板当前可见**，与点击行为一一对应：
+
+| 当前状态 | 对勾 | 点击后 |
+|---|---|---|
+| 进程没跑 | 无 | `CreateProcess` 启动（它启动时自带面板） |
+| 面板开着 | 有 | 发 `WM_CLOSE`——它现有行为就是收起到自己的托盘，进程继续守护 |
+| 在托盘里（面板已收起） | 无 | 发显示面板消息，把它叫出来 |
+
+**状态实时读，不缓存**：每次打开菜单用 `FindWindowW(L"ClipKeeperMainWindow", nullptr)` 加
+`IsWindowVisible` 查一次。用户可能从 ClipKeeper 自己的托盘收起或退出它，缓存会说谎——与
+「开机启动」每次读注册表是同一个理由。
+
+**已知的可发现性代价**：进程在后台守护但面板收起时，这里没有对勾，孤立地看会以为守护没开。
+接受这个代价，因为 ClipKeeper 自己的托盘图标始终在，那才是「是否在运行」的真实指示；让对勾
+去表示进程状态、点击却切换面板，两者不对应反而更糟。
 
 **「暂停所有」不包含剪贴板守护。** 它管的是书签/边框/置顶（以后加窗口拖动），那些都是视觉
 干扰，暂停通常是为了截图或演示——而截图恰恰是最需要剪贴板保护的时刻，跟着一起停是帮倒忙。
@@ -179,11 +196,12 @@ WindowMark
 | 检查 | 期望 |
 |---|---|
 | 全新构建 | 两个 exe 都产出，零警告 |
-| 菜单项状态 | 未运行时无对勾；启动后再开菜单有对勾 |
-| 从菜单启动 | ClipKeeper 进程出现，自己的托盘图标出现 |
-| 从菜单停止 | 进程消失，托盘图标消失 |
-| 从 ClipKeeper 自己的托盘退出 | 再开 WindowMark 菜单，对勾已消失（状态没有被缓存） |
-| 连点两次启动 | 只有一个进程（单例生效） |
+| 菜单项状态 | 未运行时无对勾；启动后面板可见，再开菜单有对勾 |
+| 从菜单启动 | ClipKeeper 进程出现，面板和它自己的托盘图标都出现 |
+| 面板开着时再点菜单 | 面板收起，**进程仍在**（托盘图标还在），对勾消失 |
+| 面板收起后再点菜单 | 面板重新出现，对勾恢复 |
+| 从 ClipKeeper 自己的托盘退出 | 再开 WindowMark 菜单，对勾消失且点击能重新启动（状态没有被缓存） |
+| 手动双击 exe 两次 | 只有一个进程，第二次把已有面板叫出来（单例生效） |
 | 安装器 | 安装目录里有 ClipKeeper.exe |
 | 卸载（ClipKeeper 运行中） | 先停止再删除，目录清空无残留 |
 | 剪贴板救援本身 | 连上 ToDesk 后启动它，截图后 Ctrl+V 正常 |
