@@ -11,6 +11,7 @@
 #include "InstallerCommon.h"
 
 #include "AppIdentity.h"
+#include "ClipKeeperIdentity.h"
 
 #include <commctrl.h>
 #include <objbase.h>
@@ -168,8 +169,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     // A running instance is expected, not an error.
     setup::StopRunningInstances(4000);
+    // ClipKeeper 也要停。不是为了删它的文件——RemoveTree 是整个安装目录 remove_all，
+    // 它自然跟着走——而是因为运行中的 exe 删不掉，会让整个 remove_all 失败并留下残留。
+    setup::StopRunningInstances(4000, windowmark::clipkeeper::kExeName,
+                                windowmark::clipkeeper::kWindowClass,
+                                windowmark::clipkeeper::kRequestQuitMessage);
 
     setup::SetStartWithWindows({}, false);
+    // ClipKeeper 面板上有自己的「开机启动」勾选框，写的是 Run\ClipKeeper。不清掉会留下
+    // 一个指向已删除 exe 的启动项。
+    if (HKEY runKey = nullptr;
+        RegOpenKeyExW(HKEY_CURRENT_USER, app::kRunKeyPath, 0, KEY_SET_VALUE, &runKey) ==
+        ERROR_SUCCESS) {
+        RegDeleteValueW(runKey, L"ClipKeeper");
+        RegCloseKey(runKey);
+    }
     setup::RemoveStartMenuShortcut();
     setup::RemoveUninstallEntry();
 

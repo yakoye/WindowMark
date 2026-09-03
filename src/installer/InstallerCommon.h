@@ -1,5 +1,8 @@
 #pragma once
 
+// 默认参数要用到 kMainExeName / kControlWindowClass / kRequestQuitMessage。
+#include "AppIdentity.h"
+
 #include <windows.h>
 
 #include <filesystem>
@@ -15,7 +18,8 @@ struct RunningInstance {
     std::filesystem::path imagePath;
 };
 
-[[nodiscard]] std::vector<RunningInstance> FindRunningInstances();
+[[nodiscard]] std::vector<RunningInstance> FindRunningInstances(
+    const wchar_t* exeName = app::kMainExeName);
 
 // Asks every running WindowMark to close through its own message loop, waits up to
 // graceMs, and only then force-terminates whatever is left. Force termination is safe
@@ -23,7 +27,13 @@ struct RunningInstance {
 // resources that disappear with the process.
 // Returns true when no instance is running any more, which is also the result when
 // none was running to begin with.
-bool StopRunningInstances(unsigned graceMs);
+//
+// 三个标识串带默认值，是为了让同一套「先礼后兵」的逻辑也能停 ClipKeeper——它有自己的
+// exe 名、窗口类和退出消息。默认值保持原样，现有调用点一字不用改。
+bool StopRunningInstances(unsigned graceMs,
+                          const wchar_t* exeName = app::kMainExeName,
+                          const wchar_t* windowClass = app::kControlWindowClass,
+                          const wchar_t* quitMessage = app::kRequestQuitMessage);
 
 // Blocks until nobody holds the single-instance mutex, so a freshly launched WindowMark
 // will not mistake a predecessor that is still exiting for "already running" and quit.
