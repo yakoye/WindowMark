@@ -469,10 +469,14 @@ void WinControlWindow::ShowMenu() {
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
-    // Disabled header. It carries the app name so 关于 and 退出 do not have to repeat it,
-    // which is what was making the menu wide - a Win32 menu is exactly as wide as its
-    // longest label, and 「关于 WindowMark...」 was that label.
-    AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, app::kProductName);
+    // 这里曾经有一行灰色的「WindowMark」标题，用来让「关于」不必写成「关于 WindowMark...」。
+    // 那一步确实减了宽，但标题本身随后成了新的瓶颈：实测它撑到 212px，而去掉之后是 187px
+    // ——十个拉丁字符比任何一个中文标签都宽。菜单是从 WindowMark 的托盘图标上右击出来的，
+    // 图标和 tooltip 已经说明了身份，标题行没有再留的理由。
+    //
+    // 顺带记一笔，同一次测量还否掉了一个直觉：给带子菜单的项加 MF_CHECKED 完全不影响
+    // 菜单宽度（带勾不带勾都是 212px）。宽度只由最宽的那个标签决定。
+    //
     // Bookmarks and borders are separate features with separate switches and separate
     // settings, so the menu keeps them in separate submenus rather than one flat list.
     HMENU bookmarks = CreatePopupMenu();
@@ -486,7 +490,8 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(bookmarks, MF_STRING, kSelectionCommand, L"选择应用/窗口...");
         AppendMenuW(bookmarks, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(bookmarks, MF_STRING, kSettingsCommand, L"书签设置...");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(bookmarks), L"书签");
+        AppendMenuW(menu, MF_POPUP | (enabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(bookmarks), L"书签");
     }
 
     HMENU borders = CreatePopupMenu();
@@ -496,7 +501,8 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(borders, MF_STRING, kBorderExcludeCommand, L"排除应用...");
         AppendMenuW(borders, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(borders, MF_STRING, kBorderSettingsCommand, L"边框设置...");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(borders), L"窗口边框");
+        AppendMenuW(menu, MF_POPUP | (bordersEnabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(borders), L"窗口边框");
     }
 
     HMENU pinning = CreatePopupMenu();
@@ -529,7 +535,8 @@ void WinControlWindow::ShowMenu() {
 
         AppendMenuW(pinning, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(pinning, MF_STRING, kPinSettingsCommand, L"置顶设置...");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
+        AppendMenuW(menu, MF_POPUP | (pinningEnabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
     }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
