@@ -161,18 +161,22 @@ than silently clamped.
 The tray menu itself carries the program-wide switches, above 关于 and 退出:
 
 ```text
-WindowMark          greyed header, so 关于/退出 need not repeat the name
-书签              >
-窗口边框           >
-窗口置顶           >
+✓ 书签             >   顶层的对勾镜像各功能的启用状态，右击一次就看得到
+✓ 窗口边框          >
+  窗口置顶          >
 ──────────
-暂停所有            master switch; reads 启用所有 while paused
-开机启动
-配置文件...         配置文件放在哪，见「配置文件位置」一节
-关于
+  暂停所有             master switch; reads 启用所有 while paused
+✓ 开机启动
+  配置文件...          配置文件放在哪，见「配置文件位置」一节
+  关于
 ──────────
-退出
+  退出
 ```
+
+顶层那三个对勾是**状态显示**，切换仍在各自子菜单的第一项（「启用书签」/「启用窗口边框」/
+「启用窗口置顶」）。Win32 里带子菜单的项点击即展开子菜单，系统不给它命令 ID，因此没办法
+兼作开关——这是菜单模型本身的限制，`MF_OWNERDRAW` 也绕不过去（它只让你自绘，不让你细分
+点击区域）。
 
 **暂停所有 / 启用所有** turns both features off, or both back on, without visiting either
 submenu. The label names what the click will do, so there is no tick to interpret.
