@@ -230,17 +230,22 @@ void ShowTrayMenu() {
     ::DestroyMenu(menu);
 }
 
+// 本窗口所在显示器的 DPI。所有尺寸都要过 S()，否则字体跟着 DPI 放大而框不变——
+// 原先标题框写死 30px，在 120 DPI 下 16pt 字体本身就有 27px，「ClipKeeper」的 p
+// 下降部分直接被切掉。
+int g_dpi = 96;
+
+int S(int value) { return ::MulDiv(value, g_dpi, 96); }
+
 HFONT CreateUiFont(int pt, int weight = FW_NORMAL) {
-    HDC dc = ::GetDC(nullptr);
-    int height = -MulDiv(pt, ::GetDeviceCaps(dc, LOGPIXELSY), 72);
-    ::ReleaseDC(nullptr, dc);
+    // 按窗口 DPI 而不是 GetDeviceCaps（那给的是系统 DPI，多显示器不同缩放时会错）。
+    const int height = -::MulDiv(pt, g_dpi, 72);
     return ::CreateFontW(height, 0, 0, 0, weight, FALSE, FALSE, FALSE,
                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 }
 
 HFONT g_font{};
-HFONT g_titleFont{};
 
 void ApplyFont(HWND h, HFONT font = nullptr) {
     ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(font ? font : g_font), TRUE);
@@ -249,25 +254,38 @@ void ApplyFont(HWND h, HFONT font = nullptr) {
 void Layout(HWND hwnd) {
     RECT rc{};
     ::GetClientRect(hwnd, &rc);
-    int w = rc.right - rc.left;
-    int h = rc.bottom - rc.top;
-    const int m = 18;
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    const int m = S(18);
 
-    HWND title = ::GetDlgItem(hwnd, 1100);
-    HWND desc = ::GetDlgItem(hwnd, 1101);
     HWND restore = ::GetDlgItem(hwnd, IDC_RESTORE);
     HWND clear = ::GetDlgItem(hwnd, IDC_CLEAR);
     HWND hide = ::GetDlgItem(hwnd, IDC_HIDE);
 
-    ::MoveWindow(title, m, 14, w - 2*m, 30, TRUE);
-    ::MoveWindow(desc, m, 46, w - 2*m, 42, TRUE);
-    ::MoveWindow(g_autoCheck, m, 92, 150, 26, TRUE);
-    ::MoveWindow(g_startupCheck, m + 160, 92, 150, 26, TRUE);
-    ::MoveWindow(g_list, m, 126, w - 2*m, h - 224, TRUE);
-    ::MoveWindow(restore, m, h - 86, 126, 34, TRUE);
-    ::MoveWindow(clear, m + 136, h - 86, 100, 34, TRUE);
-    ::MoveWindow(hide, w - m - 112, h - 86, 112, 34, TRUE);
-    ::MoveWindow(g_status, m, h - 44, w - 2*m, 28, TRUE);
+    // 控件高度按各自字号给足，给不够会把字的下降部分切掉。
+    const int checkH = S(26);
+    const int buttonH = S(32);
+    const int statusH = S(24);
+    const int gap = S(10);
+
+    // 顶上直接是两个开关：面板里的标题和说明都删了——窗口标题栏已经写着
+    // 「ClipKeeper 剪贴板守护」，在客户区再写一遍是重复。
+    int y = S(14);
+    ::MoveWindow(g_autoCheck, m, y, S(150), checkH, TRUE);
+    ::MoveWindow(g_startupCheck, m + S(160), y, S(150), checkH, TRUE);
+    y += checkH + gap;
+
+    // 从下往上排底部，中间剩多少给列表——原来是 h-224 这样的魔数，改一处高度就得
+    // 重新算一遍。
+    const int statusY = h - S(14) - statusH;
+    const int buttonY = statusY - S(12) - buttonH;
+    ::MoveWindow(restore, m, buttonY, S(126), buttonH, TRUE);
+    ::MoveWindow(clear, m + S(136), buttonY, S(100), buttonH, TRUE);
+    ::MoveWindow(hide, w - m - S(112), buttonY, S(112), buttonH, TRUE);
+    ::MoveWindow(g_status, m, statusY, w - 2 * m, statusH, TRUE);
+
+    const int listH = buttonY - S(12) - y;
+    ::MoveWindow(g_list, m, y, w - 2 * m, listH > S(60) ? listH : S(60), TRUE);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -293,14 +311,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
         g_hwnd = hwnd;
+        // DPI 要在建字体之前拿到——CreateUiFont 用它算字号。
+        g_dpi = static_cast<int>(::GetDpiForWindow(hwnd));
+        if (g_dpi <= 0) g_dpi = 96;
         g_font = CreateUiFont(10);
-        g_titleFont = CreateUiFont(16, FW_SEMIBOLD);
-
-        HWND title = ::CreateWindowW(L"STATIC", L"ClipKeeper  剪贴板守护", WS_CHILD | WS_VISIBLE,
-                                     0, 0, 0, 0, hwnd, ControlId(1100), nullptr, nullptr);
-        HWND desc = ::CreateWindowW(L"STATIC",
-            L"针对 ToDesk 远程会话：先缓存截图/文字；若当前剪贴板随后被清空，则自动恢复。",
-            WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, ControlId(1101), nullptr, nullptr);
         g_autoCheck = ::CreateWindowW(L"BUTTON", L"自动救援", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                      0, 0, 0, 0, hwnd, ControlId(IDC_AUTO), nullptr, nullptr);
         g_startupCheck = ::CreateWindowW(L"BUTTON", L"开机启动", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
@@ -314,11 +328,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                      0, 0, 0, 0, hwnd, ControlId(IDC_CLEAR), nullptr, nullptr);
         HWND hide = ::CreateWindowW(L"BUTTON", L"隐藏到托盘", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                     0, 0, 0, 0, hwnd, ControlId(IDC_HIDE), nullptr, nullptr);
-        g_status = ::CreateWindowW(L"STATIC", L"等待复制文字或截图…", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        g_status = ::CreateWindowW(L"STATIC", L"等待复制文字或截图…",
+                                   WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS,
                                    0, 0, 0, 0, hwnd, ControlId(IDC_STATUS), nullptr, nullptr);
 
-        ApplyFont(title, g_titleFont);
-        ApplyFont(desc);
         ApplyFont(g_autoCheck);
         ApplyFont(g_startupCheck);
         ApplyFont(g_list);
@@ -335,6 +348,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_nextViewer = ::SetClipboardViewer(hwnd);
         ::RegisterHotKey(hwnd, kHotkeyRestore, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'V');
         AddTrayIcon();
+
+        // 窗口是按固定像素建的，那是 96 DPI 下的尺寸。在 120 DPI 上字体放大了 25%
+        // 而窗口没有，于是处处显得挤。按当前 DPI 重设一次。
+        // 450 宽刚好放得下底部三个按钮：恢复选中项到 144、清空缓存到 254，隐藏到托盘
+        // 从 320 起，中间还剩 66px。再窄就要重排按钮了。
+        // 360 高之下列表还剩约 216px（十行上下），Layout 里对列表有 S(60) 的下限兜底。
+        RECT want{0, 0, S(450), S(360)};
+        ::AdjustWindowRectExForDpi(&want, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE, 0,
+                                   static_cast<UINT>(g_dpi));
+        ::SetWindowPos(hwnd, nullptr, 0, 0, want.right - want.left, want.bottom - want.top,
+                       SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
 
@@ -409,6 +433,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
+    case WM_DPICHANGED: {
+        // 拖到另一块缩放比例不同的显示器上：字体要按新 DPI 重建，否则要么糊要么溢出。
+        g_dpi = static_cast<int>(HIWORD(wp));
+        if (g_dpi <= 0) g_dpi = 96;
+
+        HFONT oldBody = g_font;
+        g_font = CreateUiFont(10);
+
+        // 先把新字体发给所有控件，再删旧的——控件还拿着旧句柄时删会画不出东西。
+        for (const int id : {IDC_AUTO, IDC_STARTUP, IDC_LIST, IDC_RESTORE, IDC_CLEAR, IDC_HIDE,
+                             IDC_STATUS}) {
+            if (HWND child = ::GetDlgItem(hwnd, id)) ApplyFont(child);
+        }
+        if (oldBody) ::DeleteObject(oldBody);
+
+        // lp 里是系统建议的新位置和大小，照用即可。
+        if (const RECT* suggested = reinterpret_cast<const RECT*>(lp)) {
+            ::SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                           suggested->right - suggested->left,
+                           suggested->bottom - suggested->top,
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        Layout(hwnd);
+        return 0;
+    }
+
     case WM_CLOSE:
         if (!g_exiting) {
             ::ShowWindow(hwnd, SW_HIDE);
@@ -422,7 +472,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ::UnregisterHotKey(hwnd, kHotkeyRestore);
         RemoveTrayIcon();
         if (g_font) ::DeleteObject(g_font);
-        if (g_titleFont) ::DeleteObject(g_titleFont);
         ::PostQuitMessage(0);
         return 0;
     }
