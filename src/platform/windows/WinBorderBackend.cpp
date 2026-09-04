@@ -432,15 +432,20 @@ private:
             model_.frame.bottom + reach,
         };
 
-        // 夹回窗口所在的监视器，别让那圈外扩落到隔壁屏幕上。用 MonitorFromRect 而不是
-        // MonitorFromWindow：这里只有几何，不依赖那个 HWND 此刻是否还有效。
-        const RECT frameRect = ToWinRect(model_.frame);
-        if (HMONITOR monitor = MonitorFromRect(&frameRect, MONITOR_DEFAULTTONEAREST)) {
-            MONITORINFO info{};
-            info.cbSize = sizeof(info);
-            if (GetMonitorInfoW(monitor, &info)) {
-                outer = ClampBorderToMonitor(model_.frame, outer, ToCoreRect(info.rcMonitor),
-                                             reach);
+        // 夹回窗口所在的屏幕，别让那圈外扩落到隔壁屏幕上，也别压在任务栏上面。
+        //
+        // 用 MonitorFromWindow 而不是 MonitorFromRect：这里的 model_.frame 本身就是从这个
+        // 窗口算出来的（还带一层内缩量缓存），frame 一旦偏了，拿它去问监视器会连屏都选错，
+        // 于是夹到隔壁屏的边界上——那正是要修的毛病，不能让修复本身依赖同一个可疑输入。
+        // 直接问 HWND 归哪块屏是独立的、可信的。
+        if (HWND target = HwndFromId(model_.windowId)) {
+            if (HMONITOR monitor = MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST)) {
+                MONITORINFO info{};
+                info.cbSize = sizeof(info);
+                if (GetMonitorInfoW(monitor, &info)) {
+                    outer = ClampBorderToScreen(model_.frame, outer, ToCoreRect(info.rcMonitor),
+                                                ToCoreRect(info.rcWork), reach);
+                }
             }
         }
         return ToWinRect(outer);

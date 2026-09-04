@@ -64,6 +64,10 @@ private:
     struct FrameInset {
         LONG left{}, top{}, right{}, bottom{};
         LONG width{}, height{};   // window rect size the inset was measured at
+        // 测量时窗口是不是最大化的。尺寸相同但最大化状态不同的情况是存在的——把窗口手动
+        // 拉到正好等于工作区大小，再最大化，GetWindowRect 的尺寸不变而内缩量从 8,0,8,8
+        // 变成 9,9,9,9。只用尺寸当缓存键会认为不必重标定，于是一直用错的那份。
+        bool zoomed{};
     };
     [[nodiscard]] Rect FrameFor(HWND hwnd) const;
     mutable std::unordered_map<HWND, FrameInset> frameInsets_;
