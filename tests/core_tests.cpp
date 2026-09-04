@@ -760,29 +760,45 @@ void TestHotkeyParsing() {
 }
 
 void TestBorderClamping() {
+    // 典型的单屏：底部一条 60px 的任务栏，所以工作区比监视器矮。
     const Rect monitor{0, 0, 1920, 1080};
+    const Rect work{0, 0, 1920, 1020};
     const int reach = 3;
 
-    // 最大化：DWM 扩展边界正好等于工作区。左上右三边贴合监视器，
-    // 底边离监视器底部还有任务栏那 60px，不该夹。
+    // 最大化：DWM 扩展边界正好等于工作区，四条边都该夹住。
+    //
+    // 底边是这里的要害：它贴的是工作区底(1020)，离监视器底(1080)还差整条任务栏。
+    // 只跟监视器比的话判据不成立，边框会画到 1023——压在任务栏上面，而且边框窗口是
+    // topmost，不会被任务栏遮住。使用者截图里那条穿过任务栏的红线就是它。
     {
         const Rect frame{0, 0, 1920, 1020};
         const Rect outer{-3, -3, 1923, 1023};
-        const Rect got = ClampBorderToMonitor(frame, outer, monitor, reach);
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, work, reach);
         CHECK(got.left == 0);
         CHECK(got.top == 0);
         CHECK(got.right == 1920);
-        CHECK(got.bottom == 1023);
+        CHECK(got.bottom == 1020);
     }
 
-    // 半屏吸附：左上贴合，右边在屏幕中间，那条边要保持正常外扩。
+    // 半屏吸附：左上下贴合工作区，右边在屏幕中间，那条边要保持正常外扩。
     {
         const Rect frame{0, 0, 960, 1020};
         const Rect outer{-3, -3, 963, 1023};
-        const Rect got = ClampBorderToMonitor(frame, outer, monitor, reach);
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, work, reach);
         CHECK(got.left == 0);
         CHECK(got.top == 0);
         CHECK(got.right == 963);
+        CHECK(got.bottom == 1020);
+    }
+
+    // 用户手动把窗口拖到盖住任务栏：贴的是监视器底(1080)而不是工作区底。
+    // 按工作区判断 gap 是 -60，落到监视器这一档才夹得对。
+    {
+        const Rect frame{400, 900, 1200, 1080};
+        const Rect outer{397, 897, 1203, 1083};
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, work, reach);
+        CHECK(got.bottom == 1080);
+        CHECK(got.top == 897);      // 上边离得远，不动
     }
 
     // 手动横跨两屏：窗口右边落在隔壁屏中间，相对本监视器 gap 为负。
@@ -790,27 +806,37 @@ void TestBorderClamping() {
     {
         const Rect frame{1500, 100, 2500, 800};
         const Rect outer{1497, 97, 2503, 803};
-        const Rect got = ClampBorderToMonitor(frame, outer, monitor, reach);
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, work, reach);
         CHECK(got.left == 1497);
         CHECK(got.right == 2503);
     }
 
-    // 普通窗口四边都离监视器很远，原样返回。
+    // 普通窗口四边都离边界很远，原样返回。
     {
         const Rect frame{699, 162, 1846, 884};
         const Rect outer{696, 159, 1849, 887};
-        const Rect got = ClampBorderToMonitor(frame, outer, monitor, reach);
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, work, reach);
         CHECK(got.left == 696);
         CHECK(got.top == 159);
         CHECK(got.right == 1849);
         CHECK(got.bottom == 887);
     }
 
+    // 任务栏在左边时工作区左移，左边的夹取要跟着走而不是认死监视器的 0。
+    {
+        const Rect leftBar{60, 0, 1920, 1080};
+        const Rect frame{60, 0, 1920, 1080};
+        const Rect outer{57, -3, 1923, 1083};
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, leftBar, reach);
+        CHECK(got.left == 60);
+        CHECK(got.right == 1920);
+    }
+
     // reach 为 0 时边框不外扩，也就没有可夹的东西。
     {
         const Rect frame{0, 0, 1920, 1080};
         const Rect outer{0, 0, 1920, 1080};
-        const Rect got = ClampBorderToMonitor(frame, outer, monitor, 0);
+        const Rect got = ClampBorderToScreen(frame, outer, monitor, work, 0);
         CHECK(got.left == 0);
         CHECK(got.right == 1920);
     }

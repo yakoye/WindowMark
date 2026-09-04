@@ -168,6 +168,22 @@ namespace {
 [[nodiscard]] bool InsetLooksSettled(HWND hwnd, bool fromDwm, const auto& inset) {
     if (!fromDwm) return false;
     if (IsIconic(hwnd)) return false;
+
+    // 内缩量是窗口矩形与 DWM 可见边界之差，本机实测都是个位数：还原态 8,0,8,8，
+    // 最大化 9,9,9,9。大到几十上百只有一个解释——DWM 报的还是上一个状态的边界。
+    //
+    // 最大化和还原都有动画：GetWindowRect 立刻返回终值，而 DWM 边界还在路上。在那一刻
+    // 标定出的内缩量是错的**但非零**，于是被下面 `if (!zero) return true` 当成可信值
+    // 缓存下来；缓存只在尺寸变化时重标定，而最大化之后尺寸不再变，就一直错到用户拉伸
+    // 窗口为止。使用者报的「偶现右边和下面溢出，拉伸一下就恢复」正是这个。
+    //
+    // 32 是宽松的上限：真实值不超过 10，而这里只需要挡住「差了整个窗口那么多」的读数。
+    constexpr LONG kSaneInset = 32;
+    if (std::abs(inset.left) > kSaneInset || std::abs(inset.top) > kSaneInset ||
+        std::abs(inset.right) > kSaneInset || std::abs(inset.bottom) > kSaneInset) {
+        return false;
+    }
+
     const bool zero =
         inset.left == 0 && inset.top == 0 && inset.right == 0 && inset.bottom == 0;
     if (!zero) return true;
@@ -183,9 +199,14 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
     const LONG width = window.right - window.left;
     const LONG height = window.bottom - window.top;
 
+    const bool zoomed = IsZoomed(hwnd) != FALSE;
+
     auto it = frameInsets_.find(hwnd);
     // Recalibrate when the size changes: maximizing or restoring changes the inset.
-    if (it == frameInsets_.end() || it->second.width != width || it->second.height != height) {
+    // 最大化状态也是缓存键的一部分：尺寸相同而状态不同的情况存在（手动拉到工作区大小
+    // 再最大化），只比尺寸会漏掉那次重标定。
+    if (it == frameInsets_.end() || it->second.width != width || it->second.height != height ||
+        it->second.zoomed != zoomed) {
         bool fromDwm = false;
         const Rect frame = ExtendedFrame(hwnd, fromDwm);
         FrameInset inset;
@@ -227,6 +248,7 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
 
         inset.width = width;
         inset.height = height;
+        inset.zoomed = zoomed;
         // Not cached when the reading cannot be trusted, so the next geometry update tries
         // again. The outline is momentarily off by the frame inset, which is one tick at
         // most, rather than wrong until the user happens to resize the window.
