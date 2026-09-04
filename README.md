@@ -1,11 +1,11 @@
-# WindowMark v0.4.7
+# WindowMark v0.4.8
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, and temporary always-on-top pinning**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.4.7 at a glance
+## v0.4.8 at a glance
 
 Three window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -20,25 +20,27 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
-v0.4.7 adds the MIT LICENSE file the repository had been missing.
+v0.4.8 fixes border overflow properly. v0.4.5 had clamped borders to the monitor but got the
+reference rectangle wrong for the bottom edge — a maximized window's visible bounds equal the
+**work area**, not the monitor, so the bottom edge was never clamped and the outline was drawn
+over the taskbar. Two caching bugs were fixed alongside it: an inset measured mid-animation was
+cached as trustworthy, and the cache key ignored the maximized state.
 
-v0.4.6 added ClipKeeper and made the tray menu show each feature's enabled state at the top
-level. v0.4.5 clamped borders to their own monitor (they used to spill onto the next screen
-when a window was maximized on a dual-monitor setup) and made the config file location
-configurable — portable next to the exe, or a path you choose. See
+v0.4.7 adds the MIT LICENSE file the repository had been missing. v0.4.6 added ClipKeeper and
+made the tray menu show each feature's enabled state at the top level. See
 [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.4.7-win64.zip` from the
-   [v0.4.7 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.7).
+1. Download `WindowMark-v0.4.8-win64.zip` from the
+   [v0.4.8 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.8).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
 4. Use the tray menu to configure **书签**, **窗口边框**, and **窗口置顶** independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.4.7.
+scaffold and does not provide a working macOS application in v0.4.8.
 
 ## Interaction
 
@@ -542,15 +544,16 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.4.7** is the current release. It includes window bookmarks, per-window borders,
+**v0.4.8** is the current release. It includes window bookmarks, per-window borders,
 per-application border exclusions, window pinning, `WindowMarkInspect.exe`, reliable
 start-with-Windows state handling with a login-attempt audit log, borders clamped to the
 window's own monitor, a configurable config-file location (portable or custom path),
-the ClipKeeper clipboard guard, and — as of this release — an MIT LICENSE file.
+the ClipKeeper clipboard guard, an MIT LICENSE file, and — as of this release — border
+ clamping that respects the work area so outlines no longer sit on top of the taskbar.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.4.7 remains auditable.
+v0.4.8 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
