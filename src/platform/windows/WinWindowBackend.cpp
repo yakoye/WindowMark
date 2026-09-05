@@ -200,13 +200,16 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
     const LONG height = window.bottom - window.top;
 
     const bool zoomed = IsZoomed(hwnd) != FALSE;
+    // 跨到缩放比例不同的显示器上时，边框粗细变了，内缩量也跟着变。窗口物理尺寸这时
+    // 通常也会变，但不能指望——所以 DPI 自己也进缓存键。
+    const UINT dpi = GetDpiForWindow(hwnd);
 
     auto it = frameInsets_.find(hwnd);
     // Recalibrate when the size changes: maximizing or restoring changes the inset.
     // 最大化状态也是缓存键的一部分：尺寸相同而状态不同的情况存在（手动拉到工作区大小
     // 再最大化），只比尺寸会漏掉那次重标定。
     if (it == frameInsets_.end() || it->second.width != width || it->second.height != height ||
-        it->second.zoomed != zoomed) {
+        it->second.zoomed != zoomed || it->second.dpi != dpi) {
         bool fromDwm = false;
         const Rect frame = ExtendedFrame(hwnd, fromDwm);
         FrameInset inset;
@@ -249,6 +252,7 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
         inset.width = width;
         inset.height = height;
         inset.zoomed = zoomed;
+        inset.dpi = dpi;
         // Not cached when the reading cannot be trusted, so the next geometry update tries
         // again. The outline is momentarily off by the frame inset, which is one tick at
         // most, rather than wrong until the user happens to resize the window.
@@ -298,6 +302,13 @@ bool WinWindowBackend::InstallHooks() {
         EVENT_OBJECT_LOCATIONCHANGE,
         EVENT_OBJECT_NAMECHANGE,
     };
+    // 这里**没有** EVENT_OBJECT_REORDER，加过又去掉了。实测两件事：
+    //   1. 它 20 秒只来 1 次，而且 objectId 是 OBJID_CLIENT、发自桌面的子窗口，
+    //      顶级窗口的 z 序变化一次都没报——本函数入口按 OBJID_WINDOW 过滤，它连
+    //      门都进不来，加了纯属死代码。
+    //   2. 更根本的是：程序化地把窗口置顶 / 取消置顶 / 压到最底，这三种纯 z 序变化
+    //      **不产生任何 WinEvent**。逐一试过上面所有事件，目标窗口一条都没发出来。
+    // 所以 z 序只能靠轮询兜住，见 WinBorderBackend::ResyncZOrder。
 
     for (DWORD event : events) {
         HWINEVENTHOOK hook = SetWinEventHook(event, event, nullptr, WinEventProc, 0, 0, flags);

@@ -1,11 +1,11 @@
-# WindowMark v0.4.8
+# WindowMark v0.4.9-rc1
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, and temporary always-on-top pinning**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.4.8 at a glance
+## v0.4.9-rc1 at a glance
 
 Three window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -20,11 +20,16 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
-v0.4.8 fixes border overflow properly. v0.4.5 had clamped borders to the monitor but got the
-reference rectangle wrong for the bottom edge — a maximized window's visible bounds equal the
-**work area**, not the monitor, so the bottom edge was never clamped and the outline was drawn
-over the taskbar. Two caching bugs were fixed alongside it: an inset measured mid-animation was
-cached as trustworthy, and the cache key ignored the maximized state.
+**v0.4.9-rc1 is a pre-release.** Border z-order got substantial fixes but is not fully
+solved — maximized windows no longer get an outline at all (theirs was never visible: clamped
+to the work area it coincides exactly with the window edge), the foreground window now uses a
+border window created topmost from the start, and drag-follow latency dropped to a 3.0 ms
+median with 100% inside one frame. **Known issue:** inactive windows' borders still land at the
+wrong depth when windows overlap, and switching rapidly between overlapping windows can still
+show a brief incomplete border. Both have the same root cause — using the global z-order, which
+any process can change and whose adjustment can fail silently, to express a dozen local
+ownership relations. The final v0.4.9 will replace that model; see the design note under
+`docs/superpowers/specs/`.
 
 v0.4.7 adds the MIT LICENSE file the repository had been missing. v0.4.6 added ClipKeeper and
 made the tray menu show each feature's enabled state at the top level. See
@@ -32,15 +37,15 @@ made the tray menu show each feature's enabled state at the top level. See
 
 ## Quick start
 
-1. Download `WindowMark-v0.4.8-win64.zip` from the
-   [v0.4.8 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.8).
+1. Download `WindowMark-v0.4.9-rc1-win64.zip` from the
+   [v0.4.9-rc1 release](https://github.com/yakoye/WindowMark/releases/tag/v0.4.9-rc1).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
 4. Use the tray menu to configure **书签**, **窗口边框**, and **窗口置顶** independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.4.8.
+scaffold and does not provide a working macOS application in v0.4.9-rc1.
 
 ## Interaction
 
@@ -544,16 +549,17 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.4.8** is the current release. It includes window bookmarks, per-window borders,
-per-application border exclusions, window pinning, `WindowMarkInspect.exe`, reliable
-start-with-Windows state handling with a login-attempt audit log, borders clamped to the
-window's own monitor, a configurable config-file location (portable or custom path),
-the ClipKeeper clipboard guard, an MIT LICENSE file, and — as of this release — border
- clamping that respects the work area so outlines no longer sit on top of the taskbar.
+**v0.4.9-rc1** is the current pre-release; **v0.4.8** is the latest stable one. The line
+includes window bookmarks, per-window borders, per-application border exclusions, window
+pinning, `WindowMarkInspect.exe`, reliable start-with-Windows state handling with a
+login-attempt audit log, borders clamped to the window's own monitor, a configurable
+config-file location (portable or custom path), the ClipKeeper clipboard guard, and an MIT
+LICENSE file. rc1 adds the border z-order and latency work described above, with the known
+issue noted there.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.4.8 remains auditable.
+v0.4.9-rc1 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and

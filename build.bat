@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo === WindowMark v0.4.3 build ===
+echo === WindowMark build ===
 where cmake >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] cmake not found. Install CMake or add it to PATH.

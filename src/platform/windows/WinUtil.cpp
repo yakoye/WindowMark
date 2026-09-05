@@ -234,7 +234,26 @@ bool IsShellOwned(HWND hwnd) {
 bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoExclude) {
     if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
     if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
-    if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
+
+    // 有 owner 的窗口通常是对话框、属性页那类附属窗口，不是用户心里的「一个窗口」。
+    // 但 owner 本身得像个窗口才算数——Delphi / VCL 应用把主窗体挂在一个隐藏的
+    // TApplication 窗口下面，那东西是 0x0 尺寸的 TOOLWINDOW，纯粹是框架内部结构。
+    //
+    // 实测 MobaXterm：主窗口 TMobaXtermForm 各项资格全都合格，却因为 owner 非空被整个
+    // 滤掉，从来拿不到边框。所有 VCL 程序都是这个结构，不是个例。
+    //
+    // 判据取「owner 有实际尺寸且不是 TOOLWINDOW」。真正的模态对话框，owner 是那个有尺寸
+    // 的主窗口，照旧被排除。
+    if (const HWND owner = GetWindow(hwnd, GW_OWNER); owner != nullptr) {
+        const LONG_PTR ownerEx = GetWindowLongPtrW(owner, GWL_EXSTYLE);
+        RECT ownerRect{};
+        const bool haveRect = GetWindowRect(owner, &ownerRect) != FALSE;
+        const bool ownerIsRealWindow = (ownerEx & WS_EX_TOOLWINDOW) == 0 && haveRect &&
+                                       (ownerRect.right - ownerRect.left) > 0 &&
+                                       (ownerRect.bottom - ownerRect.top) > 0;
+        if (ownerIsRealWindow) return false;
+    }
+
     if (IsCloaked(hwnd)) return false;
 
     const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);

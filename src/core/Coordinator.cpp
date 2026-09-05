@@ -378,8 +378,9 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         break;
     case WindowEventKind::ActiveChanged:
         activeWindow_ = event.windowId;
-        ApplyModels();
+        // 边框先画，理由同 RefreshAll 里那处。
         ApplyBorders();
+        ApplyModels();
         break;
     }
 }
@@ -407,8 +408,10 @@ void Coordinator::RefreshAll() {
 
     PruneTransientState();
     ApplyPins();
-    ApplyModels();
+    // 边框先画：它贴着窗口边缘，是焦点切换时眼睛最先看的地方。书签条在窗口外面，
+    // 它那一遍分组和绘制排在后面，晚几十毫秒不会被注意到。
     ApplyBorders();
+    ApplyModels();
 }
 
 // A window moved. That is the only thing a location event can mean, and it is by far the
@@ -442,8 +445,10 @@ void Coordinator::RefreshGeometry(WindowId id) {
         RefreshOne(id);
         return;
     }
-    ApplyModels();
+    // 边框先画：它贴着窗口边缘，是焦点切换时眼睛最先看的地方。书签条在窗口外面，
+    // 它那一遍分组和绘制排在后面，晚几十毫秒不会被注意到。
     ApplyBorders();
+    ApplyModels();
 }
 
 void Coordinator::RefreshOne(WindowId id) {
@@ -464,8 +469,10 @@ void Coordinator::RefreshOne(WindowId id) {
     }
     updated->title = SanitizeTitle(updated->title);
     windows_[id] = std::move(*updated);
-    ApplyModels();
+    // 边框先画：它贴着窗口边缘，是焦点切换时眼睛最先看的地方。书签条在窗口外面，
+    // 它那一遍分组和绘制排在后面，晚几十毫秒不会被注意到。
     ApplyBorders();
+    ApplyModels();
 }
 
 void Coordinator::ApplyModels() {
@@ -568,6 +575,20 @@ std::vector<BorderModel> Coordinator::BuildBorderModels() const {
         if (!window.visible || window.minimized) continue;
         const bool pinned = pins_.Contains(id) || id == pinPreview_;
         if (!bordersOn && !pinned) continue;
+
+        // 最大化的窗口不画边框。
+        //
+        // 边框画在窗口边界外 3px，而最大化窗口正好贴着工作区边缘——外面根本没有那
+        // 3px。夹回屏幕内之后边框和窗口边界完全重合，实测四条边一个像素都露不出来。
+        // 也就是说这个边框从来没起过作用，却是一连串问题的源头：溢出到任务栏上、
+        // 跨屏时跑到另一块屏幕、动画期间标定出错误的内缩量并缓存下来，v0.4.5 到
+        // v0.4.8 修的三轮全是这个场景。
+        //
+        // 产品上也说得通：占满整个屏幕的窗口不需要一圈线来标出它在哪。
+        //
+        // 置顶窗口例外。置顶是显式操作，边框是它生效的唯一视觉反馈；而普通边框是
+        // 自动加的，最大化时省掉不丢任何信息。
+        if (window.maximized && !pinned) continue;
         // Excluded apps still get an outline while pinned. The pin highlight is the only
         // feedback that the pin worked, so silencing it would make the pin look broken -
         // the same reason border.enabled is not consulted for pinned windows above.
