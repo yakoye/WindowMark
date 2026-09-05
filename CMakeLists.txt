@@ -236,6 +236,12 @@ if(WINDOWMARK_BUILD_TESTS)
     add_test(NAME windowmark_core_tests COMMAND windowmark_core_tests)
 
     if(WIN32)
+        # Overlay 方案的性能关卡工具，只在开发时手工跑，不进安装包。
+        add_executable(OverlayBench tools/overlay-bench/OverlayBench.cpp)
+        target_link_libraries(OverlayBench PRIVATE user32 gdi32)
+    endif()
+
+    if(WIN32)
         add_executable(windowmark_autostart_tests tests/autostart_tests.cpp)
         target_include_directories(windowmark_autostart_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/shared)
