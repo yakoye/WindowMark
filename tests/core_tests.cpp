@@ -1,4 +1,5 @@
 #include "windowmark/core/BorderGeometry.h"
+#include "windowmark/core/BorderOcclusion.h"
 #include "windowmark/core/ConfigLocation.h"
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/DrawerState.h"
@@ -922,6 +923,88 @@ void TestConfigLocationPriority() {
 
 } // namespace
 
+void TestBorderOcclusion() {
+    // 一、矩形减矩形
+    {
+        // 完全不重叠：原样返回
+        const auto parts = SubtractRect({0, 0, 10, 10}, {20, 20, 30, 30});
+        CHECK(parts.size() == 1);
+        CHECK(parts[0].left == 0 && parts[0].right == 10);
+    }
+    {
+        // 完全被盖住：什么都不剩
+        const auto parts = SubtractRect({10, 10, 20, 20}, {0, 0, 100, 100});
+        CHECK(parts.empty());
+    }
+    {
+        // 从左边咬掉一半
+        const auto parts = SubtractRect({0, 0, 100, 10}, {0, 0, 50, 10});
+        CHECK(parts.size() == 1);
+        CHECK(parts[0].left == 50 && parts[0].right == 100);
+    }
+    {
+        // 从正中间挖一个洞，横条被切成左右两段
+        const auto parts = SubtractRect({0, 0, 100, 10}, {40, 0, 60, 10});
+        CHECK(parts.size() == 2);
+        // 切出来的块互不重叠，且合起来正好是原矩形减去洞
+        int area = 0;
+        for (const auto& p : parts) area += p.width() * p.height();
+        CHECK(area == 100 * 10 - 20 * 10);
+    }
+    {
+        // 洞完全在内部：切成上下左右四块
+        const auto parts = SubtractRect({0, 0, 100, 100}, {40, 40, 60, 60});
+        CHECK(parts.size() == 4);
+        int area = 0;
+        for (const auto& p : parts) area += p.width() * p.height();
+        CHECK(area == 100 * 100 - 20 * 20);
+    }
+
+    // 二、边框环拆成四条互不重叠的边
+    {
+        const auto ring = BorderRingSegments({0, 0, 100, 50}, {4, 4, 96, 46});
+        CHECK(ring.size() == 4);
+        CHECK(ring[0].left == 0 && ring[0].top == 0);      // 上：整宽
+        CHECK(ring[0].right == 100 && ring[0].bottom == 4);
+        CHECK(ring[1].top == 46 && ring[1].bottom == 50);  // 下
+        CHECK(ring[2].left == 0 && ring[2].right == 4);    // 左：只占中间那段高度
+        CHECK(ring[2].top == 4 && ring[2].bottom == 46);
+        CHECK(ring[3].left == 96 && ring[3].right == 100); // 右
+        // 四条边合起来正好是环的面积，说明没有重叠
+        int area = 0;
+        for (const auto& r : ring) area += r.width() * r.height();
+        CHECK(area == 100 * 50 - 92 * 42);
+    }
+
+    // 三、整条链路
+    {
+        // 右半边被一个窗口盖住：剩下的段全在左半边
+        const auto segs = VisibleBorderSegments({0, 0, 100, 50}, {4, 4, 96, 46},
+                                                {{50, 0, 200, 200}});
+        CHECK(!segs.empty());
+        for (const auto& s : segs) CHECK(s.right <= 50);
+    }
+    {
+        // 没有遮挡物：四条边原样
+        const auto segs = VisibleBorderSegments({0, 0, 100, 50}, {4, 4, 96, 46}, {});
+        CHECK(segs.size() == 4);
+    }
+    {
+        // 被完全盖住：一段都不剩
+        const auto segs = VisibleBorderSegments({0, 0, 100, 50}, {4, 4, 96, 46},
+                                                {{-10, -10, 200, 200}});
+        CHECK(segs.empty());
+    }
+    {
+        // 多个遮挡物叠加：分别咬掉左右两端，中间留下
+        const auto segs = VisibleBorderSegments({0, 0, 100, 50}, {4, 4, 96, 46},
+                                                {{-10, -10, 20, 200}, {80, -10, 200, 200}});
+        CHECK(!segs.empty());
+        for (const auto& s : segs) CHECK(s.left >= 20 && s.right <= 80);
+    }
+    std::cout << "BorderOcclusion tests passed.\n";
+}
+
 int main() {
     TestGroupingAndSelfState();
     TestActiveWindowOnlyVisibility();
@@ -939,6 +1022,7 @@ int main() {
     TestHotkeyParsing();
     TestBorderClamping();
     TestConfigLocationPriority();
+    TestBorderOcclusion();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }
