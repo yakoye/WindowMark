@@ -82,6 +82,7 @@ if(WIN32)
     add_executable(WindowMark WIN32
         src/platform/windows/WinMain.cpp
         src/platform/windows/WinBorderBackend.cpp
+        src/platform/windows/WinDesktopSnapshot.cpp
         src/platform/windows/WinWindowBackend.cpp
         src/platform/windows/WinOverlayBackend.cpp
         src/platform/windows/WinPinBackend.cpp
