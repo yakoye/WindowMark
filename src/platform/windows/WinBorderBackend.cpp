@@ -23,48 +23,140 @@ namespace {
 
 constexpr const wchar_t* kBorderClass = app::kBorderWindowClass;
 
-// Bounds on the GW_HWNDPREV walk in SyncZOrder. Two numbers rather than one because a
-// desktop carries hundreds of hidden top-level windows - 144 sat above a single Excel
-// window here - and a shared budget was being spent entirely on stepping over them,
-// reaching nothing visible and then falling through to a fallback that cannot work. Only
-// real insertion attempts are rationed; the step cap just stops a pathological z-order
-// from spinning the UI thread.
+// ResyncIfDrifted 里两条 z 序遍历的上限。桌面上挂着数百个隐藏的顶级窗口（实测
+// 单个 Excel 窗口上方就压着 144 个），遍历要把它们跳完才能碰到第一个**可见**的。
+// 这个上限只是防止病态 z 序把 UI 线程转死。
+//
+// 只剩这一个数了。原来还有个 kZOrderAttemptLimit，允许插入失败后继续往上爬 16 次，
+// 而能走到插入那一步的都是可见窗口，每爬一格就越过一个本该盖住边框的窗口。那
+// 整套「把边框插到目标正上方」的机制现在已经删干净了，见 SyncZOrder。
 constexpr int kZOrderStepLimit = 4096;
-constexpr int kZOrderAttemptLimit = 16;
 
-constexpr UINT kZOrderFlags =
-    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING;
+// 前台钩子的回调是静态的，没有 this 可用。守望窗口全进程只有一个（WinBorderBackend
+// 是单实例后端），所以把它的句柄放在这里给回调取。
+HWND g_watchWindow = nullptr;
 
-[[nodiscard]] bool IsBookmarkStrip(HWND hwnd) {
-    wchar_t cls[64]{};
-    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) == 0) return false;
-    return std::wcscmp(cls, L"WindowMark.BookmarkOverlay") == 0;
+// 注意这里**没有** SWP_NOSENDCHANGING。
+//
+// 带上它，z 序调整会变成一次「假成功」：SetWindowPos 返回 TRUE，topmost 位和 z 序
+// 立刻都变了（实测 z 从 106 跳到 12），但两百毫秒内又退回原处，而且 GetLastError
+// 是 0——从返回值和错误码完全看不出问题。11 个边框全试一遍：立刻生效 10/11，
+// 300ms 后 0/11。去掉它之后同一次调用稳定保持。
+//
+// 原因是 WM_WINDOWPOSCHANGING 属于 z 序变更的提交路径，跳过它等于只改了状态没有
+// 落实。这个 flag 当初是为省掉拖动时每帧的消息往返而加的——对**移动**是合理优化
+// （Reposition 里仍然保留），对**改 z 序**是错的。
+constexpr UINT kZOrderFlags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+
+// 把窗口放进 topmost 层，并确认真的放进去了。
+//
+// 少数窗口会卡住：`SetWindowPos(HWND_TOPMOST)` 返回 TRUE、`GetLastError()` 为 0，
+// topmost 位却纹丝不动，而同一时刻同一进程的其他边框窗口做同样的调用都成功——两者
+// 的 ex/style/owner/parent/线程/cloaked 属性逐项相同，从外面看不出任何差别。
+//
+// 实测唯一稳定有效的办法是补一次带 `SWP_FRAMECHANGED` 的调用：它强制 Windows 重算
+// 窗口框架，把状态真正落实下去。其余办法都只是「立刻看起来对了，一百毫秒后又退回
+// 去」——经 HWND_TOP 中转、经 HWND_BOTTOM 中转、直接写 `WS_EX_TOPMOST` 位，全都如此。
+// 这和 kZOrderFlags 不能带 SWP_NOSENDCHANGING 是同一类问题：跳过消息会让状态改了
+// 但没提交。
+//
+// 只在第一次失败后才付这个代价，正常路径不受影响。
+void ForceTopmost(HWND hwnd, HWND target, UINT flags) {
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+    if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) return;
+
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags | SWP_FRAMECHANGED);
+    if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) return;
+
+    // 连 FRAMECHANGED 也进不去。这时不再和 topmost 层较劲——反正目的只是「边框盖在
+    // 目标上面」，普通层里同样能做到：插到目标**正上方**那个可见窗口之后。
+    //
+    // 这一步只越过目标自己，不越过任何别的窗口，所以不会重蹈「边框画到别人身上」的
+    // 覆辙——当初那个灾难是失败后**连续**往上爬，每爬一格都越过一个本该盖住边框的
+    // 窗口。这里取一格就停，而那一格之上的窗口本来就该压在边框上面。
+    //
+    // 代价：会被别的 topmost 窗口（菜单、悬浮窗）盖住——但那本来就是期望行为。
+    HWND above = target;
+    for (int step = 0; step < kZOrderStepLimit; ++step) {
+        above = GetWindow(above, GW_HWNDPREV);
+        if (!above) return;                     // 目标已在最前，无处可插
+        if (!IsWindowVisible(above)) continue;  // 隐藏窗口不画像素，跳过
+        break;
+    }
+    if (above) SetWindowPos(hwnd, above, 0, 0, 0, 0, flags);
 }
 
-// The unthrottled geometry path is what makes the outline track a drag instead of
-// trailing it, but location events arrive far faster than the screen can show them:
-// measured at ~110 per second during a fast drag against a 60Hz display, so roughly every
-// other SetWindowPos was overwritten before it was ever presented. One move per frame is
-// the most anyone can see. The newest frame is always remembered, and the throttled Apply
-// puts the outline exactly where it belongs within 33ms of the drag stopping.
-// One move per frame at 60Hz. Raising this to 33ms was tried, to halve the number of
-// SetWindowPos calls contending for the desktop-wide window lock with the app being
-// dragged - but five interleaved rounds could not tell the two settings apart, while the
-// cost is certain: at 33ms the outline trails a full extra frame, tens of pixels during a
-// fast drag. Unproven gain, certain cost, so it stays at 15.
-constexpr double kMinMoveIntervalMs = 15.0;
+// 边框和目标是不是紧挨着——中间只允许夹不可见窗口，不论谁上谁下。
+[[nodiscard]] bool IsAdjacentTo(HWND border, HWND target) {
+    for (const UINT dir : {GW_HWNDPREV, GW_HWNDNEXT}) {
+        HWND probe = border;
+        for (int step = 0; step < kZOrderStepLimit; ++step) {
+            probe = GetWindow(probe, dir);
+            if (!probe) break;
+            if (probe == target) return true;
+            if (!IsWindowVisible(probe)) continue;
+            break;
+        }
+    }
+    return false;
+}
 
-// GetTickCount64 has ~15.6ms granularity, which is the same size as the interval being
-// enforced - it would gate to either 0 or 15.6ms at random. QPC is exact and just as cheap.
-[[nodiscard]] double NowMs() {
-    static const double frequency = [] {
-        LARGE_INTEGER f{};
-        QueryPerformanceFrequency(&f);
-        return static_cast<double>(f.QuadPart);
-    }();
-    LARGE_INTEGER now{};
-    QueryPerformanceCounter(&now);
-    return (static_cast<double>(now.QuadPart) * 1000.0) / frequency;
+// topmost 层里最靠后的那个可见窗口。边框插到它后面就落在 topmost 层的末尾——
+// 在所有普通窗口之上，在所有 topmost 窗口之下。
+//
+// Windows 只有普通层和 topmost 层两个 band，没有可以插空的数值层级，而这个位置是
+// 两个 band 的交界，也就是「比谁都高，但比系统 UI 低」唯一能表达的地方：右键菜单、
+// 输入法候选框、任务栏、悬浮的会议小窗、别人置顶的窗口全都留在上面。
+//
+// 返回 nullptr 表示当前没有别的 topmost 窗口，那时 HWND_TOPMOST 就是同一个位置。
+[[nodiscard]] HWND LastTopmostWindow(HWND self) {
+    HWND last = nullptr;
+    HWND h = GetTopWindow(nullptr);
+    for (int step = 0; step < kZOrderStepLimit && h; ++step) {
+        if (h != self && IsWindowVisible(h)) {
+            if ((GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) break;
+            last = h;
+        }
+        h = GetWindow(h, GW_HWNDNEXT);
+    }
+    return last;
+}
+
+// 目标自己那些浮在它上面的对话框中，最靠下的一个（Word 的查找替换、Notepad++ 的
+// 查找都是这种 owned window）。一个都没有就返回 nullptr。
+//
+// 只往上走**目标自己的** owned 窗口，碰到第一个不属于它的立刻停——这一条是全部的
+// 安全性所在。当初「插入失败后往上再爬一格」之所以是灾难，正因为它越过的是任意
+// 窗口；这里越过的只有目标自己的对话框，而边框本来就该排在它们下面。
+[[nodiscard]] HWND LowestOwnedDialog(HWND target) {
+    RECT targetRect{};
+    if (!GetWindowRect(target, &targetRect)) return nullptr;
+
+    HWND probe = target;
+    for (int step = 0; step < kZOrderStepLimit; ++step) {
+        probe = GetWindow(probe, GW_HWNDPREV);
+        if (!probe) break;
+        if (!IsWindowVisible(probe)) continue;
+        if (GetWindow(probe, GW_OWNER) != target) break;
+
+        // 只有真会挡住边框的才算数：有实际尺寸，而且和目标窗口有重叠。
+        //
+        // `IsWindowVisible` 远不足以判断「这是个对话框」。Windows Terminal 挂着一个
+        // 0x0 的 PseudoConsoleWindow，可见标志是 true；Electron 应用也常带一堆可见的
+        // 辅助窗口。把它们当对话框，边框就被无谓地降进普通层，然后被任何一个普通
+        // 窗口盖住——现象是「切换应用后边框线不全」。
+        // IntersectRect 对空矩形返回 FALSE，零尺寸的因此自动出局。
+        RECT probeRect{};
+        RECT overlap{};
+        if (!GetWindowRect(probe, &probeRect)) continue;
+        if (!IntersectRect(&overlap, &probeRect, &targetRect)) continue;
+
+        // 第一个通过的就是最靠下的那个，正是要找的锚点：边框插到它之后，就落在所有
+        // 对话框之下、目标之上。继续往上找会取到更上面的对话框，那样边框会夹在两个
+        // 对话框中间，把下面那个盖住。
+        return probe;
+    }
+    return nullptr;
 }
 
 // The system accent colour, as 0xAARRGGBB.
@@ -239,8 +331,9 @@ private:
 // bitmap the size of the largest window serves every border in turn.
 class WinBorderBackend::BorderWindow {
 public:
-    BorderWindow(WinBorderBackend& owner, const BorderModel& model)
-        : owner_(owner), model_(model) {}
+    BorderWindow(WinBorderBackend& owner, const BorderModel& model,
+                 bool alwaysTopmost = false)
+        : owner_(owner), model_(model), alwaysTopmost_(alwaysTopmost) {}
 
     ~BorderWindow() { Destroy(); }
 
@@ -249,7 +342,15 @@ public:
         hwnd_ = CreateWindowExW(
             // TRANSPARENT is essential: the outline straddles the window edge, and
             // without it every click near an edge would land on us, not the app.
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            //
+            // 常驻 topmost 的那个在这里就带上 WS_EX_TOPMOST。**创建时就在 topmost 层**
+            // 和「事后用 SetWindowPos 提上去」是两回事：后者正是会卡死的那个操作，
+            // 实测存在这样的窗口——SetWindowPos 返回 TRUE、GetLastError 为 0、z 序和
+            // topmost 位纹丝不动，换锚点、加 SWP_FRAMECHANGED、从别的进程调，全都推
+            // 不动，而同一线程的其他边框窗口做同样的调用都正常。绕开它最可靠的办法
+            // 就是从一开始就不需要提升。
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                (alwaysTopmost_ ? WS_EX_TOPMOST : 0U),
             // WS_DISABLED on top of WS_EX_TRANSPARENT: the outline must never take
             // input, and a disabled window is skipped by hit-testing outright.
             kBorderClass, L"", WS_POPUP | WS_DISABLED,
@@ -262,7 +363,7 @@ public:
         outer_ = outer;
         ApplyVisibility();
         Redraw();
-        SyncZOrder();
+        if (!alwaysTopmost_) SyncZOrder();
         return true;
     }
 
@@ -285,116 +386,284 @@ public:
 
         Reposition();
         if (visibleChanged) ApplyVisibility();
-        // Only the fill colour and the bitmap size affect the pixels; a pure move does not.
-        if (sizeChanged || activeChanged || pinnedChanged || (visibleChanged && model_.visible)) Redraw();
-        // Tried gating this on activeChanged || visibleChanged, on the theory that moving a
-        // window cannot restack it. The theory is right and the change was still wrong:
-        // z-order also drifts from events we never see, and once an outline is stranded
-        // nothing brings it back - one Excel window's outline ended up below both its own
-        // host and the other Excel window, which is exactly what "the border is
-        // incomplete" looks like. The saving was 34ms -> 30ms, inside the noise. Not a
-        // trade worth making.
-        SyncZOrder();
+
+        // z 序在重绘**之前**。两件事互不依赖，而 Redraw 要做一次 UpdateLayeredWindow，
+        // 把整个边框窗口的位图交给 DWM——1500x900 的边框就是 5.4MB。把 z 序排在它后面
+        // 等着，「边框出现」的延迟里就白白含进了一次重绘；而视觉上「出现」等的正是
+        // z 序。倒过来之后边框先站到位（暂时还带着上一次的颜色），一帧之内再上色。
+        //
+        // 每次都检查，但只有真漂了才动手。这里曾经无条件调 SyncZOrder()，而 Apply 会
+        // 遍历所有边框——于是每刷新一次，屏幕上每个边框都做一次 SetWindowPos，后一个
+        // 的插入打乱前一个刚排好的位置，窗口越多越乱。也不能改回「只在 activeChanged
+        // 时调」，那样 z 序会从看不见的事件漂走且再也回不来。
+        if (alwaysTopmost_) {
+            // 层内挪到末尾：比所有普通窗口高，比所有 topmost 窗口低，这样右键菜单、
+            // 输入法候选框、任务栏、悬浮小窗都能压在边框上面。
+            //
+            // 这一步是安全的，和那个会卡死的操作不是一回事：窗口已经在 topmost 层，
+            // 插到另一个 topmost 窗口后面只是**层内换位**；卡死的是「从普通层提进
+            // topmost 层」。真挪不动也无所谓——位置照样是对的，顶多盖住点系统 UI。
+            if (HWND lastTop = LastTopmostWindow(hwnd_); lastTop) {
+                SetWindowPos(hwnd_, lastTop, 0, 0, 0, 0, kZOrderFlags);
+            }
+        } else {
+            ResyncIfDrifted();
+        }
+
+        // 只有填充色和位图尺寸会改变像素，纯移动不会。
+        if (sizeChanged || activeChanged || pinnedChanged ||
+            (visibleChanged && model_.visible)) {
+            Redraw();
+        }
     }
 
-    // Sit directly above the window being outlined rather than at the top of the desktop.
-    // Anchoring to the target keeps the outline at the target's own depth, so it never
-    // floats over an unrelated window in front of it. Owner/owned would have been the
-    // obvious mechanism, but the target belongs to another process and Windows does not
-    // keep cross-process owner z-order in sync - the same trap the bookmark overlays hit
-    // before they were restricted to the foreground window.
+    // 边框的 z 序只有两条规则，都不需要指定锚点窗口：
+    //   活动窗口的边框 -> 放到最顶端；
+    //   其余边框       -> 贴在自己目标的正下方。
+    //
+    // 一个目标窗口只有一个边框窗口（四条边画在同一个 layered 窗口上），所以这里排的
+    // 是「这个边框」的位置，不存在给四条边分别排序这回事。
+    // 边框的 z 序规则，全部在这里。一个目标窗口只有一个边框窗口（四条边画在同一个
+    // layered 窗口上），所以排的是「这个边框」的位置，没有给四条边分别排序这回事。
+    //
+    // 三条规则，为什么是这样见 docs/Windows开发避坑规则.md 里「给别人的窗口加装饰」
+    // 一节——那里记着每一条对应的实测教训，代码里不再重复。
     void SyncZOrder() {
         if (!hwnd_ || !shown_) return;
         HWND target = HwndFromId(model_.windowId);
         if (!IsWindow(target)) return;
 
-        // Match the target's topmost state before anything else. Windows promotes a
-        // window to topmost on its own when it is inserted below a topmost one, which is
-        // why an always-on-top app gets a correct outline for free - but it never demotes.
-        // Inserting a topmost window below an ordinary one leaves the flag set, so when an
-        // app turns always-on-top back off its outline stays stuck in the topmost band,
-        // floating over every unrelated window, permanently. Only HWND_NOTOPMOST clears it.
+        // 判据必须是系统认定的前台窗口，不能只看 model_.active。后者是 UI 层的活动
+        // 标记，焦点切换途中两者会分家，那时照样提 topmost 就会在别的窗口上留下一条
+        // 与谁都不搭界的孤立线。active 决定颜色和线宽，前台身份决定能不能上浮。
+        if (model_.active && GetForegroundWindow() == target) {
+            // 目标自己的对话框浮在它上面时，边框要排在这些对话框**之下**、目标之上。
+            // 否则 topmost 层会把它们整个盖穿——Word 的查找替换、Notepad++ 的查找都
+            // 是普通层窗口，再靠前也压不过 topmost。
+            if (HWND dialog = LowestOwnedDialog(target);
+                dialog && SetWindowPos(hwnd_, dialog, 0, 0, 0, 0, kZOrderFlags)) {
+                return;
+            }
+            // 目标自己被置顶了：那时它就该在最上面，边框跟上去。
+            if ((GetWindowLongPtrW(target, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
+                ForceTopmost(hwnd_, target, kZOrderFlags);
+                return;
+            }
+
+            // 常规情况：落到 topmost 层的**末尾**，不是最前。
+            //
+            // 末尾这个位置刚好是两个 band 的交界：比所有普通窗口高，比所有 topmost
+            // 窗口低。右键菜单、输入法候选框、任务栏、悬浮的会议小窗、别人置顶的窗口
+            // 因而都能压在边框上面，而边框仍然盖得住自己目标的四条边。
+            //
+            // 这比「提到最前然后不去抢」稳当：那种做法只对短暂弹出的东西有效，遇到
+            // 长期悬浮的窗口时，下一次焦点切换又会把边框提到它上面去。
+            // 两步，顺序不能反：先**进** topmost 层，再在层内挪到末尾。
+            //
+            // 反过来（先锚定到最后一个 topmost 窗口）有个窗口期：`LastTopmostWindow`
+            // 找到它、到真正调用 SetWindowPos 之间，那个窗口可能已经掉出 topmost 层
+            // （悬浮窗关闭、别人取消置顶都会），于是边框跟着落进普通层——而实测这时
+            // 紧随其后的 HWND_TOPMOST 救不回来。现象就是边框位置分毫不差地贴在目标
+            // 上方，却在普通层里被任何一个普通窗口盖住。
+            //
+            // 先提上去就没有这个窗口期：HWND_TOPMOST 不引用任何窗口，必定成功；之后
+            // 插到另一个 topmost 窗口后面只是层内换位，不会掉出去。
+            ForceTopmost(hwnd_, target, kZOrderFlags);
+            NoteZOrderResult((GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0);
+            if (HWND lastTop = LastTopmostWindow(hwnd_); lastTop) {
+                SetWindowPos(hwnd_, lastTop, 0, 0, 0, 0, kZOrderFlags);
+                // 万一锚点正好在这一瞬掉出了 topmost 层，把位补回来。宁可停在层内
+                // 最前（可能盖住悬浮窗），也不能掉回普通层（边框整个被盖住）。
+                if ((GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) {
+                    ForceTopmost(hwnd_, target, kZOrderFlags);
+                }
+            }
+            return;
+        }
+
         const bool targetTopmost =
             (GetWindowLongPtrW(target, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+
+        // 其余窗口：优先紧贴在目标**上方**。
+        //
+        // 那是最准的位置——边框夹在目标和压着目标的那个窗口之间，目标被谁盖住边框就被
+        // 谁盖住，一模一样地跟随。贴在下方是次一等的选择：先丢掉与窗框重叠的那 1px，
+        // 更糟的是目标正下方插不进去时（任务管理器就是，UIPI 拒绝）只能再往下退一格，
+        // 而那一格可能是个**与目标重叠**的窗口，边框于是被它整片盖住——实测任务管理器
+        // 的边框就这样掉到了一个和它重叠的 chrome 窗口下面。
+        //
+        // 锚点是目标**上面**那个窗口而不是目标自己，所以不受目标进程完整性的限制。
+        // 只取一格就停：那一格之上的窗口本来就该压在边框上面。当初「插入失败后连续
+        // 往上爬」之所以是灾难，正在于爬第二格、第三格。
+        HWND above = target;
+        for (int step = 0; step < kZOrderStepLimit; ++step) {
+            above = GetWindow(above, GW_HWNDPREV);
+            if (!above) break;
+            if (!IsWindowVisible(above)) continue;
+            break;
+        }
+        // 不能锚定到 topmost 窗口——插到它后面会把边框一起提进 topmost 层，于是浮在
+        // 所有普通窗口上面。目标自己就是置顶窗口时不在此列。
+        if (above && (targetTopmost ||
+                      (GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0)) {
+            SetWindowPos(hwnd_, above, 0, 0, 0, 0, kZOrderFlags);
+            if (IsAdjacentTo(hwnd_, target)) return;
+        }
+
+        // 退而求其次：贴在目标正下方。插到一个非 topmost 窗口后面时 Windows 会顺手
+        // 摘掉 topmost 位，所以这一次调用既降层又定位，中间没有空档。
+        SetWindowPos(hwnd_, target, 0, 0, 0, 0, kZOrderFlags);
+        if (IsAdjacentTo(hwnd_, target)) return;
+
+        // 都被拒了。UIPI 不区分方向：往高完整性窗口下面插同样不行。这时必须先把
+        // topmost 位摘掉，否则边框卡在普通层最前，浮在新前台窗口上面——那就是「窗口
+        // 都失去焦点了，边框线还留着」。
         if (!targetTopmost &&
             (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
             SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0, kZOrderFlags);
         }
 
-        // SetWindowPos places the window *after* hWndInsertAfter in z-order, i.e. below
-        // it. Passing the target therefore buries the outline underneath the very window
-        // it outlines - only the few pixels of overhang stay visible. To sit just above
-        // the target, insert below whatever is currently directly above it.
-        //
-        // "Directly above" has to mean directly above *visibly*. A window's own hidden
-        // helpers - the Default IME window every thread gets, MSCTFIME UI - sit right on
-        // top of it, and Windows will not slot anything between an owner and a window it
-        // owns: that SetWindowPos fails with ERROR_ACCESS_DENIED and the outline silently
-        // stays wherever it was. Task Manager is the visible casualty, and it never
-        // recovers, because every later attempt hits the same hidden window. Stepping
-        // over invisible siblings costs nothing - they paint no pixels, so sitting above
-        // them looks identical to sitting below them.
-        HWND above = target;
-        int attempts = 0;
-        for (int step = 0; step < kZOrderStepLimit; ++step) {
-            above = GetWindow(above, GW_HWNDPREV);
-            if (!above) break;             // target is already at the top of its band
-            if (above == hwnd_) return;    // first visible thing above it is us: done
-            if (!IsWindowVisible(above)) continue;
-            // Never anchor to a window in the topmost band. SetWindowPos promotes whatever
-            // it inserts below one, so a single such anchor turns the outline into an
-            // always-on-top window floating over unrelated apps - observed, an outline for
-            // an ordinary window sitting at z=14 with the topmost bit set. The bookmark
-            // strip is deliberately topmost and is the most likely one to be met first.
-            if (!targetTopmost && (GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
-                break;
-            }
-            if (SetWindowPos(hwnd_, above, 0, 0, 0, 0, kZOrderFlags)) return;
-            // Refused, which means this one is owned by something. Try a couple more, but
-            // not many: every extra step climbs past a window the outline should be
-            // *below*, and ending up too high is worse than ending up slightly too low.
-            if (++attempts >= kZOrderAttemptLimit) break;
+        // 退一格：锚定到目标**下面**那个可见窗口。往下找是安全的——往上每爬一格都越过
+        // 一个本该盖住边框的窗口，往下每退一格只是被更多窗口遮住。
+        HWND below = GetWindow(target, GW_HWNDNEXT);
+        for (int step = 0; step < kZOrderStepLimit && below; ++step) {
+            if (IsWindowVisible(below)) break;
+            below = GetWindow(below, GW_HWNDNEXT);
         }
-        // Nothing to anchor above. For an always-on-top target the outline has to be in
-        // that band too, and asking for it is allowed.
-        if (targetTopmost) {
-            SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, kZOrderFlags);
+        if (below && SetWindowPos(hwnd_, below, 0, 0, 0, 0, kZOrderFlags)) return;
+
+        // 还不行就沉底。边框会完全看不见，但那远好过浮在别人窗口上面：看不见只是自己
+        // 缺了一块，浮上去是把别人的画面也弄坏。
+        SetWindowPos(hwnd_, HWND_BOTTOM, 0, 0, 0, 0, kZOrderFlags);
+    }
+
+    // 这个边框窗口的 z 序是不是已经完全推不动了。
+    //
+    // 实测存在这样的状态：`SetWindowPos` 返回 TRUE、`GetLastError()` 为 0，窗口的
+    // z 序和 topmost 位却纹丝不动——换 HWND_TOPMOST、换具体锚点、加 SWP_FRAMECHANGED、
+    // 从别的进程调，全都一样，而同一进程同一线程的其他边框窗口做同样的调用都正常。
+    // 两者的 ex/style/owner/parent/线程/cloaked/showCmd 属性逐项相同，从外面看不出
+    // 任何差别。窗口自己进了坏状态，调用方改不动它。
+    //
+    // 唯一有效的办法是把它扔掉重建。
+    //
+    // 一次失败就判定，不再等几轮确认：ForceTopmost 内部本身已经是三层（HWND_TOPMOST
+    // → 加 SWP_FRAMECHANGED → 插到目标正上方那个窗口之后），三层全部落空就已经是确凿
+    // 的冻结，多等只是让使用者多看几百毫秒的残缺边框。
+    [[nodiscard]] bool IsStuck() const { return zOrderFailures_ >= kStuckThreshold; }
+
+    [[nodiscard]] const BorderModel& Model() const { return model_; }
+
+    void Hide() {
+        model_.visible = false;
+        ApplyVisibility();
+    }
+
+    void NoteZOrderResult(bool ok) {
+        if (ok) {
+            zOrderFailures_ = 0;
+            return;
+        }
+        if (zOrderFailures_ < kStuckThreshold) ++zOrderFailures_;
+        // 当场投递重建请求，不等 500ms 轮询——那半秒是肉眼看得见的残缺边框。
+        // 只能投消息，不能就地销毁：这是这个对象自己的方法，销毁自己会留下悬垂指针。
+        if (IsStuck()) owner_.RequestStuckRecheck();
+    }
+
+    // 轮询用：先只读地判断边框还在不在该在的位置，漂了才动手。
+    //
+    // 存在的理由是实测出来的：**纯 z 序变化不产生任何 WinEvent**。把窗口置顶、取消
+    // 置顶、压到最底，逐一试过 FOREGROUND / REORDER / LOCATIONCHANGE / SHOW / HIDE
+    // 等全部事件，目标窗口一条都不发。REORDER 更是连顶级窗口都不报（20 秒 1 次，
+    // 还是桌面子窗口发的）。所以「来回切换焦点后边框错位」这类问题，除了轮询没有
+    // 别的办法——tacky-borders 的作者也在源码注释里写了同样的结论。
+    //
+    // 代价压到最低：位置没漂时只有几次 GetWindow，一次 SetWindowPos 都不做。绝大
+    // 多数轮询都会在这里返回。
+    void ResyncIfDrifted() {
+        if (!hwnd_ || !shown_) return;
+        HWND target = HwndFromId(model_.windowId);
+        if (!IsWindow(target)) return;
+
+        const bool wantTop = model_.active && GetForegroundWindow() == target;
+        const bool isTopmost =
+            (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+
+        // 目标不再是前台，边框却还留在 topmost 层——这就是那条孤立浮线的状态，
+        // 必须马上降下来。轮询存在的意义有一半在这里：焦点变化会发事件，但
+        // 「前台换人导致某个**别的**窗口不再是前台」不会通知到那个窗口。
+        if (!wantTop) {
+            if (isTopmost) {
+                SyncZOrder();
+                return;
+            }
+        } else if (HWND dialog = LowestOwnedDialog(target); dialog) {
+            // 目标有自己的对话框浮着：边框该紧跟在最下面那个对话框之后，而且**不该**
+            // 在 topmost 层——在的话就会把对话框盖穿。
+            HWND next = GetWindow(dialog, GW_HWNDNEXT);
+            for (int step = 0; step < kZOrderStepLimit && next; ++step) {
+                if (IsWindowVisible(next)) break;
+                next = GetWindow(next, GW_HWNDNEXT);
+            }
+            if (next != hwnd_ || isTopmost) SyncZOrder();
+            return;
+        } else {
+            // 期望：边框在 topmost 层，而且它**下面**紧接着的就是普通层——也就是它待在
+            // topmost 层的末尾。压在它上面的都是 topmost 窗口，那是对的，不用管。
+            if (!isTopmost) {
+                SyncZOrder();
+                return;
+            }
+            // 往下看一眼：如果下面还有别的可见 topmost 窗口，说明边框没在末尾，
+            // 那个窗口正被边框盖着。
+            HWND below = GetWindow(hwnd_, GW_HWNDNEXT);
+            for (int step = 0; step < kZOrderStepLimit && below; ++step) {
+                if (IsWindowVisible(below)) {
+                    if ((GetWindowLongPtrW(below, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) {
+                        SyncZOrder();
+                    }
+                    return;
+                }
+                below = GetWindow(below, GW_HWNDNEXT);
+            }
             return;
         }
 
-        // Otherwise the target is the window in front, and nothing can be placed above it
-        // from here: HWND_TOP returns TRUE, sets nothing and moves nothing when the
-        // request comes from a process that does not own the foreground window.
+        // 其余窗口：只要边框排在目标**下方**就算对，不要求紧贴。
         //
-        // Settle for directly *below* the target, which is allowed - lowering never is
-        // restricted. That costs the single pixel of ring that overlaps the frame and
-        // keeps everything else: the three pixels outside it, and being above every other
-        // window on the desktop. Doing nothing here instead left an outline stranded
-        // underneath an unrelated window, which is what "the border is incomplete" looked
-        // like on screen.
-        SetWindowPos(hwnd_, target, 0, 0, 0, 0, kZOrderFlags);
+        // 不能要求紧贴。目标完整性更高时（任务管理器）插不进它的正下方，SyncZOrder 会
+        // 退到再往下一格——要求紧贴的话每 500ms 都判定「漂了」，重排，再判定漂了，
+        // 白白空转。真正要防的只有一件事：边框跑到目标**上方**去。
+        //
+        // 从边框往**上**找目标，不是从目标往下找边框。问的是同一件事，代价差一个
+        // 数量级：往下要走过目标下面的所有窗口（桌面上几百个顶级窗口）；往上则是
+        // 紧贴时一步、退了一格时两步命中。而 ApplyBorders 每次焦点切换都会对每一个
+        // 边框跑一遍这个检查，那正是「切换窗口时边框反应慢半拍」的来源。
+        HWND probe = hwnd_;
+        for (int step = 0; step < kZOrderStepLimit; ++step) {
+            probe = GetWindow(probe, GW_HWNDPREV);
+            if (!probe) break;           // 走到顶都没碰到目标：边框在目标上方，要重排
+            if (probe == target) return; // 目标在边框上面：位置对
+        }
+        SyncZOrder();
     }
 
-    // Fast path for the unthrottled geometry sink: move only, never repaint.
+    // 几何事件的快速路径：只移动，从不重绘。
+    //
+    // 这里一个节流都没有，是故意的。原来有个 15ms 的最小间隔，理由是「一帧之内只有
+    // 一次移动看得见」——但那个推理有个洞：**我们不知道帧边界在哪**。15ms 和 60Hz 的
+    // 16.7ms 打拍，每隔几帧就有一个事件恰好落在节流窗口里被丢掉，边框于是周期性地
+    // 落后一帧。使用者看到的「不丝滑、有残影」就是这个拍频。
+    //
+    // 不节流的代价很小：Reposition 自己带「位置没变就跳过」的短路，而真正需要移动时
+    // 每个事件对应一次真实的窗口移动，跟着走才是最准的。一次 80 步的拖动约 274 个
+    // 事件，每个只是一次不重绘的 SetWindowPos。
     void MoveTo(const Rect& frame) {
         const bool sizeChanged = frame.width() != model_.frame.width() ||
                                  frame.height() != model_.frame.height();
-        // Always remember the newest frame, even when the move itself is skipped: whatever
-        // runs next - the following event or the throttled Apply - then lands on the real
-        // position rather than a stale one.
         model_.frame = frame;
-
-        // A size change has to go through: the bitmap no longer matches the window, and
-        // leaving that until the next tick shows a visibly wrong outline.
-        if (!sizeChanged) {
-            const double now = NowMs();
-            if (now - lastMoveMs_ < kMinMoveIntervalMs) return;
-            lastMoveMs_ = now;
-        } else {
-            lastMoveMs_ = NowMs();
-        }
-
         Reposition();
+        // 尺寸变了必须重绘：位图和窗口对不上了，拖到下一个节拍会露出明显错位的边框。
         if (sizeChanged) Redraw();
     }
 
@@ -559,11 +828,13 @@ private:
     }
 
     WinBorderBackend& owner_;
+    const bool alwaysTopmost_{false};
+    static constexpr int kStuckThreshold = 1;
+
     BorderModel model_;
     HWND hwnd_{};
     RECT outer_{};
-    // When the unthrottled path last actually moved this window; see kMinMoveIntervalMs.
-    double lastMoveMs_{0.0};
+    int zOrderFailures_{0};
     bool shown_{false};
 
     friend class WinBorderBackend;
@@ -610,8 +881,140 @@ bool WinBorderBackend::Start(const Settings& settings) {
     settings_ = settings;
     if (!EnsureFactory() || !EnsureWindowClass()) return false;
     surface_ = std::make_unique<LayeredSurface>();
+    StartZOrderWatch();
     started_ = true;
     return true;
+}
+
+// z 序守望：一个 message-only 窗口加一个定时器。
+//
+// 为什么必须轮询，见 BorderWindow::ResyncIfDrifted 的注释——纯 z 序变化不发任何事件。
+// 周期取 500ms：错位最多存在半秒，而每次滴答只是对每个边框走几次 GetWindow，
+// 位置对就立刻返回，一次 SetWindowPos 都不做。
+void WinBorderBackend::StartZOrderWatch() {
+    if (watchWindow_) return;
+
+    static const ATOM watchClass = [] {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpfnWndProc = WatchProc;
+        wc.lpszClassName = L"WindowMark.BorderZOrderWatch";
+        return RegisterClassExW(&wc);
+    }();
+    if (watchClass == 0) return;
+
+    watchWindow_ = CreateWindowExW(0, L"WindowMark.BorderZOrderWatch", L"", 0, 0, 0, 0, 0,
+                                   HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), this);
+    if (!watchWindow_) return;
+    SetWindowLongPtrW(watchWindow_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetTimer(watchWindow_, kZOrderWatchTimerId, kZOrderWatchIntervalMs, nullptr);
+
+    // 定时器兜底，钩子负责及时。
+    //
+    // 只靠 500ms 定时器的话，刚刚失去前台的那个窗口的边框会带着 topmost 位多留半秒，
+    // 在盖住它的窗口上画出一条孤立线（实测 121 次采样撞见 1 次）。而 Windows 只把
+    // EVENT_SYSTEM_FOREGROUND 发给**新的**前台窗口，失去前台的那个什么都收不到——
+    // 所以这里挂的是全局钩子，收到就把所有边框重排一遍。
+    g_watchWindow = watchWindow_;
+    foregroundHook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                                      nullptr, ForegroundProc, 0, 0,
+                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+}
+
+// 钩子回调跑在事件源的时间线上，做重活会拖慢整个系统的窗口切换。只投递一条消息，
+// 真正的重排在 WatchProc 里做。
+void CALLBACK WinBorderBackend::ForegroundProc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG,
+                                               DWORD, DWORD) {
+    if (g_watchWindow) PostMessageW(g_watchWindow, kZOrderRecheckMsg, 0, 0);
+}
+
+void WinBorderBackend::StopZOrderWatch() noexcept {
+    if (!watchWindow_) return;
+    if (foregroundHook_) {
+        UnhookWinEvent(foregroundHook_);
+        foregroundHook_ = nullptr;
+    }
+    g_watchWindow = nullptr;
+    KillTimer(watchWindow_, kZOrderWatchTimerId);
+    DestroyWindow(watchWindow_);
+    watchWindow_ = nullptr;
+}
+
+LRESULT CALLBACK WinBorderBackend::WatchProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                             LPARAM lParam) {
+    if ((msg == WM_TIMER && wParam == kZOrderWatchTimerId) || msg == kZOrderRecheckMsg) {
+        auto* self = reinterpret_cast<WinBorderBackend*>(
+            GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (self) {
+            for (auto& [id, window] : self->windows_) {
+                if (window) window->ResyncIfDrifted();
+            }
+            self->RecreateStuckBorders();
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// 请后端在下一个消息循环里处理卡死的边框。
+//
+// 去重：多个边框同时卡住时只投一条消息，处理时一并扫完。
+void WinBorderBackend::RequestStuckRecheck() {
+    if (!watchWindow_) return;
+    if (stuckRecheckPosted_.exchange(true)) return;
+    PostMessageW(watchWindow_, kZOrderRecheckMsg, 0, 0);
+}
+
+// 把 z 序冻住的边框窗口就地换成新的。
+//
+// 由守望轮询调用，不必等下一个窗口事件——卡住的窗口不会自己产生事件，干等就是让
+// 使用者一直看着残缺的边框。
+void WinBorderBackend::RecreateStuckBorders() {
+    stuckRecheckPosted_.store(false);
+    for (auto it = windows_.begin(); it != windows_.end();) {
+        if (!it->second || !it->second->IsStuck()) {
+            ++it;
+            continue;
+        }
+        const WindowId id = it->first;
+        // 重建也救不回来的极少数情况：再建几次就放弃，让边框留在原处。无限重建会
+        // 变成每帧销毁重建一个窗口，那比一条不完整的边框糟糕得多。
+        int& tries = recreateTries_[id];
+        if (tries >= kMaxRecreateTries) {
+            ++it;
+            continue;
+        }
+        ++tries;
+        const BorderModel model = it->second->Model();
+        PinDiag(L"重建 z序冻住的边框 hwnd=%llu 第%d次",
+                static_cast<unsigned long long>(id), tries);
+        it = windows_.erase(it);
+        auto border = std::make_unique<BorderWindow>(*this, model);
+        if (border->Create()) windows_.emplace(id, std::move(border));
+    }
+}
+
+void WinBorderBackend::ApplyOne(const BorderModel& model) {
+    auto it = windows_.find(model.windowId);
+    // z 序推不动的边框窗口只能重建——见 BorderWindow::IsStuck。丢掉它，下面的创建
+    // 分支立刻建一个新的，使用者看到的顶多是一帧的空档。
+    if (it != windows_.end() && it->second->IsStuck()) {
+        PinDiag(L"重建 z序冻住的边框 hwnd=%llu",
+                static_cast<unsigned long long>(it->first));
+        windows_.erase(it);
+        it = windows_.end();
+    }
+    if (it == windows_.end()) {
+        auto border = std::make_unique<BorderWindow>(*this, model);
+        if (border->Create()) {
+            PinDiag(L"描边 %s",
+                    DescribeBorderedWindow(HwndFromId(model.windowId)).c_str());
+            windows_.emplace(model.windowId, std::move(border));
+        }
+        return;
+    }
+    it->second->Update(model);
 }
 
 void WinBorderBackend::Apply(const std::vector<BorderModel>& models) {
@@ -619,20 +1022,49 @@ void WinBorderBackend::Apply(const std::vector<BorderModel>& models) {
 
     std::unordered_set<WindowId> desired;
     desired.reserve(models.size());
+    for (const auto& model : models) desired.insert(model.windowId);
+
+    // 前台窗口的边框走一个专用窗口，别的都走 windows_ 里的普通边框。
+    //
+    // 那个专用窗口在创建时就带 WS_EX_TOPMOST，此后只移动、只改颜色，永远不做 z 序
+    // 调整。这是整段逻辑里最要紧的一条：「把普通层窗口提进 topmost 层」正是会卡死的
+    // 那个操作，而生来就在 topmost 层的窗口根本不需要它。之前所有「边框不全、闪一下
+    // 才好」的现象都出在那次提升上。
+    //
+    // 顺带也解决了处理顺序：使用者盯着的那个窗口第一个更新，不必排在十几个边框后面
+    // 等一串 UpdateLayeredWindow。
+    const BorderModel* active = nullptr;
+    for (const auto& model : models) {
+        if (model.active) {
+            active = &model;
+            break;
+        }
+    }
+
+    if (active) {
+        if (!activeBorder_) {
+            auto border = std::make_unique<BorderWindow>(*this, *active, true);
+            if (border->Create()) activeBorder_ = std::move(border);
+        } else {
+            activeBorder_->Update(*active);
+        }
+    } else if (activeBorder_) {
+        // 没有活动窗口（比如焦点落在托盘或别的进程），把专用边框收起来，别留一圈
+        // 悬在半空的线。
+        activeBorder_->Hide();
+    }
 
     for (const auto& model : models) {
-        desired.insert(model.windowId);
-        auto it = windows_.find(model.windowId);
-        if (it == windows_.end()) {
-            auto border = std::make_unique<BorderWindow>(*this, model);
-            if (border->Create()) {
-                PinDiag(L"描边 %s",
-                        DescribeBorderedWindow(HwndFromId(model.windowId)).c_str());
-                windows_.emplace(model.windowId, std::move(border));
-            }
-        } else {
-            it->second->Update(model);
+        if (&model == active) {
+            // 前台窗口的普通边框**隐藏**，不销毁：那一圈线此刻由专用边框画着，但这个
+            // 窗口迟早会变回非前台，那时它需要立刻有边框。销毁的话要重新
+            // CreateWindow + 绘制 + 排 z 序，那一下看得见；留着只是多一个隐藏窗口。
+            BorderModel hidden = model;
+            hidden.visible = false;
+            ApplyOne(hidden);
+            continue;
         }
+        ApplyOne(model);
     }
 
     for (auto it = windows_.begin(); it != windows_.end();) {
@@ -643,6 +1075,7 @@ void WinBorderBackend::Apply(const std::vector<BorderModel>& models) {
         // Paired with the 描边 line above, this gives the outline's lifetime - which is
         // what tells a real window apart from a popup that flashed for a moment.
         PinDiag(L"撤边 hwnd=%llu", static_cast<unsigned long long>(it->first));
+        recreateTries_.erase(it->first);
         it = windows_.erase(it);
     }
 }
@@ -660,10 +1093,13 @@ void WinBorderBackend::UpdateSettings(const Settings& settings) {
     if (!started_) return;
     // Width, offset and colours all change the rendered pixels and the window size, so
     // rebuild rather than patch. Coordinator re-applies the models straight after.
+    activeBorder_.reset();
     windows_.clear();
 }
 
 void WinBorderBackend::Stop() noexcept {
+    StopZOrderWatch();
+    activeBorder_.reset();
     windows_.clear();
     surface_.reset();
     renderTarget_.Reset();

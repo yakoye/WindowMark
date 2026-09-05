@@ -68,6 +68,10 @@ private:
         // 拉到正好等于工作区大小，再最大化，GetWindowRect 的尺寸不变而内缩量从 8,0,8,8
         // 变成 9,9,9,9。只用尺寸当缓存键会认为不必重标定，于是一直用错的那份。
         bool zoomed{};
+        // 测量时所在显示器的 DPI。边框粗细随缩放变，内缩量也就跟着变（本机 125% 是 8px）。
+        // 两块屏缩放不同时，窗口跨过去而物理尺寸恰好没变的话，只比尺寸会一直用着旧屏的
+        // 那份内缩量，边框就偏了。本机两屏同为 125%，这条是照着机制补的防线而非复现所得。
+        UINT dpi{};
     };
     [[nodiscard]] Rect FrameFor(HWND hwnd) const;
     mutable std::unordered_map<HWND, FrameInset> frameInsets_;
