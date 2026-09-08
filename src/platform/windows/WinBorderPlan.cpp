@@ -46,9 +46,18 @@ namespace {
     return inner;
 }
 
-// Windows 11 给普通窗口用的圆角半径，以及紧凑窗口用的那档。
-constexpr float kRoundRadius = 8.0F;
-constexpr float kRoundSmallRadius = 4.0F;
+// Windows 11 的圆角半径，单位是 **DIP** 不是物理像素：普通窗口 8，紧凑窗口 4。
+constexpr float kRoundRadiusDip = 8.0F;
+constexpr float kRoundSmallRadiusDip = 4.0F;
+
+// 这个窗口所在的缩放比例。
+//
+// 半径必须跟着缩放走。125% 下窗口的圆角实际是 8 x 1.25 = 10 个物理像素，按 8 画出来
+// 的弧比窗口自己的弧方 2px——肉眼看就是「边框没有贴着窗口的角」。
+[[nodiscard]] float DpiScaleOf(HWND hwnd) {
+    const UINT dpi = GetDpiForWindow(hwnd);
+    return dpi > 0 ? static_cast<float>(dpi) / 96.0F : 1.0F;
+}
 
 // 这个窗口自己想要多圆。Windows 10 没有圆角，那边这个查询直接失败。
 [[nodiscard]] float SystemCornerRadius(HWND hwnd) {
@@ -62,22 +71,28 @@ constexpr float kRoundSmallRadius = 4.0F;
                                      sizeof(preference)))) {
         return 0.0F;   // Windows 10，或者这个窗口整个不参与该 API
     }
+    const float scale = DpiScaleOf(hwnd);
     switch (preference) {
     case kDoNotRound: return 0.0F;
-    case kRoundSmall: return kRoundSmallRadius;
+    case kRoundSmall: return kRoundSmallRadiusDip * scale;
     case kRound:
     case kDefault:
-    default:          return kRoundRadius;
+    default:          return kRoundRadiusDip * scale;
     }
 }
 
-// 边框该画多圆。Auto 跟着窗口自己走——Windows 11 的窗口本来就是圆的，边框跟着圆才
-// 贴合；用户想要直角就显式选 Square。
+// 边框该画多圆。
+//
+// Auto 跟着窗口自己走——Windows 11 的窗口本来就是圆的，边框跟着圆才贴合；想要直角
+// 就显式选 Square。Round / RoundSmall 是固定的两档，同样按 DPI 缩放。
+//
+// Custom 例外：那个数直接就是物理像素，所见即所得。想微调贴合度就用它——先看 Auto
+// 画出来多大（125% 缩放下是 10），再往上下试一两个像素。
 [[nodiscard]] float CornerRadiusOf(HWND hwnd, const Settings& settings) {
     switch (settings.border.corners) {
     case BorderCorners::Square:     return 0.0F;
-    case BorderCorners::Round:      return kRoundRadius;
-    case BorderCorners::RoundSmall: return kRoundSmallRadius;
+    case BorderCorners::Round:      return kRoundRadiusDip * DpiScaleOf(hwnd);
+    case BorderCorners::RoundSmall: return kRoundSmallRadiusDip * DpiScaleOf(hwnd);
     case BorderCorners::Custom:     return static_cast<float>(
                                         std::max(0, settings.border.cornerRadius));
     case BorderCorners::Auto:
