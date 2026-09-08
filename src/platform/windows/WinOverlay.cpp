@@ -1,9 +1,38 @@
 #include "WinOverlay.h"
 
+#include "windowmark/core/BorderOcclusion.h"
+
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace windowmark::win {
+
+namespace {
+RenderTrace g_render;
+
+[[nodiscard]] LONGLONG RenderTicks() {
+    LARGE_INTEGER value{};
+    QueryPerformanceCounter(&value);
+    return value.QuadPart;
+}
+
+[[nodiscard]] double RenderMsSince(LONGLONG start) {
+    static const double perMs = [] {
+        LARGE_INTEGER freq{};
+        QueryPerformanceFrequency(&freq);
+        return static_cast<double>(freq.QuadPart) / 1000.0;
+    }();
+    return static_cast<double>(RenderTicks() - start) / perMs;
+}
+} // namespace
+
+RenderTrace TakeRenderTrace() {
+    const RenderTrace copy = g_render;
+    g_render = RenderTrace{};
+    return copy;
+}
+
 namespace {
 
 constexpr const wchar_t* kOverlayClass = L"WindowMark.Overlay";
@@ -46,23 +75,58 @@ bool EnsureClass() {
     return last;
 }
 
-// D2D 工厂全进程一个。只有画圆角时才会用到，但建一次的代价可以忽略，不值得为它
-// 再搭一套延迟初始化。
-[[nodiscard]] ID2D1Factory* SharedFactory() {
-    static Microsoft::WRL::ComPtr<ID2D1Factory> factory = [] {
-        Microsoft::WRL::ComPtr<ID2D1Factory> f;
-        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, f.GetAddressOf());
-        return f;
-    }();
-    return factory.Get();
+// from 减去 hole，最多切出四块，互不重叠。
+//
+// 圆角只发生在环那一圈带子上，中间那一大块空洞里一个像素都不会亮。挖掉它，逐像素的
+// 循环就从「整个窗口」缩到「一圈带子」——一个 1223x724 的窗口从 88 万像素降到 3 万。
+void SubtractInto(const RECT& from, const RECT& hole, std::vector<RECT>& out) {
+    if (from.right <= from.left || from.bottom <= from.top) return;
+    if (hole.right <= hole.left || hole.bottom <= hole.top ||
+        hole.right <= from.left || hole.left >= from.right ||
+        hole.bottom <= from.top || hole.top >= from.bottom) {
+        out.push_back(from);
+        return;
+    }
+    const LONG midTop = std::max(from.top, hole.top);
+    const LONG midBottom = std::min(from.bottom, hole.bottom);
+    if (from.top < midTop) out.push_back(RECT{from.left, from.top, from.right, midTop});
+    if (midBottom < from.bottom) {
+        out.push_back(RECT{from.left, midBottom, from.right, from.bottom});
+    }
+    if (midTop < midBottom) {
+        if (from.left < hole.left) {
+            out.push_back(RECT{from.left, midTop, std::min(from.right, hole.left),
+                               midBottom});
+        }
+        if (hole.right < from.right) {
+            out.push_back(RECT{std::max(from.left, hole.right), midTop, from.right,
+                               midBottom});
+        }
+    }
 }
 
-[[nodiscard]] D2D1_COLOR_F ToD2DColor(unsigned argb) {
-    const float a = static_cast<float>((argb >> 24) & 0xFFu) / 255.0F;
-    const float r = static_cast<float>((argb >> 16) & 0xFFu) / 255.0F;
-    const float g = static_cast<float>((argb >> 8) & 0xFFu) / 255.0F;
-    const float b = static_cast<float>(argb & 0xFFu) / 255.0F;
-    return D2D1::ColorF(r, g, b, a);
+// 把一个预乘过的颜色按 source-over 混到目标像素上。
+//
+// 不能直接覆盖：抗锯齿的边缘 alpha 不满，两个边框在角上叠着的时候直接写会把先画的
+// 那条挖出一圈半透明的缺口。
+void BlendPixel(unsigned& dst, unsigned srcR, unsigned srcG, unsigned srcB, unsigned a) {
+    if (a == 0U) return;
+    const unsigned pr = srcR * a / 255U;
+    const unsigned pg = srcG * a / 255U;
+    const unsigned pb = srcB * a / 255U;
+    if (a >= 255U) {
+        dst = (255U << 24) | (pr << 16) | (pg << 8) | pb;
+        return;
+    }
+    const unsigned inv = 255U - a;
+    const unsigned da = (dst >> 24) & 0xFFU;
+    const unsigned dr = (dst >> 16) & 0xFFU;
+    const unsigned dg = (dst >> 8) & 0xFFU;
+    const unsigned db = dst & 0xFFU;
+    dst = (((a + da * inv / 255U) & 0xFFU) << 24) |
+          (((pr + dr * inv / 255U) & 0xFFU) << 16) |
+          (((pg + dg * inv / 255U) & 0xFFU) << 8) |
+          ((pb + db * inv / 255U) & 0xFFU);
 }
 
 // ULW_ALPHA 要求源位图的颜色已经乘过 alpha，否则半透明边缘会发白。
@@ -116,20 +180,6 @@ bool MonitorOverlay::Create(const RECT& monitorRect) {
     return true;
 }
 
-bool MonitorOverlay::EnsureRenderTarget() {
-    if (target_) return true;
-    ID2D1Factory* factory = SharedFactory();
-    if (factory == nullptr) return false;
-
-    // 96 DPI，让一个 DIP 正好是一个物理像素：这里所有矩形都已经是物理坐标了。
-    // 位图是预乘 alpha 的（UpdateLayeredWindow 的要求），render target 得跟着声明。
-    const D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        96.0F, 96.0F);
-    return SUCCEEDED(factory->CreateDCRenderTarget(&props, target_.GetAddressOf()));
-}
-
 void MonitorOverlay::MoveToBandTail() {
     if (hwnd_ == nullptr) return;
     // 层内换位，不是「提进层」——窗口已经在 topmost 层里，这一步踩不到那个会卡死的
@@ -157,11 +207,65 @@ void MonitorOverlay::Render(const std::vector<BorderStroke>& strokes) {
         }
     };
 
-    // 先擦掉上一帧画过的地方，再画这一帧。两者的并集就是要提交的脏区。
-    if (hasLastPainted_) clearRect(lastPainted_);
+    ++g_render.frames;
+    const LONGLONG fillStart = RenderTicks();
 
-    RECT painted{};
-    bool anyPainted = false;
+    // 先挑出落在这块屏上的段。
+    std::vector<BorderStroke> current;
+    current.reserve(strokes.size());
+    for (const BorderStroke& stroke : strokes) {
+        const RECT r{stroke.rect.left, stroke.rect.top, stroke.rect.right,
+                     stroke.rect.bottom};
+        RECT probe{};
+        if (IntersectRect(&probe, &r, &bounds_) == FALSE) continue;
+        current.push_back(stroke);
+    }
+
+    // 脏区只包含增删的段。
+    //
+    // 拖一个窗口时其他窗口的边框一个像素都没动，把它们也算进脏区就等于每帧重贴大半个
+    // 屏幕——那正是提交和擦除的成本所在。段数只有几十个，两两比一遍比省下的那点面积
+    // 便宜得多。
+    const auto has = [](const std::vector<BorderStroke>& list, const BorderStroke& one) {
+        return std::any_of(list.begin(), list.end(),
+                           [&one](const BorderStroke& other) { return other == one; });
+    };
+    RECT dirty{};
+    bool anyDirty = false;
+    const auto growDirty = [&](const Rect& r) {
+        const RECT local{r.left - bounds_.left, r.top - bounds_.top,
+                         r.right - bounds_.left, r.bottom - bounds_.top};
+        if (anyDirty) {
+            UnionRect(&dirty, &dirty, &local);
+        } else {
+            dirty = local;
+            anyDirty = true;
+        }
+    };
+    for (const BorderStroke& stroke : current) {
+        if (!has(lastSegments_, stroke)) growDirty(stroke.rect);
+    }
+    for (const BorderStroke& stroke : lastSegments_) {
+        if (!has(current, stroke)) growDirty(stroke.rect);
+    }
+    lastSegments_ = current;
+
+    if (!anyDirty) {
+        g_render.fillMs += RenderMsSince(fillStart);
+        return;   // 这块屏上什么都没变
+    }
+    dirty.left = std::max<LONG>(0, dirty.left);
+    dirty.top = std::max<LONG>(0, dirty.top);
+    dirty.right = std::min<LONG>(width, dirty.right);
+    dirty.bottom = std::min<LONG>(height, dirty.bottom);
+    if (dirty.right <= dirty.left || dirty.bottom <= dirty.top) {
+        g_render.fillMs += RenderMsSince(fillStart);
+        return;
+    }
+
+    // 擦掉脏区，再把**所有**和它相交的段重画一遍——只重画变了的那些不行，擦除会连带
+    // 抹掉压在同一块地方的其他段。
+    clearRect(dirty);
 
     // 圆角段先攒着，等像素填充做完再一次性交给 D2D——中途来回切换会让 GDI 和 D2D
     // 对同一块位图的写入次序变得难以推理。
@@ -171,102 +275,107 @@ void MonitorOverlay::Render(const std::vector<BorderStroke>& strokes) {
     };
     std::vector<RoundedSeg> rounded;
 
-    for (const BorderStroke& stroke : strokes) {
-        const RECT r{stroke.rect.left, stroke.rect.top, stroke.rect.right,
-                     stroke.rect.bottom};
-        RECT clipped{};
-        // 线段是全虚拟桌面坐标，这块画布只画落在自己显示器里的那部分。
-        if (IntersectRect(&clipped, &r, &bounds_) == FALSE) continue;
+    for (const BorderStroke& stroke : current) {
+        const RECT r{stroke.rect.left - bounds_.left, stroke.rect.top - bounds_.top,
+                     stroke.rect.right - bounds_.left, stroke.rect.bottom - bounds_.top};
+        // 脏区之外的部分位图上还是好的，不必重画。
+        RECT local{};
+        if (IntersectRect(&local, &r, &dirty) == FALSE) continue;
 
-        const int x0 = static_cast<int>(clipped.left - bounds_.left);
-        const int y0 = static_cast<int>(clipped.top - bounds_.top);
-        const int x1 = static_cast<int>(clipped.right - bounds_.left);
-        const int y1 = static_cast<int>(clipped.bottom - bounds_.top);
-        // 记的是画布本地坐标，和 prcDirty 的口径一致。
-        const RECT local{static_cast<LONG>(x0), static_cast<LONG>(y0),
-                         static_cast<LONG>(x1), static_cast<LONG>(y1)};
-
-        if (stroke.radius > 0.0F) {
+        if (stroke.roundWidth > 0.0F) {
             rounded.push_back(RoundedSeg{&stroke, local});
         } else {
             // 直角：直接填像素，最快的一条路。
             const unsigned color = Premultiply(stroke.color);
-            for (int y = y0; y < y1; ++y) {
+            for (int y = local.top; y < local.bottom; ++y) {
                 unsigned* row =
                     pixels + static_cast<size_t>(y) * static_cast<size_t>(width);
-                std::fill(row + x0, row + x1, color);
+                std::fill(row + local.left, row + local.right, color);
             }
-        }
-
-        if (anyPainted) {
-            UnionRect(&painted, &painted, &local);
-        } else {
-            painted = local;
-            anyPainted = true;
         }
     }
 
-    if (!rounded.empty() && EnsureRenderTarget()) {
-        const RECT bind{0, 0, width, height};
-        if (SUCCEEDED(target_->BindDC(dc_, &bind))) {
-            target_->BeginDraw();
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
-            target_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0), &brush);
-            if (brush) {
-                for (const RoundedSeg& seg : rounded) {
-                    const BorderStroke& s = *seg.stroke;
-                    brush->SetColor(ToD2DColor(s.color));
+    g_render.fillMs += RenderMsSince(fillStart);
+    g_render.arcSegments += static_cast<int>(rounded.size());
+    const LONGLONG arcStart = RenderTicks();
 
-                    // 只画这一段：裁剪之外的部分不落笔。曲线是连续的，没法按段分别
-                    // 构造路径，所以每段都画一次完整的环，靠裁剪挡掉其余部分。
-                    // ALIASED 是必须的——裁剪边界要和像素对齐，否则相邻段的接缝上会
-                    // 各留半个像素的半透明，拼起来是一条更淡的缝。
-                    target_->PushAxisAlignedClip(
-                        D2D1::RectF(static_cast<float>(seg.local.left),
-                                    static_cast<float>(seg.local.top),
-                                    static_cast<float>(seg.local.right),
-                                    static_cast<float>(seg.local.bottom)),
-                        D2D1_ANTIALIAS_MODE_ALIASED);
+    // 圆角：自己栅格化。
+    //
+    // 圆角矩形的有符号距离有闭式解——把点折到第一象限，减去「直边半长」，负的部分说明
+    // 还在直边段上，正的部分才走到角的弧上。一次 sqrt 就得到这个点离环中线多远，再和
+    // 半个线宽比，就知道该涂多满。
+    //
+    // 之前这里是 D2D：每一段可见部分都要把整个环的路径栅格化一遍，一个窗口每帧六段
+    // 就是六遍，实测每段 2.15ms。现在按段只碰那一圈带子上的像素。
+    std::vector<RECT> pieces;
+    for (const RoundedSeg& seg : rounded) {
+        const BorderStroke& s = *seg.stroke;
+        const float ol = static_cast<float>(s.ringOuter.left - bounds_.left);
+        const float ot = static_cast<float>(s.ringOuter.top - bounds_.top);
+        const float orr = static_cast<float>(s.ringOuter.right - bounds_.left);
+        const float ob = static_cast<float>(s.ringOuter.bottom - bounds_.top);
+        const float in = s.roundInset;
+        const float pathL = ol + in;
+        const float pathT = ot + in;
+        const float pathR = orr - in;
+        const float pathB = ob - in;
+        if (pathR <= pathL || pathB <= pathT) continue;
 
-                    // 线沿路径居中，所以路径要从环的外沿往里收半个线宽。
-                    const float inset = static_cast<float>(s.strokeWidth) * 0.5F;
-                    const D2D1_RECT_F path = D2D1::RectF(
-                        static_cast<float>(s.ringOuter.left - bounds_.left) + inset,
-                        static_cast<float>(s.ringOuter.top - bounds_.top) + inset,
-                        static_cast<float>(s.ringOuter.right - bounds_.left) - inset,
-                        static_cast<float>(s.ringOuter.bottom - bounds_.top) - inset);
-                    target_->DrawRoundedRectangle(
-                        D2D1::RoundedRect(path, s.radius, s.radius), brush.Get(),
-                        static_cast<float>(s.strokeWidth));
+        const float cx = (pathL + pathR) * 0.5F;
+        const float cy = (pathT + pathB) * 0.5F;
+        const float hx = (pathR - pathL) * 0.5F;
+        const float hy = (pathB - pathT) * 0.5F;
+        // 半径大过半边长就画成胶囊，别让它把角互相吃穿。
+        const float radius = std::max(0.0F, std::min(s.radius, std::min(hx, hy)));
+        const float half = s.roundWidth * 0.5F;
 
-                    target_->PopAxisAlignedClip();
+        const unsigned srcA = (s.color >> 24) & 0xFFU;
+        const unsigned srcR = (s.color >> 16) & 0xFFU;
+        const unsigned srcG = (s.color >> 8) & 0xFFU;
+        const unsigned srcB = s.color & 0xFFU;
+
+        // 中间那一大块空洞里不可能有笔迹，挖掉它再逐像素跑。
+        //
+        // 收多少不能只看线宽：洞是直角的，环的内沿在角上是圆弧，收少了洞的角就顶进
+        // 环带、把圆角内侧削掉一块。RingHoleInset 把这件事算清楚了。
+        const float holeInset = RingHoleInset(radius, half);
+        const RECT hole{
+            static_cast<LONG>(std::ceil(pathL + holeInset)),
+            static_cast<LONG>(std::ceil(pathT + holeInset)),
+            static_cast<LONG>(std::floor(pathR - holeInset)),
+            static_cast<LONG>(std::floor(pathB - holeInset))};
+        pieces.clear();
+        SubtractInto(seg.local, hole, pieces);
+
+        for (const RECT& piece : pieces) {
+            const int px0 = std::max<LONG>(0, piece.left);
+            const int py0 = std::max<LONG>(0, piece.top);
+            const int px1 = std::min<LONG>(width, piece.right);
+            const int py1 = std::min<LONG>(height, piece.bottom);
+            if (px1 <= px0 || py1 <= py0) continue;
+            g_render.arcPixels += static_cast<double>(px1 - px0) *
+                                  static_cast<double>(py1 - py0);
+            for (int y = py0; y < py1; ++y) {
+                const float py = static_cast<float>(y) + 0.5F - cy;
+                unsigned* row =
+                    pixels + static_cast<size_t>(y) * static_cast<size_t>(width);
+                for (int x = px0; x < px1; ++x) {
+                    const float px = static_cast<float>(x) + 0.5F - cx;
+                    const float dist = RoundedRectDistance(px, py, hx, hy, radius);
+                    // 覆盖率：离环中线越近越满，边上留一个像素的过渡。
+                    const float cover = half - std::fabs(dist) + 0.5F;
+                    if (cover <= 0.0F) continue;
+                    const unsigned a = cover >= 1.0F
+                        ? srcA
+                        : static_cast<unsigned>(static_cast<float>(srcA) * cover + 0.5F);
+                    BlendPixel(row[x], srcR, srcG, srcB, a);
                 }
             }
-            if (target_->EndDraw() == D2DERR_RECREATE_TARGET) target_.Reset();
-            // D2D 写完位图后必须冲一次，否则 UpdateLayeredWindow 可能读到旧内容。
-            GdiFlush();
         }
     }
 
-    RECT dirty{};
-    bool anyDirty = false;
-    if (hasLastPainted_) {
-        dirty = lastPainted_;
-        anyDirty = true;
-    }
-    if (anyPainted) {
-        if (anyDirty) {
-            UnionRect(&dirty, &dirty, &painted);
-        } else {
-            dirty = painted;
-            anyDirty = true;
-        }
-    }
-
-    lastPainted_ = painted;
-    hasLastPainted_ = anyPainted;
-
-    if (!anyDirty) return;   // 上一帧空、这一帧也空，没什么可提交的
+    g_render.arcMs += RenderMsSince(arcStart);
+    const LONGLONG commitStart = RenderTicks();
 
     POINT src{0, 0};
     SIZE size{width, height};
@@ -287,6 +396,11 @@ void MonitorOverlay::Render(const std::vector<BorderStroke>& strokes) {
     // 只提交变化的那一块。整屏提交实测 2.09ms，脏矩形 0.91ms——白拿的三倍余量。
     info.prcDirty = &dirty;
     UpdateLayeredWindowIndirect(hwnd_, &info);
+
+    g_render.commitMs += RenderMsSince(commitStart);
+    g_render.dirtyMegapixels +=
+        static_cast<double>(dirty.right - dirty.left) *
+        static_cast<double>(dirty.bottom - dirty.top) / 1000000.0;
 }
 
 void MonitorOverlay::Destroy() noexcept {
@@ -299,8 +413,7 @@ void MonitorOverlay::Destroy() noexcept {
     dc_ = nullptr;
     hwnd_ = nullptr;
     bits_ = nullptr;
-    hasLastPainted_ = false;
-    target_.Reset();
+    lastSegments_.clear();
 }
 
 void OverlaySet::Sync() {

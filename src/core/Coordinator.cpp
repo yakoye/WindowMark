@@ -97,6 +97,8 @@ bool Coordinator::Start() {
 
     windowsBackend_.SetExcludedClasses(settings_.tracking.excludeClasses);
     windowsBackend_.SetShadowInsets(settings_.tracking.shadowInsets);
+    windowsBackend_.SetForceIncludeClasses(settings_.tracking.forceIncludeClasses);
+    windowsBackend_.SetForceIncludeClasses(settings_.tracking.forceIncludeClasses);
     if (!windowsBackend_.Start([this](const WindowEvent& event) { OnWindowEvent(event); })) {
         if (borderBackend_) borderBackend_->Stop();
     if (pinBackend_) pinBackend_->Stop();
@@ -105,13 +107,17 @@ bool Coordinator::Start() {
         return false;
     }
 
-    // Borders track the window edge, so they take the unthrottled path and only move -
-    // repainting is left to the normal event flow.
+    // 边框贴着窗口边缘，慢一帧就看得出来，所以几何事件走这条不节流的路——每个
+    // LOCATIONCHANGE 都立刻重画一次，拖动时约 120 次每秒，跟得上鼠标的报告率。
     //
-    // Bookmarks deliberately do *not*. Putting them on this path too was tried and
-    // measured: it added a SetWindowPos per location event (274 in one 80-step drag)
-    // without removing any of the throttled work, so CPU went up and the dragged window's
-    // smoothness did not change. The strip sits outside the window, where 30fps is fine.
+    // 这条路要求重画本身足够便宜。它一度不便宜：overlay 改版后这里从「移动一个窗口」
+    // 变成了「整幅重画」，而当时圆角走 D2D、脏区取所有边框的包围盒、每帧还整取一次
+    // 桌面快照，一秒 30 帧就把一个核占满了，边框反而落后十几个像素。三处都改掉之后
+    // 才配得上这条不节流的路。
+    //
+    // 书签条**故意**不走这里。试过也量过：每个位置事件多一次 SetWindowPos（一次 80
+    // 步的拖动里 274 次），节流那边的活一点没少，CPU 上去了而拖动的顺滑度没变化。
+    // 书签条挂在窗口外面，30fps 足够。
     if (borderBackend_) {
         windowsBackend_.SetGeometrySink([this](WindowId id, const Rect& frame) {
             if (!started_ || !settings_.border.enabled) return;

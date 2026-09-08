@@ -272,6 +272,8 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     settings.border.width = ParseInt(values, "border.width", settings.border.width, 1, 20);
     settings.border.offset = ParseInt(values, "border.offset", settings.border.offset, -20, 20);
     settings.border.cornerRadius = ParseInt(values, "border.corner_radius", settings.border.cornerRadius, 0, 64);
+    settings.border.cornerWidthExtra = ParseInt(values, "border.corner_width_extra", settings.border.cornerWidthExtra, -8, 16);
+    settings.border.cornerInset = ParseInt(values, "border.corner_inset", settings.border.cornerInset, -16, 16);
     if (const auto it = values.find("border.corners"); it != values.end()) {
         settings.border.corners = BorderCornersFromString(it->second);
     }
@@ -319,6 +321,13 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     }
     if (const auto it = values.find("tracking.shadow_insets"); it != values.end()) {
         settings.tracking.shadowInsets = ParseEncodedList(it->second);
+    }
+    if (const auto it = values.find("tracking.force_include_classes"); it != values.end()) {
+        settings.tracking.forceIncludeClasses = ParseEncodedList(it->second);
+    }
+    if (const auto it = values.find("tracking.treat_as_topmost_classes");
+        it != values.end()) {
+        settings.tracking.treatAsTopmostClasses = ParseEncodedList(it->second);
     }
 
     if (settings.drawer.expandedExtent < settings.drawer.collapsedExtent) {
@@ -373,12 +382,21 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "#                  through as a grey seam.\n";
     output << "#   border.corners auto | square | round | round_small | custom\n";
     output << "#                  auto asks DWM what shape each window is\n";
+    output << "#   border.corner_width_extra / border.corner_inset\n";
+    output << "#                  only used when the outline is round. The whole ring is one\n";
+    output << "#                  antialiased arc there, and antialiasing eats about 1px on\n";
+    output << "#                  each side, so the extra buys back the lost thickness. It\n";
+    output << "#                  grows inwards - the outer edge does not move. corner_inset\n";
+    output << "#                  shifts the ring towards the window centre; negative pushes\n";
+    output << "#                  it outwards.\n";
     output << "#   colors         #RGB, #RGBA, #RRGGBB or #RRGGBBAA - alpha is part of the color\n";
     output << "border.enabled=" << (settings.border.enabled ? "true" : "false") << "\n";
     output << "border.width=" << settings.border.width << "\n";
     output << "border.offset=" << settings.border.offset << "\n";
     output << "border.corners=" << ToString(settings.border.corners) << "\n";
     output << "border.corner_radius=" << settings.border.cornerRadius << "\n";
+    output << "border.corner_width_extra=" << settings.border.cornerWidthExtra << "\n";
+    output << "border.corner_inset=" << settings.border.cornerInset << "\n";
     output << "border.active_color=" << ColorToString(settings.border.activeColor) << "\n";
     output << "border.inactive_color=" << ColorToString(settings.border.inactiveColor) << "\n\n";
     output << "\n";
@@ -415,7 +433,15 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "#   class:left,top,right,bottom\n";
     output << "# separated by '|'. Ignored while a window is maximized, because the shadow is\n";
     output << "# not drawn then. Run WindowMarkInspect.exe to measure one.\n";
-    output << "tracking.shadow_insets=" << EncodeList(settings.tracking.shadowInsets) << "\n\n";
+    output << "tracking.shadow_insets=" << EncodeList(settings.tracking.shadowInsets) << "\n";
+    output << "# 边框出问题时的三个逃生口，都按窗口类名认（类名用 WindowMarkInspect.exe 查）：\n";
+    output << "#   force_include_classes     该有边框却没有：跳过所有资格判据，强制画\n";
+    output << "#   treat_as_topmost_classes  它浮在上面，边框却盖过去了：让边框给它让路\n";
+    output << "#   exclude_classes（上面那个）不该有边框却有\n";
+    output << "tracking.force_include_classes="
+           << EncodeList(settings.tracking.forceIncludeClasses) << "\n";
+    output << "tracking.treat_as_topmost_classes="
+           << EncodeList(settings.tracking.treatAsTopmostClasses) << "\n\n";
     output << "# Applications that never get a border, by normalized executable path. Set from\n";
     output << "# 边框设置 -> 排除应用. Separate from selection.disabled_apps, which is the\n";
     output << "# bookmark list - not wanting an outline is not the same as not wanting a bookmark.\n";

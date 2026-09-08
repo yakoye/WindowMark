@@ -4,6 +4,8 @@
 
 #include "windowmark/core/Interfaces.h"
 
+#include "WinDesktopSnapshot.h"
+
 #include <vector>
 #include <windows.h>
 
@@ -35,11 +37,21 @@ public:
     void Stop() noexcept override;
 
 private:
-    void Redraw();
+    // fromMove 只用来分类统计：几何事件那条不节流的路，和其余事件走的是同一个函数，
+    // 但拖动时前者的调用量是后者的十几倍，混在一起看不出问题在哪。
+    void Redraw(bool fromMove = false);
 
     Settings settings_;
     std::vector<BorderModel> models_;
     OverlaySet overlays_;
+    // 上一帧的桌面快照。几何事件只更新动了的那一个窗口，其余事件让它整份作废。
+    DesktopSnapshot snapshot_;
+    bool snapshotValid_{false};
+    // 每帧都要用，配置变了才重新解析一次。
+    std::vector<ShadowInset> shadowInsets_;
+    std::vector<std::wstring> treatAsTopmostClasses_;
+    // 上一帧画了什么。一样就不必再提交一次——这不是兜底，只是省掉重复工作。
+    std::vector<BorderStroke> lastStrokes_;
     bool started_{false};
 };
 

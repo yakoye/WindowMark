@@ -116,20 +116,21 @@ bool ParseInsetValues(const std::string& text, int (&out)[4]) {
 } // namespace
 
 void WinWindowBackend::SetShadowInsets(const std::vector<std::string>& entries) {
-    shadowInsets_.clear();
-    for (const auto& entry : entries) {
-        // rfind: a class name cannot contain ':' but a future value form might, so the
-        // last colon is the separator.
-        const std::size_t colon = entry.rfind(':');
-        if (colon == std::string::npos || colon == 0) continue;
-        int values[4]{};
-        if (!ParseInsetValues(entry.substr(colon + 1), values)) continue;
-        if (values[0] == 0 && values[1] == 0 && values[2] == 0 && values[3] == 0) continue;
-        shadowInsets_.push_back(ShadowInset{Utf8ToWide(entry.substr(0, colon)), values[0],
-                                            values[1], values[2], values[3]});
-    }
+    shadowInsets_ = ParseShadowInsets(entries);
     // The per-window cache has the old inset baked into it.
     frameInsets_.clear();
+}
+
+void WinWindowBackend::SetForceIncludeClasses(const std::vector<std::string>& classes) {
+    forceIncludeClasses_.clear();
+    forceIncludeClasses_.reserve(classes.size());
+    for (const auto& name : classes) {
+        if (name.empty()) continue;
+        forceIncludeClasses_.push_back(Utf8ToWide(name));
+    }
+    // 资格结论变了，两份按 hwnd 记的缓存都得作废。
+    identityCache_.clear();
+    topLevelCache_.clear();
 }
 
 void WinWindowBackend::SetExcludedClasses(const std::vector<std::string>& classes) {
@@ -148,7 +149,18 @@ void WinWindowBackend::SetExcludedClasses(const std::vector<std::string>& classe
 bool WinWindowBackend::IsTopLevel(HWND hwnd) const {
     const auto it = topLevelCache_.find(hwnd);
     if (it != topLevelCache_.end()) return it->second;
-    const bool topLevel = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) == 0;
+    // 判据是「它是不是一个顶级窗口」，不是「它有没有 WS_CHILD」。
+    //
+    // 存在既带 WS_CHILD、又直接挂在桌面下的窗口：MobaXterm 的设置对话框（Delphi 的
+    // TFormParams）就是一个，它出现在桌面的顶级窗口链上、盖得住别的窗口。只看
+    // WS_CHILD 会把它的 SHOW / HIDE / LOCATIONCHANGE 全丢掉，于是它移动之后没有任何
+    // 东西触发重画——而遮挡计算那边是认它的，快照里还记着它的旧位置，别人的边框就
+    // 留在了它身上。实测把它从一处拖到另一处，全程零事件、零重画。
+    //
+    // 给不给它画边框是另一回事：它是主窗口的对话框，按规矩不画（见
+    // IsEligibleTopLevelWindow 里 owner 那一段）。但它动没动，遮挡计算必须知道——
+    // CaptureDesktop 收的是「屏幕上挡得住别人的窗口」，这里就得按同一个口径放行。
+    const bool topLevel = GetAncestor(hwnd, GA_ROOT) == hwnd;
     topLevelCache_[hwnd] = topLevel;
     return topLevel;
 }
@@ -235,18 +247,13 @@ Rect WinWindowBackend::FrameFor(HWND hwnd) const {
         if (!shadowInsets_.empty() && !IsZoomed(hwnd)) {
             wchar_t className[128]{};
             GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
-            for (const auto& shadow : shadowInsets_) {
-                if (shadow.className != className) continue;
-                // Guarded against a value large enough to invert the rectangle: a typo
-                // should look wrong, not make the outline vanish or draw backwards.
-                if (shadow.left + shadow.right < width && shadow.top + shadow.bottom < height) {
-                    inset.left += shadow.left;
-                    inset.top += shadow.top;
-                    inset.right -= shadow.right;
-                    inset.bottom -= shadow.bottom;
-                }
-                break;
-            }
+            // inset 是四个方向的内缩量，和矩形的加减方向相反，所以借一个矩形来算。
+            RECT probe{0, 0, width, height};
+            ApplyShadowInset(probe, className, shadowInsets_);
+            inset.left += probe.left;
+            inset.top += probe.top;
+            inset.right -= width - probe.right;
+            inset.bottom -= height - probe.bottom;
         }
 
         inset.width = width;
@@ -385,7 +392,8 @@ std::optional<Rect> WinWindowBackend::QueryFrame(WindowId id) {
 }
 
 std::optional<WindowInfo> WinWindowBackend::BuildWindowInfo(HWND hwnd) const {
-    if (!IsEligibleTopLevelWindow(hwnd, excludedClasses_) || IsOwnWindow(hwnd)) {
+    if (!IsEligibleTopLevelWindow(hwnd, excludedClasses_, forceIncludeClasses_) ||
+        IsOwnWindow(hwnd)) {
         return std::nullopt;
     }
 
@@ -491,9 +499,9 @@ void CALLBACK WinWindowBackend::WinEventProc(
         break;
     }
 
-    // Borders hug the window edge and would visibly trail a drag if they waited for the
-    // throttled queue, so geometry is handed over immediately. This runs on the UI thread
-    // during event dispatch: the handler only repositions a window, it does not repaint.
+    // 边框贴着窗口边缘，等节流队列的话拖起来肉眼可见地拖尾，所以几何直接交出去。
+    // 这段跑在 UI 线程的事件派发里，处理函数会重画——所以那边的每一帧必须足够便宜，
+    // 否则事件在这里排队，边框反而更慢。
     if (kind == WindowEventKind::GeometryChanged && self->geometrySink_) {
         self->geometrySink_(IdFromHwnd(hwnd), self->FrameFor(hwnd));
     }

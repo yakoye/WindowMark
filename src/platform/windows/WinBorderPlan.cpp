@@ -100,6 +100,25 @@ constexpr float kRoundSmallRadiusDip = 4.0F;
     }
 }
 
+// 当遮挡物用时，矩形往里咬掉这么多。
+//
+// 正好齐平的话，边框的最后一像素和被挡窗口的第一像素挨着但不相交，两边各带半像素的
+// 抗锯齿过渡，看着就是一条缝。咬进去一像素，接缝被边框自己盖住，视觉上才连得上。
+//
+// 只作用于「它挡住别人」这一面。给它自己画边框时用的是原矩形——那个要贴着它看得见
+// 的边缘，咬进去就该细一圈了。
+constexpr int kOccluderBite = 1;
+
+[[nodiscard]] Rect AsOccluder(const RECT& frame) {
+    Rect out{frame.left + kOccluderBite, frame.top + kOccluderBite,
+             frame.right - kOccluderBite, frame.bottom - kOccluderBite};
+    // 窄到翻转的窗口就别咬了，宁可多裁一像素也不要凭空长出一块负数矩形。
+    if (out.right <= out.left || out.bottom <= out.top) {
+        return Rect{frame.left, frame.top, frame.right, frame.bottom};
+    }
+    return out;
+}
+
 // 置顶压过活动状态：「这个窗口被钉在最前面」是更少见、也更值得一眼认出来的状态。
 [[nodiscard]] unsigned ColorOf(const BorderModel& model, const Settings& settings,
                                unsigned accent) {
@@ -135,6 +154,25 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
     std::vector<Rect> occluders;
     occluders.reserve(snapshot.windows.size());
 
+    // 前台窗口的矩形，单独拎出来。
+    //
+    // 它无条件遮挡其他所有窗口的边框，**不看快照里的 z 序**。因为 Windows 切换前台时
+    // 先发 EVENT_SYSTEM_FOREGROUND、再调整 z 序，我们收到事件立刻取的快照可能还是
+    // 旧顺序——实测过一次：MobaXterm 已经在前台，快照里却还排在 Terminal 后面，于是
+    // Terminal 整条右边框都没被裁掉（156 个采样点里 95 个本该不画却画了）。
+    //
+    // GetForegroundWindow() 不参与那个异步过程，它是实时权威的。用它比等 z 序追上来
+    // 可靠——而且这不是多扫几遍碰运气，是换了个不会滞后的信息源。
+    Rect foregroundRect{};
+    bool hasForeground = false;
+    for (const auto& entry : snapshot.windows) {
+        if (entry.hwnd != snapshot.foreground) continue;
+        if (entry.cloaked || entry.minimized) break;
+        foregroundRect = AsOccluder(entry.frame);
+        hasForeground = true;
+        break;
+    }
+
     // 从上往下扫：轮到某个窗口时，occluders 里正好是**排在它上面**的所有窗口。
     // 一趟就够，不需要两两比较。
     //
@@ -158,28 +196,79 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                                      frame.right + reach, frame.bottom + reach};
                     const Rect inner = RingInner(frame, stroke, reach);
                     const unsigned color = ColorOf(model, settings, accent);
-                    // 曲线沿路径居中，而路径在环外沿往里 stroke/2 处；把半径加上这段
-                    // 偏移，画出来的弧才和窗口自己的圆角同心，不会在角上被掐细。
-                    float radius = CornerRadiusOf(entry.hwnd, settings);
-                    if (radius > 0.0F) {
-                        radius += static_cast<float>(reach) - static_cast<float>(stroke) * 0.5F;
-                        radius = std::max(0.0F, radius);
+
+                    // 圆角走另一套线宽和位置：比直边宽 cornerWidthExtra，路径再往
+                    // 窗口中心挪 cornerInset。
+                    //
+                    // 路径先内收半个线宽，弧的外沿因此正好落在环外沿上，加宽出来的
+                    // 部分全长在窗口内侧——直边是像素填充、边界锐利，圆角是抗锯齿的
+                    // 弧，两者只有外沿对齐才看不出接缝。
+                    //
+                    // 半径跟着路径走：弧要和窗口自己的圆角同心，圆心不动，所以路径
+                    // 往里收多少，半径就减多少。
+                    const float windowRadius = CornerRadiusOf(entry.hwnd, settings);
+                    float roundWidth = 0.0F;
+                    float roundInset = 0.0F;
+                    float radius = 0.0F;
+                    if (windowRadius > 0.0F) {
+                        roundWidth = static_cast<float>(
+                            std::max(1, stroke + settings.border.cornerWidthExtra));
+                        roundInset = roundWidth * 0.5F +
+                                     static_cast<float>(settings.border.cornerInset);
+                        radius = std::max(0.0F, windowRadius +
+                                                    static_cast<float>(reach) - roundInset);
                     }
+
                     // 裁剪单元：直角用四条边（互不重叠，填满即可）；圆角用整个
                     // 外矩形一块——角上的弧跨越相邻两条边，按四条边裁会把角削平，
                     // 内沿在角上会突然被切成直线。
+                    //
+                    // cornerInset 为负时弧往外顶出环外沿，单元跟着放大同样多，否则
+                    // 顶出去的那部分会被自己的裁剪框切掉，调了等于没调。
+                    const int grow = std::max(0, -settings.border.cornerInset);
+                    const Rect paintOuter{outer.left - grow, outer.top - grow,
+                                          outer.right + grow, outer.bottom + grow};
                     const std::vector<Rect> units =
-                        radius > 0.0F ? std::vector<Rect>{outer}
-                                      : BorderRingSegments(outer, inner);
-                    for (const Rect& seg : ClipSegments(units, occluders)) {
-                        strokes.push_back(BorderStroke{seg, color, outer, stroke, radius});
+                        roundWidth > 0.0F ? std::vector<Rect>{paintOuter}
+                                          : BorderRingSegments(outer, inner);
+                    std::vector<Rect> visible;
+                    if (entry.hwnd == snapshot.foreground) {
+                        // 前台窗口：只有 topmost 窗口、用户点名「视为置顶」的窗口，
+                        // 以及它**自己的** owned 对话框能盖住它。普通窗口排在它前面是
+                        // 不可能的——它是前台，这是定义。
+                        //
+                        // 不能照 occluders 来算：快照里的 z 序可能还没跟上（Windows
+                        // 先发 FOREGROUND 事件、再调整 z 序），那样会把前台自己的边框
+                        // 裁掉一块。实测 MobaXterm 激活后，它和 Terminal 交界处的那段
+                        // 激活边框整条消失，就是这么来的。
+                        std::vector<Rect> fgOccluders;
+                        for (const auto& other : snapshot.windows) {
+                            if (other.hwnd == entry.hwnd) break;   // 只看排在它前面的
+                            if (other.cloaked || other.minimized) continue;
+                            if (other.topmost || other.treatAsTopmost ||
+                                other.owner == entry.hwnd) {
+                                fgOccluders.push_back(AsOccluder(other.frame));
+                            }
+                        }
+                        visible = ClipSegments(units, fgOccluders);
+                    } else {
+                        visible = ClipSegments(units, occluders);
+                        // 其余窗口一律再减一次前台矩形——理由同上，只是方向相反：
+                        // 前台一定在最前，它盖住的地方不该有别人的边框。
+                        if (hasForeground) {
+                            visible = ClipSegments(visible, {foregroundRect});
+                        }
+                    }
+                    for (const Rect& seg : visible) {
+                        strokes.push_back(BorderStroke{seg, color, outer, stroke, radius,
+                                                       roundWidth, roundInset});
                     }
                 }
             }
         }
 
         // 不管这个窗口有没有边框，它都会挡住排在它下面的窗口。
-        if (paintable) occluders.push_back(ToCore(entry.frame));
+        if (paintable) occluders.push_back(AsOccluder(entry.frame));
     }
     return strokes;
 }

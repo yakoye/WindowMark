@@ -231,9 +231,87 @@ bool IsShellOwned(HWND hwnd) {
     return shellPid != 0 && windowPid == shellPid;
 }
 
-bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoExclude) {
+namespace {
+
+// "12,0,12,20" -> 四个整数。写坏了返回 false。
+[[nodiscard]] bool ParseFourInts(const std::string& text, int (&out)[4]) {
+    std::size_t start = 0;
+    for (int i = 0; i < 4; ++i) {
+        const std::size_t comma = text.find(',', start);
+        const std::string piece =
+            text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (piece.empty()) return false;
+        try {
+            out[i] = std::stoi(piece);
+        } catch (...) {
+            return false;
+        }
+        if (comma == std::string::npos) return i == 3;
+        start = comma + 1;
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<ShadowInset> ParseShadowInsets(const std::vector<std::string>& entries) {
+    std::vector<ShadowInset> out;
+    for (const auto& entry : entries) {
+        // rfind：类名里不会有冒号，但将来值的写法可能有，所以以最后一个冒号为界。
+        const std::size_t colon = entry.rfind(':');
+        if (colon == std::string::npos || colon == 0) continue;
+        int values[4]{};
+        if (!ParseFourInts(entry.substr(colon + 1), values)) continue;
+        if (values[0] == 0 && values[1] == 0 && values[2] == 0 && values[3] == 0) continue;
+        out.push_back(ShadowInset{Utf8ToWide(entry.substr(0, colon)), values[0], values[1],
+                                  values[2], values[3]});
+    }
+    return out;
+}
+
+void ApplyShadowInset(RECT& rect, const wchar_t* className,
+                      const std::vector<ShadowInset>& insets) {
+    if (insets.empty() || className == nullptr) return;
+    for (const auto& shadow : insets) {
+        if (shadow.className != className) continue;
+        const LONG width = rect.right - rect.left;
+        const LONG height = rect.bottom - rect.top;
+        // 收过头会让矩形翻转。写错的值应该看着不对，而不是让边框消失或者反着画。
+        if (shadow.left + shadow.right < width && shadow.top + shadow.bottom < height) {
+            rect.left += shadow.left;
+            rect.top += shadow.top;
+            rect.right -= shadow.right;
+            rect.bottom -= shadow.bottom;
+        }
+        return;
+    }
+}
+
+bool IsEligibleTopLevelWindow(HWND hwnd, const std::vector<std::wstring>& alsoExclude,
+                              const std::vector<std::wstring>& forceInclude) {
     if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return false;
     if (GetAncestor(hwnd, GA_ROOT) != hwnd) return false;
+
+    // 排除名单先于强制名单：两边都写了就当没写强制的。谁也说不清那是什么意思，
+    // 而「不要画」比「一定要画」更保险。
+    bool forced = false;
+    if (!forceInclude.empty() || !alsoExclude.empty()) {
+        wchar_t probe[128]{};
+        if (GetClassNameW(hwnd, probe, static_cast<int>(std::size(probe))) > 0) {
+            for (const auto& name : alsoExclude) {
+                if (name == probe) return false;
+            }
+            for (const auto& name : forceInclude) {
+                if (name == probe) {
+                    forced = true;
+                    break;
+                }
+            }
+        }
+    }
+    // 强制名单只跳过后面那些「这像不像一个窗口」的判据。cloaked 不跳——那是「DWM
+    // 根本不画它」，给一个不存在于屏幕上的东西描边没有意义。
+    if (forced) return !IsCloaked(hwnd);
 
     // 有 owner 的窗口通常是对话框、属性页那类附属窗口，不是用户心里的「一个窗口」。
     // 但 owner 本身得像个窗口才算数——Delphi / VCL 应用把主窗体挂在一个隐藏的

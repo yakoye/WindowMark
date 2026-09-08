@@ -2,9 +2,50 @@
 
 #include "windowmark/core/Types.h"
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace windowmark {
+
+// 点到圆角矩形轮廓的有符号距离：轮廓上为 0，里面为负，外面为正。
+//
+// px、py 是相对矩形中心的坐标。把点折进第一象限，减掉「直边的半长」，剩下的负数说明
+// 还落在某条直边上，正数才走到角的那段弧上——两个方向都为正时才需要开方。
+//
+// 边框的每个像素都要过一遍这个函数（一个窗口三万像素），所以写在头文件里让它内联。
+[[nodiscard]] inline float RoundedRectDistance(float px, float py, float halfWidth,
+                                               float halfHeight, float radius) {
+    const float r =
+        std::max(0.0F, std::min(radius, std::min(halfWidth, halfHeight)));
+    const float dx = std::fabs(px) - (halfWidth - r);
+    const float dy = std::fabs(py) - (halfHeight - r);
+    const float ax = std::max(dx, 0.0F);
+    const float ay = std::max(dy, 0.0F);
+    // 两个短路分支都必须把另一个方向的值带上。只写 ax == 0 就返回 0 会让整条上下边的
+    // 距离算成 -radius，覆盖率为负，边框直接消失。
+    const float outside = ax == 0.0F ? ay
+                        : ay == 0.0F ? ax
+                                     : std::sqrt(ax * ax + ay * ay);
+    return outside + std::min(std::max(dx, dy), 0.0F) - r;
+}
+
+// 环里面那块「肯定没有笔迹」的矩形，从路径矩形的边界往里收多少。
+//
+// 逐像素算距离场之前先把它挖掉，循环就从整个窗口缩到环那一圈带子——一个 1223x724 的
+// 窗口从 88 万像素降到 3 万。挖掉的这块必须整个落在环内侧。
+//
+// 按「半个线宽」往里收是不够的：那对直边成立，对角不成立。环的内沿在角上是一段半径
+// 为 radius - halfStroke 的圆弧，而挖掉的是**直角**矩形，它的角会顶进环带里，把那一
+// 段笔迹连着削掉——屏幕上就是圆角内侧缺一块、紧挨着的那一行相对凸出一个小直角。
+//
+// 直角的角要缩到内沿圆弧的 45 度点上才不会顶出去，那个点比弧的极点近 1 - cos45。
+[[nodiscard]] inline float RingHoleInset(float radius, float halfStroke) {
+    constexpr float kCornerPull = 0.29289322F;   // 1 - cos(45°)
+    const float innerRadius = std::max(0.0F, radius - halfStroke);
+    // 末尾那 1 像素是留给抗锯齿过渡带的余量。
+    return halfStroke + innerRadius * kCornerPull + 1.0F;
+}
 
 // 从 from 里挖掉 hole，返回剩下的部分（最多四块，互不重叠）。
 //

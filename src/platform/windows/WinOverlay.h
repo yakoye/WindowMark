@@ -2,14 +2,28 @@
 
 #include "WinBorderPlan.h"
 
-#include <d2d1.h>
 #include <windows.h>
-#include <wrl/client.h>
 
 #include <memory>
 #include <vector>
 
 namespace windowmark::win {
+
+// 渲染各段的累计耗时，诊断用。读一次清零。
+//
+// 分这么细是因为三件事的性质完全不同：fill 是直角边框的整段填充、arc 是圆角那圈带子
+// 的逐像素计算、commit 是把位图交给窗口管理器。哪一段是瓶颈决定了要改什么。
+struct RenderTrace {
+    int frames{};          // 调用 Render 的次数（每块屏各算一次）
+    int arcSegments{};     // 画了多少段圆角
+    double arcPixels{};    // 圆角一共算了多少个像素
+    double fillMs{};
+    double arcMs{};
+    double commitMs{};
+    double dirtyMegapixels{};   // 提交的脏矩形总面积
+};
+
+[[nodiscard]] RenderTrace TakeRenderTrace();
 
 // 一块显示器上的透明画布。
 //
@@ -33,8 +47,6 @@ public:
 
 private:
     void MoveToBandTail();
-    // 圆角才需要 D2D。直角一路像素填充，连 render target 都不建。
-    bool EnsureRenderTarget();
 
     HWND hwnd_{};
     HDC dc_{};
@@ -42,10 +54,9 @@ private:
     HBITMAP oldBitmap_{};
     void* bits_{};
     RECT bounds_{};
-    // 上一帧画过的范围。这一帧要提交的脏区 = 它 ∪ 这一帧要画的范围。
-    RECT lastPainted_{};
-    bool hasLastPainted_{false};
-    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> target_;
+    // 上一帧在这块屏上画了哪些段。和这一帧比出增删，就知道脏区该有多大——只画一个
+    // 包围盒的话，桌面上任何一个窗口动一下都要重贴大半个屏幕。
+    std::vector<BorderStroke> lastSegments_;
 };
 
 // 每块显示器一个 overlay，显示器配置变了就重建。

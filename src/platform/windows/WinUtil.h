@@ -29,8 +29,36 @@ bool WriteConfiguredConfigPath(const std::filesystem::path& path);
 [[nodiscard]] ConfigLocation CurrentConfigLocation();
 [[nodiscard]] bool IsCloaked(HWND hwnd);
 // `alsoExclude` is the user's own list of window classes, added to the built-in one.
-[[nodiscard]] bool IsEligibleTopLevelWindow(HWND hwnd,
-                                            const std::vector<std::wstring>& alsoExclude = {});
+// 某个窗口类自绘的阴影有多厚。
+//
+// 客户区自绘阴影的窗口（GTK、以及不少自画弹出面板的应用）把阴影画在自己的窗口矩形
+// 里，没有任何 API 报得出阴影到哪儿为止，只能由用户量出来填进配置。
+//
+// 这个修正有两个用处，两处都得用同一个值：给这个窗口画边框时要贴着它看得见的边缘；
+// 它挡住别人时，遮挡范围也只该算看得见的那一块——否则别人的边框会在它旁边断掉比它
+// 本身更宽的一截。
+struct ShadowInset {
+    std::wstring className;
+    int left{};
+    int top{};
+    int right{};
+    int bottom{};
+};
+
+// 解析 "类名:左,上,右,下" 形式的配置项，跳过写坏的和全零的。
+[[nodiscard]] std::vector<ShadowInset> ParseShadowInsets(
+    const std::vector<std::string>& entries);
+
+// 按类名把矩形往里收。收过头会让矩形翻转，那种值一律忽略——写错了该看着不对，
+// 而不是让边框消失或者反着画。
+void ApplyShadowInset(RECT& rect, const wchar_t* className,
+                      const std::vector<ShadowInset>& insets);
+
+// forceInclude 里的类名跳过所有「这算不算一个窗口」的判据，只保留最基本的三条：
+// 它得是个真窗口、可见、并且是顶级窗口。排除名单仍然优先。
+[[nodiscard]] bool IsEligibleTopLevelWindow(
+    HWND hwnd, const std::vector<std::wstring>& alsoExclude = {},
+    const std::vector<std::wstring>& forceInclude = {});
 [[nodiscard]] Rect ExtendedFrame(HWND hwnd);
 // Same thing, but says whether DWM actually answered. ExtendedFrame falls back to
 // GetWindowRect on failure and the caller cannot tell the difference - which is how a

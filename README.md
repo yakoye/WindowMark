@@ -385,14 +385,20 @@ drawer.bottom_expanded_extent=120
 drawer.bottom_collapsed_thickness=0
 drawer.bottom_active_thickness=23
 
-border.enabled=false
+border.enabled=true
 # 不画边框的应用，按可执行文件路径。用「边框设置 -> 排除应用」勾选。
 # 和 selection.disabled_apps 分开：不想要边框和不想要书签是两回事。
 border.excluded_apps=
-border.width=4
+border.width=3
 border.offset=-1
-border.corners=auto
-border.corner_radius=8
+border.corners=custom
+# 物理像素，不跟 DPI 缩放。12 是 125% 下试出来的，别的缩放比例要自己调。
+border.corner_radius=12
+# 下面两项只在边框画成圆角时起作用。圆角模式下整圈是一条抗锯齿的弧矩形，
+# 抗锯齿在弧两侧各吃掉约 1px，corner_width_extra 把这部分补回来（向窗口
+# 内侧长，外沿不动）；corner_inset 把整圈往窗口中心挪，负数往外。
+border.corner_width_extra=3
+border.corner_inset=0
 border.active_color=#6274E7
 border.inactive_color=#7080AA
 
@@ -417,7 +423,14 @@ performance.geometry_throttle_ms=33
 # 注意：类名往往不足以区分。Chrome、Claude、ChatGPT 和它们的悬停浮窗都是
 # Chrome_WidgetWin_1，按类名排除会把正常窗口一起干掉。浮窗是靠
 # WS_EX_NOACTIVATE / WS_EX_TRANSPARENT 排除的，不在这个列表里。
+# 边框出问题时的三个逃生口，都按窗口类名认（类名用 WindowMarkInspect.exe 查）。
+# 设置界面里对应「按类名调整」那一组的三个框。
+#   exclude_classes           不该有边框却有
+#   force_include_classes     该有边框却没有：跳过所有资格判据，强制画
+#   treat_as_topmost_classes  它浮在上面，边框却盖过去了：让边框给它让路
 tracking.exclude_classes=
+tracking.force_include_classes=
+tracking.treat_as_topmost_classes=
 
 # 自绘阴影内缩，格式 类名:左,上,右,下，多个用 | 分隔。
 # GTK 这类应用把投影画在自己的窗口矩形里，那圈边距透明且没有任何 Windows 接口能报出来，

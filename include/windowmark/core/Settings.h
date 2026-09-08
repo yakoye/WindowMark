@@ -88,19 +88,37 @@ struct BorderSettings {
     // Separate from selection.disabledAppKeys on purpose: that one is the bookmark list,
     // and wanting no outline around an app is not the same as wanting no bookmark for it.
     std::vector<std::string> excludedAppKeys;
-    bool enabled{false};
-    // 4 with an offset of -1, so the outline reaches 3px past the window and covers the
+    bool enabled{true};
+    // 3 with an offset of -1, so the outline reaches 2px past the window and covers the
     // last pixel of it. At offset 0 the outline stops one pixel short and the 1px frame
     // Windows draws for itself shows through as a grey seam between the outline and the
     // window - measured #646765 on Explorer, #4F5255 on Chrome. Overlapping by one pixel
-    // hides it, and the extra width buys legibility against busy backgrounds.
-    int width{4};
+    // hides it.
+    int width{3};
     // Distance from the window's own edge. Negative shrinks the outline inwards (over the
     // window), positive pushes it outwards - same convention as tacky-borders.
     int offset{-1};
-    BorderCorners corners{BorderCorners::Auto};
-    // Only consulted when corners == Custom.
-    int cornerRadius{8};
+    // Custom rather than Auto by default. Auto asks DWM what shape the window is and
+    // gets 8 DIP back, and 8 DIP is the radius of the window's own corner - but the
+    // outline sits outside that corner, on a wider arc, so following it exactly leaves
+    // the outline visibly squarer than the window it wraps.
+    BorderCorners corners{BorderCorners::Custom};
+    // Only consulted when corners == Custom. Physical pixels, not DIP: this is the knob
+    // for "make it look right on my screen", and 12 is what that turned out to be at
+    // 125%. On a different scale factor it wants adjusting - that is the price of a knob
+    // that means exactly what it says.
+    int cornerRadius{12};
+    // 画圆角时在 width 上多加这么宽，多出来的部分全长在窗口内侧，外沿不动。
+    //
+    // 圆角模式下整圈——四条边加四个角——都是同一条 D2D 弧矩形，所以这个增量作用于
+    // 整圈。要它的理由是抗锯齿：弧在两侧各留约 1px 渐变，画出来的实心部分比名义线宽
+    // 窄（实测 width=4 时名义 4 只剩 2px 实心，名义 5 剩 4px，名义 7 剩 7px）。
+    //
+    // 默认 3 是在屏幕上逐档试出来的，不是算出来的：抗锯齿吃掉多少取决于弧的曲率和
+    // 它落在像素格的哪个位置，没有一个能一次算准的公式。设 0 就是不补，负数更细。
+    int cornerWidthExtra{3};
+    // 整圈弧往窗口中心挪多少。正=向内，负=向外。默认 0：外沿和直角模式齐平。
+    int cornerInset{0};
     // 0xAARRGGBB. Alpha lives in the colour itself, as in tacky-borders, so there is one
     // place to change rather than a colour plus a separate opacity knob.
     unsigned activeColor{0xFF6274E7};
@@ -169,6 +187,23 @@ struct TrackingSettings {
     // most windows. So the number has to be supplied rather than discovered.
     // Run WindowMarkInspect.exe to measure one.
     std::vector<std::string> shadowInsets;
+
+    // 按窗口类名强制画边框，跳过所有「这算不算一个窗口」的资格判据。
+    //
+    // 那套判据是为了挡掉工具窗口、悬浮小卡片、对话框这些不该有边框的东西，可总会有
+    // 应用长得不像话——判据一多，误伤就一定存在，而误伤了没有别的办法绕过。这个名单
+    // 就是那个办法：写进来的类名，只要它还是个可见的顶级窗口，就给它画。
+    //
+    // 只放宽资格，不放宽别的：排除名单仍然优先，被排除的不会因为写在这里就冒出来。
+    std::vector<std::string> forceIncludeClasses;
+
+    // 按窗口类名「视为置顶」：别人的边框一律给它让路。
+    //
+    // 前台窗口的边框只被两类东西裁——真正的 topmost 窗口，和它自己的 owned 对话框。
+    // 可有些窗口既不是 topmost 也不属于前台，却实实在在浮在上面（各家自绘的浮动面板、
+    // 输入法候选框、悬浮工具条），边框就会从它们身上穿过去。写进这个名单，它们就享受
+    // 和 topmost 一样的待遇。
+    std::vector<std::string> treatAsTopmostClasses;
 };
 
 struct Settings {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "WinUtil.h"
+
 #include <windows.h>
 
 #include <vector>
@@ -13,6 +15,11 @@ struct SnapshotWindow {
     bool cloaked{false};   // 被 DWM 藏起来，多半是在别的虚拟桌面
     bool maximized{false};
     bool minimized{false};
+    bool topmost{false};   // WS_EX_TOPMOST
+    // 用户在 tracking.treat_as_topmost_classes 里点名的窗口。它不带 WS_EX_TOPMOST，
+    // 但实际浮在上面（自绘的浮动面板、输入法候选框之类），边框得给它让路。
+    bool treatAsTopmost{false};
+    HWND owner{};          // GW_OWNER，判断「这是不是某个窗口自己的对话框」
 };
 
 // 整个桌面在某一瞬间的样子。windows 按 z 序**从上到下**排列。
@@ -30,6 +37,22 @@ struct DesktopSnapshot {
 };
 
 // 现场取一份快照。
-[[nodiscard]] DesktopSnapshot CaptureDesktop();
+//
+// shadowInsets 是「这个窗口类自绘的阴影有多厚」，用来把窗口矩形收到它看得见的边缘。
+// 这里必须和画边框那一层用同一份值：一个自绘阴影的窗口，矩形比它看得见的部分大一圈，
+// 拿没修正的矩形去裁别人的边框，断口就会比它本身宽一截——看着像边框断了，而不是被
+// 它挡住。
+[[nodiscard]] DesktopSnapshot CaptureDesktop(
+    const std::vector<ShadowInset>& shadowInsets,
+    const std::vector<std::wstring>& treatAsTopmostClasses);
+
+// 只把某一个窗口的几何刷新一遍，别人照旧。
+//
+// 拖动时几何事件每秒来上百个，每个都整取一次桌面是纯浪费：动的只有一个窗口。z 序、
+// 前台、谁出现谁消失，这些都由别的事件负责让整份快照作废，几何事件管不着。
+//
+// 返回 false 表示这个窗口不在快照里（刚出现，或刚从隐藏变可见），调用方该整取一次。
+bool RefreshWindowFrame(DesktopSnapshot& snapshot, HWND hwnd,
+                        const std::vector<ShadowInset>& shadowInsets);
 
 } // namespace windowmark::win

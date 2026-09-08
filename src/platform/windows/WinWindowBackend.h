@@ -1,5 +1,7 @@
 #pragma once
 
+#include "WinUtil.h"
+
 #include "windowmark/core/Interfaces.h"
 
 #include <atomic>
@@ -21,6 +23,7 @@ public:
     void SetGeometrySink(GeometrySink sink) override;
     void SetExcludedClasses(const std::vector<std::string>& classes) override;
     void SetShadowInsets(const std::vector<std::string>& entries) override;
+    void SetForceIncludeClasses(const std::vector<std::string>& classes) override;
     void Stop() noexcept override;
     [[nodiscard]] std::vector<WindowInfo> EnumerateWindows() override;
     [[nodiscard]] std::optional<WindowInfo> QueryWindow(WindowId id) override;
@@ -97,14 +100,10 @@ private:
     std::vector<std::wstring> excludedClasses_;
     // Parsed once from settings rather than per frame. Looked up by class name only when a
     // window's frame is recalibrated - on first sight and on resize - not on every move.
-    struct ShadowInset {
-        std::wstring className;
-        int left{};
-        int top{};
-        int right{};
-        int bottom{};
-    };
+    // 结构和解析在 WinUtil 里，和遮挡计算共用一份——两边必须是同一个值，否则一个
+    // 窗口给自己画边框用一个矩形、挡别人时用另一个矩形。
     std::vector<ShadowInset> shadowInsets_;
+    std::vector<std::wstring> forceIncludeClasses_;
     std::atomic_bool geometryTimerArmed_{false};
 };
 
