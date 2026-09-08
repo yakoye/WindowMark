@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 
+#include <algorithm>
 #include <cwchar>
 #include <iterator>
 
@@ -50,6 +51,42 @@ constexpr int kZOrderLimit = 4096;
 
 } // namespace
 
+namespace {
+
+// 读一个窗口的各项属性。收不收由调用方判断。
+[[nodiscard]] SnapshotWindow DescribeWindow(
+    HWND hwnd, const std::vector<ShadowInset>& shadowInsets,
+    const std::vector<std::wstring>& treatAsTopmostClasses) {
+    SnapshotWindow entry;
+    entry.hwnd = hwnd;
+    entry.frame = FrameOf(hwnd, shadowInsets);
+    entry.cloaked = IsCloaked(hwnd);
+    entry.maximized = IsZoomed(hwnd) != FALSE;
+    entry.minimized = IsIconic(hwnd) != FALSE;
+    entry.topmost = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    if (!treatAsTopmostClasses.empty()) {
+        wchar_t probe[128]{};
+        if (GetClassNameW(hwnd, probe, static_cast<int>(std::size(probe))) > 0) {
+            for (const auto& name : treatAsTopmostClasses) {
+                if (name == probe) {
+                    entry.treatAsTopmost = true;
+                    break;
+                }
+            }
+        }
+    }
+    entry.owner = GetWindow(hwnd, GW_OWNER);
+    return entry;
+}
+
+// 空矩形的窗口对遮挡没有贡献，也不该被描边——不收，省得下游到处判空。
+// Windows Terminal 的 PseudoConsoleWindow 之类就是 0x0 但「可见」。
+[[nodiscard]] bool WorthCollecting(const SnapshotWindow& entry) {
+    return entry.frame.right > entry.frame.left && entry.frame.bottom > entry.frame.top;
+}
+
+} // namespace
+
 DesktopSnapshot CaptureDesktop(const std::vector<ShadowInset>& shadowInsets,
                               const std::vector<std::wstring>& treatAsTopmostClasses) {
     DesktopSnapshot snapshot;
@@ -58,33 +95,40 @@ DesktopSnapshot CaptureDesktop(const std::vector<ShadowInset>& shadowInsets,
     HWND hwnd = GetTopWindow(nullptr);
     for (int step = 0; step < kZOrderLimit && hwnd != nullptr; ++step) {
         if (IsWindowVisible(hwnd) != FALSE && !IsOwnWindow(hwnd)) {
-            SnapshotWindow entry;
-            entry.hwnd = hwnd;
-            entry.frame = FrameOf(hwnd, shadowInsets);
-            entry.cloaked = IsCloaked(hwnd);
-            entry.maximized = IsZoomed(hwnd) != FALSE;
-            entry.minimized = IsIconic(hwnd) != FALSE;
-            entry.topmost = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-            if (!treatAsTopmostClasses.empty()) {
-                wchar_t probe[128]{};
-                if (GetClassNameW(hwnd, probe, static_cast<int>(std::size(probe))) > 0) {
-                    for (const auto& name : treatAsTopmostClasses) {
-                        if (name == probe) {
-                            entry.treatAsTopmost = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            entry.owner = GetWindow(hwnd, GW_OWNER);
-            // 空矩形的窗口对遮挡没有贡献，也不该被描边——直接不收，省得下游到处判空。
-            // Windows Terminal 的 PseudoConsoleWindow 之类就是 0x0 但「可见」。
-            if (entry.frame.right > entry.frame.left &&
-                entry.frame.bottom > entry.frame.top) {
-                snapshot.windows.push_back(entry);
-            }
+            const SnapshotWindow entry =
+                DescribeWindow(hwnd, shadowInsets, treatAsTopmostClasses);
+            if (WorthCollecting(entry)) snapshot.windows.push_back(entry);
         }
         hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+    }
+
+    // 上面这趟是在**活的** z 序链表上走的：走到一半有窗口被提到链表前面，那个窗口就
+    // 再也遇不上了。快速来回切两个窗口时这正在发生，实测切七八次就能让前台窗口从快照
+    // 里整个消失。
+    //
+    // 漏掉前台是致命的：PlanBorders 的两道保险——「排在它上面的算遮挡」和「其余窗口
+    // 一律再减去前台矩形」——都要在快照里按 hwnd 找到它。找不到，两道全失效，别的
+    // 窗口的边框会整条画出来盖在前台上面。
+    //
+    // 补的位置有依据，不是猜的：前台窗口排在所有非 topmost 窗口之前，这是定义。
+    if (snapshot.foreground != nullptr &&
+        IsWindowVisible(snapshot.foreground) != FALSE &&
+        !IsOwnWindow(snapshot.foreground)) {
+        const bool present =
+            std::any_of(snapshot.windows.begin(), snapshot.windows.end(),
+                        [&snapshot](const SnapshotWindow& one) {
+                            return one.hwnd == snapshot.foreground;
+                        });
+        if (!present) {
+            const SnapshotWindow entry =
+                DescribeWindow(snapshot.foreground, shadowInsets, treatAsTopmostClasses);
+            if (WorthCollecting(entry)) {
+                const auto slot =
+                    std::find_if(snapshot.windows.begin(), snapshot.windows.end(),
+                                 [](const SnapshotWindow& one) { return !one.topmost; });
+                snapshot.windows.insert(slot, entry);
+            }
+        }
     }
     return snapshot;
 }
