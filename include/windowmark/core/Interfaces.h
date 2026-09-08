@@ -26,6 +26,10 @@ public:
     virtual void SetExcludedClasses(const std::vector<std::string>& classes) { (void)classes; }
     // Entries of the form "class:left,top,right,bottom". See TrackingSettings::shadowInsets.
     virtual void SetShadowInsets(const std::vector<std::string>& entries) { (void)entries; }
+    // 强制画边框的窗口类。跳过所有资格判据——那套判据总会误伤，这是唯一的绕过办法。
+    virtual void SetForceIncludeClasses(const std::vector<std::string>& classes) {
+        (void)classes;
+    }
     virtual void Stop() noexcept = 0;
     [[nodiscard]] virtual std::vector<WindowInfo> EnumerateWindows() = 0;
     [[nodiscard]] virtual std::optional<WindowInfo> QueryWindow(WindowId id) = 0;

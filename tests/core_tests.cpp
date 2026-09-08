@@ -8,6 +8,7 @@
 #include "windowmark/core/PinRegistry.h"
 #include "windowmark/core/Settings.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -455,9 +456,25 @@ void TestPinRegistry() {
     CHECK(pins.Drain().empty());
 }
 
+// 边框默认值是在屏幕上试出来的，不是算出来的——代码里看不出为什么是 3 而不是 4。
+// 这条测试不验证任何行为，只是不让它们被顺手改掉：真要改，得连这里一起改，那时至少
+// 是有意识的。
+void TestBorderDefaults() {
+    const Settings settings;
+    CHECK(settings.border.enabled);
+    CHECK(settings.border.width == 3);
+    CHECK(settings.border.offset == -1);
+    CHECK(settings.border.corners == BorderCorners::Custom);
+    CHECK(settings.border.cornerRadius == 12);
+    CHECK(settings.border.cornerWidthExtra == 3);
+    CHECK(settings.border.cornerInset == 0);
+}
+
 void TestBorders() {
     Settings settings;
-    CHECK(!settings.border.enabled);  // opt-in
+    // 默认是开着的。这条测试考的是「关掉不画、打开才画」，所以显式关掉起步，不靠
+    // 默认值——默认值是产品决定，改了不该让这条测试红。
+    settings.border.enabled = false;
 
     MockWindowBackend windows;
     MockOverlayBackend overlays;
@@ -472,7 +489,7 @@ void TestBorders() {
     Coordinator coordinator(settings, windows, overlays, previews, &borders);
     CHECK(coordinator.Start());
     CHECK(borders.started);
-    // Disabled by default, so nothing is drawn even though the backend is running.
+    // Turned off, so nothing is drawn even though the backend is running.
     CHECK(borders.last.empty());
 
     Settings enabled = coordinator.CurrentSettings();
@@ -1002,6 +1019,78 @@ void TestBorderOcclusion() {
         CHECK(!segs.empty());
         for (const auto& s : segs) CHECK(s.left >= 20 && s.right <= 80);
     }
+
+    {
+        // 圆角矩形的有符号距离：100x60，圆角半径 10，坐标相对中心。
+        constexpr float kHalfW = 50.0F;
+        constexpr float kHalfH = 30.0F;
+        constexpr float kRadius = 10.0F;
+        const auto d = [](float x, float y) {
+            return RoundedRectDistance(x, y, kHalfW, kHalfH, kRadius);
+        };
+        const auto close = [](float value, float want) {
+            return std::fabs(value - want) < 0.001F;
+        };
+
+        // 四条边的中点都正好落在轮廓上。
+        //
+        // 上下这两格是有来历的：曾经把「x 落在直边范围内」那一支直接返回 0，丢掉了 y
+        // 方向的分量，于是整条上下边的距离算成 -radius，覆盖率为负，一个像素都不画，
+        // 而左右边（另一支）完好。现象是边框只画了一半。
+        CHECK(close(d(kHalfW, 0.0F), 0.0F));
+        CHECK(close(d(-kHalfW, 0.0F), 0.0F));
+        CHECK(close(d(0.0F, kHalfH), 0.0F));
+        CHECK(close(d(0.0F, -kHalfH), 0.0F));
+
+        // 边外面 5 个单位，距离就是 5——四个方向都得对。
+        CHECK(close(d(kHalfW + 5.0F, 0.0F), 5.0F));
+        CHECK(close(d(0.0F, kHalfH + 5.0F), 5.0F));
+        CHECK(close(d(-kHalfW - 5.0F, 0.0F), 5.0F));
+        CHECK(close(d(0.0F, -kHalfH - 5.0F), 5.0F));
+
+        // 边里面 5 个单位是负的。
+        CHECK(close(d(kHalfW - 5.0F, 0.0F), -5.0F));
+        CHECK(close(d(0.0F, kHalfH - 5.0F), -5.0F));
+
+        // 角上：圆心在 (40, 20)，沿 45 度往外量。
+        constexpr float kDiag = 0.70710678F;
+        CHECK(close(d(40.0F + kRadius * kDiag, 20.0F + kRadius * kDiag), 0.0F));
+        CHECK(close(d(40.0F + (kRadius + 3.0F) * kDiag,
+                      20.0F + (kRadius + 3.0F) * kDiag), 3.0F));
+
+        // 正中心离轮廓最近的是上下边，所以是 -30 而不是 -50。
+        CHECK(close(d(0.0F, 0.0F), -kHalfH));
+
+        // 半径大过半边长时夹住，不让相邻两个角互相吃穿。
+        CHECK(close(RoundedRectDistance(kHalfW, 0.0F, kHalfW, kHalfH, 60.0F), 0.0F));
+
+        // 半径为零就是普通矩形，角点在轮廓上。
+        CHECK(close(RoundedRectDistance(kHalfW, kHalfH, kHalfW, kHalfH, 0.0F), 0.0F));
+    }
+
+    {
+        // 挖洞：洞的角必须严实地落在环内侧，不能顶进环带。
+        //
+        // 曾经按「半个线宽 + 1」往里收，对直边成立、对角不成立：洞是直角的，环的内沿
+        // 在角上是圆弧，于是洞的角顶进环带，把圆角内侧削掉一块——屏幕上是紧挨着的那
+        // 一行相对凸出一个小直角。半径 11、半线宽 3 那组就是当时踩到的实际数值。
+        const float cases[][2] = {
+            {11.0F, 3.0F}, {12.0F, 3.0F}, {8.0F, 2.0F}, {20.0F, 1.0F},
+            {5.0F, 4.0F},  {3.0F, 3.0F},  {0.0F, 3.0F}, {30.0F, 5.0F},
+        };
+        for (const auto& one : cases) {
+            const float radius = one[0];
+            const float half = one[1];
+            const float inset = RingHoleInset(radius, half);
+            // 洞的角点，相对矩形中心。矩形取得足够大，角之间互不干扰。
+            constexpr float kHalfW = 200.0F;
+            constexpr float kHalfH = 120.0F;
+            const float d = RoundedRectDistance(kHalfW - inset, kHalfH - inset,
+                                                kHalfW, kHalfH, radius);
+            // 严格小于 -half：洞的角要在环的内沿再往里，碰都不能碰到。
+            CHECK(d < -half);
+        }
+    }
     std::cout << "BorderOcclusion tests passed.\n";
 }
 
@@ -1012,6 +1101,7 @@ int main() {
     TestTitleSanitising();
     TestMoveDoesNotRequery();
     TestSettingsHotUpdate();
+    TestBorderDefaults();
     TestBorders();
     TestPinRegistry();
     TestSelectionFiltering();

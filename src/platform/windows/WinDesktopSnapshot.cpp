@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 
 #include <cwchar>
+#include <iterator>
 
 namespace windowmark::win {
 namespace {
@@ -11,16 +12,11 @@ namespace {
 // 144 个），这个上限只是防止病态 z 序把线程转死。
 constexpr int kZOrderLimit = 4096;
 
-[[nodiscard]] bool IsCloaked(HWND hwnd) {
-    // 切到别的虚拟桌面时，那边的窗口 IsWindowVisible 仍然返回 true——只看它会让 z 序
-    // 和遮挡计算全乱（实测切到空桌面时枚举结果完全对不上）。DWMWA_CLOAKED 才问得出
-    // 「DWM 到底画不画它」。
-    int cloaked = 0;
-    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked)))) {
-        return false;
-    }
-    return cloaked != 0;
-}
+// 判断窗口有没有被 DWM 藏起来，用的是 WinUtil 里那个 IsCloaked。
+//
+// 切到别的虚拟桌面时，那边的窗口 IsWindowVisible 仍然返回 true——只看它会让 z 序和
+// 遮挡计算全乱（实测切到空桌面时枚举结果完全对不上）。DWMWA_CLOAKED 才问得出「DWM
+// 到底画不画它」。
 
 // 自家的窗口一律不进快照。
 //
@@ -33,21 +29,29 @@ constexpr int kZOrderLimit = 4096;
     return std::wcsncmp(cls, L"WindowMark.", 11) == 0;
 }
 
-[[nodiscard]] RECT FrameOf(HWND hwnd) {
+[[nodiscard]] RECT FrameOf(HWND hwnd, const std::vector<ShadowInset>& shadowInsets) {
     RECT frame{};
     // GetWindowRect 会把不可见的 resize border 算进去（本机 125% 缩放下实测 8px），
     // 还有 DPI virtualization 掺一脚。DWM 的扩展边界才是屏幕上实际画出来的那一圈。
-    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame,
-                                        sizeof(frame)))) {
-        return frame;
+    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame,
+                                     sizeof(frame)))) {
+        GetWindowRect(hwnd, &frame);
     }
-    GetWindowRect(hwnd, &frame);
+    // 自绘阴影的窗口，DWM 报的边界里含着它自己画的那圈阴影。最大化时没地方画阴影，
+    // 也就不该收——这和画边框那一层的口径保持一致。
+    if (!shadowInsets.empty() && IsZoomed(hwnd) == FALSE) {
+        wchar_t className[128]{};
+        if (GetClassNameW(hwnd, className, static_cast<int>(std::size(className))) > 0) {
+            ApplyShadowInset(frame, className, shadowInsets);
+        }
+    }
     return frame;
 }
 
 } // namespace
 
-DesktopSnapshot CaptureDesktop() {
+DesktopSnapshot CaptureDesktop(const std::vector<ShadowInset>& shadowInsets,
+                              const std::vector<std::wstring>& treatAsTopmostClasses) {
     DesktopSnapshot snapshot;
     snapshot.foreground = GetForegroundWindow();
 
@@ -56,10 +60,23 @@ DesktopSnapshot CaptureDesktop() {
         if (IsWindowVisible(hwnd) != FALSE && !IsOwnWindow(hwnd)) {
             SnapshotWindow entry;
             entry.hwnd = hwnd;
-            entry.frame = FrameOf(hwnd);
+            entry.frame = FrameOf(hwnd, shadowInsets);
             entry.cloaked = IsCloaked(hwnd);
             entry.maximized = IsZoomed(hwnd) != FALSE;
             entry.minimized = IsIconic(hwnd) != FALSE;
+            entry.topmost = (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+            if (!treatAsTopmostClasses.empty()) {
+                wchar_t probe[128]{};
+                if (GetClassNameW(hwnd, probe, static_cast<int>(std::size(probe))) > 0) {
+                    for (const auto& name : treatAsTopmostClasses) {
+                        if (name == probe) {
+                            entry.treatAsTopmost = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            entry.owner = GetWindow(hwnd, GW_OWNER);
             // 空矩形的窗口对遮挡没有贡献，也不该被描边——直接不收，省得下游到处判空。
             // Windows Terminal 的 PseudoConsoleWindow 之类就是 0x0 但「可见」。
             if (entry.frame.right > entry.frame.left &&
@@ -70,6 +87,21 @@ DesktopSnapshot CaptureDesktop() {
         hwnd = GetWindow(hwnd, GW_HWNDNEXT);
     }
     return snapshot;
+}
+
+bool RefreshWindowFrame(DesktopSnapshot& snapshot, HWND hwnd,
+                        const std::vector<ShadowInset>& shadowInsets) {
+    for (auto& entry : snapshot.windows) {
+        if (entry.hwnd != hwnd) continue;
+        // 只刷新会跟着移动/缩放变的那几项。cloaked、topmost、owner 改变都伴随别的
+        // 事件，那些事件会让整份快照作废，轮不到这里操心。
+        entry.frame = FrameOf(hwnd, shadowInsets);
+        entry.maximized = IsZoomed(hwnd) != FALSE;
+        entry.minimized = IsIconic(hwnd) != FALSE;
+        return entry.frame.right > entry.frame.left &&
+               entry.frame.bottom > entry.frame.top;
+    }
+    return false;
 }
 
 } // namespace windowmark::win

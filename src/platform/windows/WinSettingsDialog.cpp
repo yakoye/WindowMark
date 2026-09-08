@@ -65,6 +65,9 @@ struct Field {
     // 一旦有人在中间插一行就会指到别人身上，而且不会有任何编译错误。
     const wchar_t* dependsOnLabel{};
     int dependsOnValue{};
+    // 反过来：选中的**不是** dependsOnValue 时才可编辑。圆角的两个微调就靠它——
+    // 除了「直角」，其余四档都在画弧，都用得上。
+    bool dependsOnNot{false};
 };
 
 // Nothing uses the external channel today - start-with-Windows lives in the tray menu,
@@ -570,6 +573,17 @@ const Field kFields[] = {
      [](Settings& s, int v) { s.border.cornerRadius = v; }, L"px",
      nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr, 0,
      L"圆角", static_cast<int>(BorderCorners::Custom)},
+    // 下面两个只要不是直角就用得上：画的是弧就有抗锯齿要补、有位置要调。
+    {FieldKind::Int, SettingsPage::Borders, L"窗口边框", L"圆角加宽", -8, 16,
+     [](const Settings& s) { return s.border.cornerWidthExtra; },
+     [](Settings& s, int v) { s.border.cornerWidthExtra = v; }, L"px  加在线宽上",
+     nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr, 0,
+     L"圆角", static_cast<int>(BorderCorners::Square), true},
+    {FieldKind::Int, SettingsPage::Borders, L"窗口边框", L"圆角内移", -16, 16,
+     [](const Settings& s) { return s.border.cornerInset; },
+     [](Settings& s, int v) { s.border.cornerInset = v; }, L"px  负=向外",
+     nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr, 0,
+     L"圆角", static_cast<int>(BorderCorners::Square), true},
 
     {FieldKind::Palette, SettingsPage::Borders, L"颜色", L"活动窗口", 0, 0,
      [](const Settings& s) { return static_cast<int>(s.border.activeColor); },
@@ -586,10 +600,24 @@ const Field kFields[] = {
     // Lives on the border page because that is where an unwanted outline is noticed, but
     // it excludes the window from bookmarks too - the shell chrome that needs silencing
     // never wanted either.
-    {FieldKind::Text, SettingsPage::Borders, L"排除窗口（用 WindowMarkInspect.exe 查类名）",
-     L"类名", 0, 0, nullptr, nullptr, nullptr, nullptr, 0,
+    {FieldKind::Text, SettingsPage::Borders, L"按类名调整（用 WindowMarkInspect.exe 查类名）",
+     L"不画边框", 0, 0, nullptr, nullptr, nullptr, nullptr, 0,
      [](const Settings& s) { return JoinClasses(s.tracking.excludeClasses); },
      [](Settings& s, const std::wstring& v) { s.tracking.excludeClasses = SplitClasses(v); }},
+    // 边框出问题的形态就三种，用户自己能对上号的也就三句话：不该有却有、该有却没有、
+    // 它浮在上面而边框盖了过去。三个框一一对应，都按窗口类名认。
+    {FieldKind::Text, SettingsPage::Borders, L"按类名调整（用 WindowMarkInspect.exe 查类名）",
+     L"强制画", 0, 0, nullptr, nullptr, nullptr, nullptr, 0,
+     [](const Settings& s) { return JoinClasses(s.tracking.forceIncludeClasses); },
+     [](Settings& s, const std::wstring& v) {
+         s.tracking.forceIncludeClasses = SplitClasses(v);
+     }},
+    {FieldKind::Text, SettingsPage::Borders, L"按类名调整（用 WindowMarkInspect.exe 查类名）",
+     L"视为置顶", 0, 0, nullptr, nullptr, nullptr, nullptr, 0,
+     [](const Settings& s) { return JoinClasses(s.tracking.treatAsTopmostClasses); },
+     [](Settings& s, const std::wstring& v) {
+         s.tracking.treatAsTopmostClasses = SplitClasses(v);
+     }},
 
     // --- 窗口置顶 ---
     {FieldKind::Bool, SettingsPage::Pinning, L"窗口置顶", L"启用置顶", 0, 1,
@@ -1038,7 +1066,8 @@ private:
                 if (!controls_[j]) break;
                 const int current =
                     static_cast<int>(SendMessageW(controls_[j], CB_GETCURSEL, 0, 0));
-                enabled = current == field.dependsOnValue;
+                enabled = field.dependsOnNot ? current != field.dependsOnValue
+                                             : current == field.dependsOnValue;
                 break;
             }
             EnableWindow(controls_[i], enabled ? TRUE : FALSE);
@@ -1246,9 +1275,9 @@ private:
             m.columns = 1;
             hasColour = true;
         } else if (page == SettingsPage::Borders) {
-            m.labelW = 66;   // 「自定义圆角」「非活动窗口」
+            m.labelW = 66;   // 「自定义圆角」「非活动窗口」「视为置顶」
             m.hintW = 116;   // 「px  仅「自定义」时」
-            m.columns = 1;   // eight fields; two columns left half the window empty
+            m.columns = 1;   // ten fields; two columns left half the window empty
             hasColour = true;
         } else {
             m.labelW = 80;   // 「折叠显示字数」「几何事件节流」
