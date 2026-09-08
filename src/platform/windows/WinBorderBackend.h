@@ -41,6 +41,15 @@ private:
     // 但拖动时前者的调用量是后者的十几倍，混在一起看不出问题在哪。
     void Redraw(bool fromMove = false);
 
+    // 锁屏期间不画。
+    //
+    // 那时 GetForegroundWindow() 返回 LockApp.exe，它会以前台窗口的身份混进快照，边框
+    // 就画到锁屏界面上去了。而且锁屏后台仍会有窗口在动（播放器、定时刷新的面板），
+    // 每一次都白白重画一遍谁也看不见的东西。
+    void StartSessionWatch();
+    void StopSessionWatch() noexcept;
+    static LRESULT CALLBACK SessionProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
     Settings settings_;
     std::vector<BorderModel> models_;
     OverlaySet overlays_;
@@ -50,6 +59,8 @@ private:
     // 每帧都要用，配置变了才重新解析一次。
     std::vector<ShadowInset> shadowInsets_;
     std::vector<std::wstring> treatAsTopmostClasses_;
+    HWND sessionWindow_{};
+    bool suspended_{false};
     // 上一帧画了什么。一样就不必再提交一次——这不是兜底，只是省掉重复工作。
     std::vector<BorderStroke> lastStrokes_;
     bool started_{false};
