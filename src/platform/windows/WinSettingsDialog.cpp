@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cwchar>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,6 +58,13 @@ struct Field {
     // 自定义, is always appended by the control itself.
     const unsigned* swatches{};
     int swatchCount{};
+    // 联动：只有当同一页上标签为 dependsOnLabel 的那个下拉框选中了 dependsOnValue
+    // 这一项时，本字段才可编辑，否则灰掉。
+    //
+    // 按标签而不是按下标去找，是为了让字段表能随便增删排序而不悄悄失效——下标写死
+    // 一旦有人在中间插一行就会指到别人身上，而且不会有任何编译错误。
+    const wchar_t* dependsOnLabel{};
+    int dependsOnValue{};
 };
 
 // Nothing uses the external channel today - start-with-Windows lives in the tray menu,
@@ -556,9 +564,12 @@ const Field kFields[] = {
      [](const Settings& s) { return static_cast<int>(s.border.corners); },
      [](Settings& s, int v) { s.border.corners = static_cast<BorderCorners>(v); }, nullptr,
      kCornerChoices, static_cast<int>(std::size(kCornerChoices))},
+    // 只有圆角模式选到「自定义」（kCornerChoices 的第 4 项）时才可填，否则灰着。
     {FieldKind::Int, SettingsPage::Borders, L"窗口边框", L"自定义圆角", 0, 64,
      [](const Settings& s) { return s.border.cornerRadius; },
-     [](Settings& s, int v) { s.border.cornerRadius = v; }, L"px  仅「自定义」时"},
+     [](Settings& s, int v) { s.border.cornerRadius = v; }, L"px",
+     nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr, 0,
+     L"圆角", static_cast<int>(BorderCorners::Custom)},
 
     {FieldKind::Palette, SettingsPage::Borders, L"颜色", L"活动窗口", 0, 0,
      [](const Settings& s) { return static_cast<int>(s.border.activeColor); },
@@ -722,6 +733,11 @@ private:
     LRESULT Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (msg) {
         case WM_COMMAND:
+            // 下拉框换了选项，可能有字段要跟着灰掉或亮起来。
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                UpdateEnabledStates();
+                return 0;
+            }
             switch (LOWORD(wParam)) {
             case kOkId:
                 if (Collect()) Close(true);
@@ -1005,6 +1021,30 @@ private:
         Add(L"BUTTON", L"取消", WS_TABSTOP, width - kPad - kButtonW, buttonY, kButtonW, kButtonH, kCancelId);
     }
 
+    // 按各字段声明的依赖，刷新它们的可编辑状态。
+    //
+    // 读的是控件里**当前**的选择而不是 Settings，因为用户可能刚拨了下拉框还没点确定；
+    // 灰不灰要立刻跟上，不然就得等下次打开对话框才对。
+    void UpdateEnabledStates() {
+        for (std::size_t i = 0; i < std::size(kFields) && i < controls_.size(); ++i) {
+            const auto& field = kFields[i];
+            if (field.dependsOnLabel == nullptr || !controls_[i]) continue;
+
+            bool enabled = false;
+            for (std::size_t j = 0; j < std::size(kFields) && j < controls_.size(); ++j) {
+                const auto& other = kFields[j];
+                if (other.page != field.page || other.kind != FieldKind::Choice) continue;
+                if (std::wcscmp(other.label, field.dependsOnLabel) != 0) continue;
+                if (!controls_[j]) break;
+                const int current =
+                    static_cast<int>(SendMessageW(controls_[j], CB_GETCURSEL, 0, 0));
+                enabled = current == field.dependsOnValue;
+                break;
+            }
+            EnableWindow(controls_[i], enabled ? TRUE : FALSE);
+        }
+    }
+
     void Load(const Settings& source) {
         for (std::size_t i = 0; i < std::size(kFields) && i < controls_.size(); ++i) {
             const auto& field = kFields[i];
@@ -1037,6 +1077,8 @@ private:
                 break;
             }
         }
+        // 值填完了才知道各个下拉框选的是什么，联动状态在这里统一刷一次。
+        UpdateEnabledStates();
     }
 
     // Reads every control back into working_. Out-of-range numbers are reported rather
