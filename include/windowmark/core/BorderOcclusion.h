@@ -19,6 +19,14 @@ namespace windowmark {
 // 色下四个角会明显更深。
 [[nodiscard]] std::vector<Rect> BorderRingSegments(const Rect& outer, const Rect& inner);
 
+// 一组矩形减去所有遮挡物，返回还看得见的部分。
+//
+// 传进来的是「边框可能出现在哪些矩形里」。直角边框传四条边（互不重叠，画的时候直接
+// 填满）；圆角边框传整个外矩形一块——角上的弧跨越相邻两条边，而边的直角范围装不下
+// 它向内弯的那一段，按四条边裁会把角削平。
+[[nodiscard]] std::vector<Rect> ClipSegments(const std::vector<Rect>& segments,
+                                             const std::vector<Rect>& occluders);
+
 // 边框环减去所有遮挡物，返回还看得见的段。
 //
 // 这是整个 Overlay 方案的核心：非激活窗口的边框不再靠 z 序去「排到正确的位置」，而是

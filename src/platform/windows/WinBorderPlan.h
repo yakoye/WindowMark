@@ -9,10 +9,19 @@
 
 namespace windowmark::win {
 
-// 一段要画的线：一个矩形加一个 0xAARRGGBB 颜色。
+// 一段要画的线。
+//
+// rect 是这一段的范围——遮挡裁剪的结果。直角边框到此为止：把 rect 填成 color 就完了。
+//
+// 圆角边框还需要后三个字段：曲线是连续的，没法按段独立画，只能画整个环再裁到 rect。
+// 所以每一段都带着它所属的那个环的信息。radius == 0 就是直角，渲染器据此走快路径。
 struct BorderStroke {
     Rect rect;
     unsigned color{};
+
+    Rect ringOuter;      // 环的外矩形（这一段所属的完整边框）
+    int strokeWidth{};   // 线宽
+    float radius{};      // 外角半径；0 = 直角
 };
 
 // 把「谁该有边框」和「桌面此刻长什么样」合成一串待画线段。
