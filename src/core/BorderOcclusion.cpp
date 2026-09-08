@@ -50,6 +50,21 @@ std::vector<Rect> BorderRingSegments(const Rect& outer, const Rect& inner) {
     return ring;
 }
 
+std::vector<Rect> ClipSegments(const std::vector<Rect>& segments,
+                               const std::vector<Rect>& occluders) {
+    std::vector<Rect> result = segments;
+    for (const Rect& occluder : occluders) {
+        if (result.empty()) break;   // 全被盖住了，后面的遮挡物不用再算
+        std::vector<Rect> next;
+        next.reserve(result.size());
+        for (const Rect& seg : result) {
+            for (const Rect& part : SubtractRect(seg, occluder)) next.push_back(part);
+        }
+        result.swap(next);
+    }
+    return result;
+}
+
 std::vector<Rect> VisibleBorderSegments(const Rect& outer, const Rect& inner,
                                         const std::vector<Rect>& occluders) {
     std::vector<Rect> segments = BorderRingSegments(outer, inner);

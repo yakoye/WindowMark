@@ -1,6 +1,7 @@
 #include "WinOverlay.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace windowmark::win {
 namespace {
@@ -43,6 +44,25 @@ bool EnsureClass() {
         hwnd = GetWindow(hwnd, GW_HWNDNEXT);
     }
     return last;
+}
+
+// D2D 工厂全进程一个。只有画圆角时才会用到，但建一次的代价可以忽略，不值得为它
+// 再搭一套延迟初始化。
+[[nodiscard]] ID2D1Factory* SharedFactory() {
+    static Microsoft::WRL::ComPtr<ID2D1Factory> factory = [] {
+        Microsoft::WRL::ComPtr<ID2D1Factory> f;
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, f.GetAddressOf());
+        return f;
+    }();
+    return factory.Get();
+}
+
+[[nodiscard]] D2D1_COLOR_F ToD2DColor(unsigned argb) {
+    const float a = static_cast<float>((argb >> 24) & 0xFFu) / 255.0F;
+    const float r = static_cast<float>((argb >> 16) & 0xFFu) / 255.0F;
+    const float g = static_cast<float>((argb >> 8) & 0xFFu) / 255.0F;
+    const float b = static_cast<float>(argb & 0xFFu) / 255.0F;
+    return D2D1::ColorF(r, g, b, a);
 }
 
 // ULW_ALPHA 要求源位图的颜色已经乘过 alpha，否则半透明边缘会发白。
@@ -96,6 +116,20 @@ bool MonitorOverlay::Create(const RECT& monitorRect) {
     return true;
 }
 
+bool MonitorOverlay::EnsureRenderTarget() {
+    if (target_) return true;
+    ID2D1Factory* factory = SharedFactory();
+    if (factory == nullptr) return false;
+
+    // 96 DPI，让一个 DIP 正好是一个物理像素：这里所有矩形都已经是物理坐标了。
+    // 位图是预乘 alpha 的（UpdateLayeredWindow 的要求），render target 得跟着声明。
+    const D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.0F, 96.0F);
+    return SUCCEEDED(factory->CreateDCRenderTarget(&props, target_.GetAddressOf()));
+}
+
 void MonitorOverlay::MoveToBandTail() {
     if (hwnd_ == nullptr) return;
     // 层内换位，不是「提进层」——窗口已经在 topmost 层里，这一步踩不到那个会卡死的
@@ -129,6 +163,14 @@ void MonitorOverlay::Render(const std::vector<BorderStroke>& strokes) {
     RECT painted{};
     bool anyPainted = false;
 
+    // 圆角段先攒着，等像素填充做完再一次性交给 D2D——中途来回切换会让 GDI 和 D2D
+    // 对同一块位图的写入次序变得难以推理。
+    struct RoundedSeg {
+        const BorderStroke* stroke;
+        RECT local;
+    };
+    std::vector<RoundedSeg> rounded;
+
     for (const BorderStroke& stroke : strokes) {
         const RECT r{stroke.rect.left, stroke.rect.top, stroke.rect.right,
                      stroke.rect.bottom};
@@ -140,20 +182,69 @@ void MonitorOverlay::Render(const std::vector<BorderStroke>& strokes) {
         const int y0 = static_cast<int>(clipped.top - bounds_.top);
         const int x1 = static_cast<int>(clipped.right - bounds_.left);
         const int y1 = static_cast<int>(clipped.bottom - bounds_.top);
-        const unsigned color = Premultiply(stroke.color);
-        for (int y = y0; y < y1; ++y) {
-            unsigned* row = pixels + static_cast<size_t>(y) * static_cast<size_t>(width);
-            std::fill(row + x0, row + x1, color);
-        }
-
         // 记的是画布本地坐标，和 prcDirty 的口径一致。
         const RECT local{static_cast<LONG>(x0), static_cast<LONG>(y0),
                          static_cast<LONG>(x1), static_cast<LONG>(y1)};
+
+        if (stroke.radius > 0.0F) {
+            rounded.push_back(RoundedSeg{&stroke, local});
+        } else {
+            // 直角：直接填像素，最快的一条路。
+            const unsigned color = Premultiply(stroke.color);
+            for (int y = y0; y < y1; ++y) {
+                unsigned* row =
+                    pixels + static_cast<size_t>(y) * static_cast<size_t>(width);
+                std::fill(row + x0, row + x1, color);
+            }
+        }
+
         if (anyPainted) {
             UnionRect(&painted, &painted, &local);
         } else {
             painted = local;
             anyPainted = true;
+        }
+    }
+
+    if (!rounded.empty() && EnsureRenderTarget()) {
+        const RECT bind{0, 0, width, height};
+        if (SUCCEEDED(target_->BindDC(dc_, &bind))) {
+            target_->BeginDraw();
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+            target_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0), &brush);
+            if (brush) {
+                for (const RoundedSeg& seg : rounded) {
+                    const BorderStroke& s = *seg.stroke;
+                    brush->SetColor(ToD2DColor(s.color));
+
+                    // 只画这一段：裁剪之外的部分不落笔。曲线是连续的，没法按段分别
+                    // 构造路径，所以每段都画一次完整的环，靠裁剪挡掉其余部分。
+                    // ALIASED 是必须的——裁剪边界要和像素对齐，否则相邻段的接缝上会
+                    // 各留半个像素的半透明，拼起来是一条更淡的缝。
+                    target_->PushAxisAlignedClip(
+                        D2D1::RectF(static_cast<float>(seg.local.left),
+                                    static_cast<float>(seg.local.top),
+                                    static_cast<float>(seg.local.right),
+                                    static_cast<float>(seg.local.bottom)),
+                        D2D1_ANTIALIAS_MODE_ALIASED);
+
+                    // 线沿路径居中，所以路径要从环的外沿往里收半个线宽。
+                    const float inset = static_cast<float>(s.strokeWidth) * 0.5F;
+                    const D2D1_RECT_F path = D2D1::RectF(
+                        static_cast<float>(s.ringOuter.left - bounds_.left) + inset,
+                        static_cast<float>(s.ringOuter.top - bounds_.top) + inset,
+                        static_cast<float>(s.ringOuter.right - bounds_.left) - inset,
+                        static_cast<float>(s.ringOuter.bottom - bounds_.top) - inset);
+                    target_->DrawRoundedRectangle(
+                        D2D1::RoundedRect(path, s.radius, s.radius), brush.Get(),
+                        static_cast<float>(s.strokeWidth));
+
+                    target_->PopAxisAlignedClip();
+                }
+            }
+            if (target_->EndDraw() == D2DERR_RECREATE_TARGET) target_.Reset();
+            // D2D 写完位图后必须冲一次，否则 UpdateLayeredWindow 可能读到旧内容。
+            GdiFlush();
         }
     }
 
@@ -209,6 +300,7 @@ void MonitorOverlay::Destroy() noexcept {
     hwnd_ = nullptr;
     bits_ = nullptr;
     hasLastPainted_ = false;
+    target_.Reset();
 }
 
 void OverlaySet::Sync() {

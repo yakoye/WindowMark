@@ -2,6 +2,8 @@
 
 #include <dwmapi.h>
 
+#include <cwchar>
+
 namespace windowmark::win {
 namespace {
 
@@ -18,6 +20,17 @@ constexpr int kZOrderLimit = 4096;
         return false;
     }
     return cloaked != 0;
+}
+
+// 自家的窗口一律不进快照。
+//
+// 最要紧的是 overlay 自己：它是 topmost、排在 z 序最前，一旦被当成遮挡物，每个窗口
+// 的边框都会被它整片裁掉——现象是「非激活窗口全都没有边框」。书签条、设置对话框
+// 同理，它们该不该盖住边框由它们自己的 z 序决定，不该在遮挡计算里再算一遍。
+[[nodiscard]] bool IsOwnWindow(HWND hwnd) {
+    wchar_t cls[64]{};
+    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) == 0) return false;
+    return std::wcsncmp(cls, L"WindowMark.", 11) == 0;
 }
 
 [[nodiscard]] RECT FrameOf(HWND hwnd) {
@@ -40,7 +53,7 @@ DesktopSnapshot CaptureDesktop() {
 
     HWND hwnd = GetTopWindow(nullptr);
     for (int step = 0; step < kZOrderLimit && hwnd != nullptr; ++step) {
-        if (IsWindowVisible(hwnd) != FALSE) {
+        if (IsWindowVisible(hwnd) != FALSE && !IsOwnWindow(hwnd)) {
             SnapshotWindow entry;
             entry.hwnd = hwnd;
             entry.frame = FrameOf(hwnd);

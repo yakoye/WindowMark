@@ -2,7 +2,9 @@
 
 #include "WinBorderPlan.h"
 
+#include <d2d1.h>
 #include <windows.h>
+#include <wrl/client.h>
 
 #include <memory>
 #include <vector>
@@ -31,6 +33,8 @@ public:
 
 private:
     void MoveToBandTail();
+    // 圆角才需要 D2D。直角一路像素填充，连 render target 都不建。
+    bool EnsureRenderTarget();
 
     HWND hwnd_{};
     HDC dc_{};
@@ -41,6 +45,7 @@ private:
     // 上一帧画过的范围。这一帧要提交的脏区 = 它 ∪ 这一帧要画的范围。
     RECT lastPainted_{};
     bool hasLastPainted_{false};
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> target_;
 };
 
 // 每块显示器一个 overlay，显示器配置变了就重建。
