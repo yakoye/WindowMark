@@ -19,6 +19,10 @@ struct SnapshotWindow {
     // 用户在 tracking.treat_as_topmost_classes 里点名的窗口。它不带 WS_EX_TOPMOST，
     // 但实际浮在上面（自绘的浮动面板、输入法候选框之类），边框得给它让路。
     bool treatAsTopmost{false};
+    // 桌面本身（Progman，或装了动态壁纸时的 WorkerW）。它铺满整个虚拟桌面却谁都不
+    // 挡——永远在 z 序最底。用户点一下桌面它就成了前台，那时不能拿它的矩形去裁别人
+    // 的边框，一裁就是全屏。
+    bool desktop{false};
     HWND owner{};          // GW_OWNER，判断「这是不是某个窗口自己的对话框」
 };
 

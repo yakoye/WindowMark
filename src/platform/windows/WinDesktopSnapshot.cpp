@@ -54,11 +54,23 @@ constexpr int kZOrderLimit = 4096;
 namespace {
 
 // 读一个窗口的各项属性。收不收由调用方判断。
+// 桌面窗口。GetShellWindow() 是系统给出的答案，不用猜类名；WorkerW 另算——装了
+// 动态壁纸时桌面图标那层会变成它，它不是 shell window，但同样铺满整个桌面、同样
+// 谁都不挡。
+[[nodiscard]] bool IsDesktopWindow(HWND hwnd) {
+    if (hwnd == nullptr) return false;
+    if (hwnd == GetShellWindow()) return true;
+    wchar_t name[16]{};
+    if (GetClassNameW(hwnd, name, static_cast<int>(std::size(name))) == 0) return false;
+    return std::wcscmp(name, L"Progman") == 0 || std::wcscmp(name, L"WorkerW") == 0;
+}
+
 [[nodiscard]] SnapshotWindow DescribeWindow(
     HWND hwnd, const std::vector<ShadowInset>& shadowInsets,
     const std::vector<std::wstring>& treatAsTopmostClasses) {
     SnapshotWindow entry;
     entry.hwnd = hwnd;
+    entry.desktop = IsDesktopWindow(hwnd);
     entry.frame = FrameOf(hwnd, shadowInsets);
     entry.cloaked = IsCloaked(hwnd);
     entry.maximized = IsZoomed(hwnd) != FALSE;

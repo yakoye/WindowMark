@@ -168,6 +168,9 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
     for (const auto& entry : snapshot.windows) {
         if (entry.hwnd != snapshot.foreground) continue;
         if (entry.cloaked || entry.minimized) break;
+        // 桌面当了前台（用户点了一下桌面空白处）时这条规则不适用：它铺满整个
+        // 虚拟桌面却永远在 z 序最底，谁都不挡。拿它的矩形去裁就是一次裁光所有边框。
+        if (entry.desktop) break;
         foregroundRect = AsOccluder(entry.frame);
         hasForeground = true;
         break;
