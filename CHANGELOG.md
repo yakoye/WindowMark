@@ -1,5 +1,44 @@
 # Changelog
 
+## 未发布
+
+### 锁屏时挂起
+
+锁屏期间 `GetForegroundWindow()` 返回 `LockApp.exe`，它会以前台窗口的身份混进快照，边框
+就画到锁屏界面上去了；解锁后还要等下一个事件才恢复。而且锁屏后台仍会有窗口在动（播放器、
+定时刷新的面板），每一次都白重画一遍谁也看不见的东西。
+
+收到 `WTS_SESSION_LOCK` 直接停画并把画布擦干净，`WTS_SESSION_UNLOCK` 时重新取一次快照。
+通知用一个 message-only 窗口收，挂在边框后端自己手里——这件事只跟边框有关，生命周期
+跟着它走，不用去另一层要一个回调。
+
+### 诊断工具：删掉失效的，改造还有用的
+
+overlay 重构之后，「每个窗口一个边框窗口」那个模型没有了，靠它工作的工具全部失效——它们
+查的是 `WindowMark.WindowBorder` 这个已经不存在的窗口类。删掉七个（`check-border-band`、
+`check-floating-borders`、`check-active-color`、`check-dialog-borders`、`bench-switch`、
+`bench-border-latency`、`trace-borders`）连同 `check_floating_borders.bat`。
+
+`check-maximized.py` 改用像素判据重写：不再问「这个窗口有没有配对的边框窗口」，而是直接
+去看那几条线画出来没有。
+
+这一版新添的工具（都留在 `tools/`）：
+
+| 工具 | 用途 |
+|---|---|
+| `auto-shadow-inset.py` | 量窗口矩形比可见部分大多少，`--apply` 直接写进配置 |
+| `measure-gap.py` | 量边框缺口对不对得上遮挡，`--all` 扫全桌面 |
+| `diagnose-window.py` | 某个窗口为什么没边框、被谁盖了 |
+| `inspect-corner.py` | 逐像素看圆角画成什么样 |
+| `watch-line-over.py` | 守着抓「边框画到了上层窗口身上」 |
+| `capture-after-switching.py` | 快切之后停手取样，三份状态并排对照 |
+| `bench-drag-lag.py` | 量拖动时边框落后多少像素 |
+| `bench-simulated-drag.py` | 程序驱动的拖动，改代码前后拿同一个数比 |
+
+`check-tools.py` 这次又抓到一个真问题：`auto-shadow-inset.py` 的 `--apply` 分支用了 `io`
+却没 import，只在带 `--apply` 时才会炸。这正是它存在的理由——Python 的 `NameError` 只在
+执行到那一行才报，不走那条分支就永远发现不了。
+
 ## v0.4.9
 
 ### 边框改用 overlay：z 序只拿来读，不再拿来改

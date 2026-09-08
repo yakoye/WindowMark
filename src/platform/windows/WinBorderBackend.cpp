@@ -4,6 +4,8 @@
 #include "WinBorderPlan.h"
 #include "WinDesktopSnapshot.h"
 
+#include <wtsapi32.h>
+
 #include <string>
 
 namespace windowmark::win {
@@ -133,12 +135,73 @@ void ReportIfDue() {
 
 WinBorderBackend::~WinBorderBackend() { Stop(); }
 
+// 锁屏时把 overlay 收起来。
+//
+// 锁屏期间 GetForegroundWindow() 会返回 LockApp.exe，它以前台窗口的身份混进快照，边框
+// 就画到锁屏界面上；解锁后还要等下一个事件才恢复。而且锁屏后台仍会有窗口在动（播放器、
+// 定时刷新的面板），每次都白重画一遍谁也看不见的东西。
+//
+// 用一个 message-only 窗口收通知，而不是挂在控制窗口上：这件事只跟边框有关，收在边框
+// 后端自己手里，生命周期跟着它走，不用去另一层要一个回调。
+void WinBorderBackend::StartSessionWatch() {
+    if (sessionWindow_ != nullptr) return;
+    static const ATOM sessionClass = [] {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpfnWndProc = SessionProc;
+        wc.lpszClassName = L"WindowMark.SessionWatch";
+        return RegisterClassExW(&wc);
+    }();
+    if (sessionClass == 0) return;
+
+    sessionWindow_ = CreateWindowExW(0, L"WindowMark.SessionWatch", L"", 0, 0, 0, 0, 0,
+                                     HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr),
+                                     this);
+    if (sessionWindow_ == nullptr) return;
+    SetWindowLongPtrW(sessionWindow_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    // 注册失败就当没有这个功能：锁屏时多画几帧没人看见的东西，比起启动不起来是小事。
+    WTSRegisterSessionNotification(sessionWindow_, NOTIFY_FOR_THIS_SESSION);
+}
+
+void WinBorderBackend::StopSessionWatch() noexcept {
+    if (sessionWindow_ == nullptr) return;
+    WTSUnRegisterSessionNotification(sessionWindow_);
+    DestroyWindow(sessionWindow_);
+    sessionWindow_ = nullptr;
+    suspended_ = false;
+}
+
+LRESULT CALLBACK WinBorderBackend::SessionProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                               LPARAM lParam) {
+    if (msg == WM_WTSSESSION_CHANGE) {
+        auto* self =
+            reinterpret_cast<WinBorderBackend*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (self != nullptr) {
+            if (wParam == WTS_SESSION_LOCK) {
+                self->suspended_ = true;
+                // 空列表 = 把画布擦干净。不擦的话锁屏界面上会留着上一帧的线。
+                self->overlays_.Render({});
+                self->lastStrokes_.clear();
+                PinDiag(L"会话锁定，边框挂起");
+            } else if (wParam == WTS_SESSION_UNLOCK) {
+                self->suspended_ = false;
+                PinDiag(L"会话解锁，边框恢复");
+                self->Redraw();
+            }
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 bool WinBorderBackend::Start(const Settings& settings) {
     if (started_) return true;
     settings_ = settings;
     shadowInsets_ = ParseShadowInsets(settings.tracking.shadowInsets);
     treatAsTopmostClasses_ = ToWideList(settings.tracking.treatAsTopmostClasses);
     overlays_.Sync();
+    StartSessionWatch();
     started_ = true;
     PinDiag(L"边框后端启动（overlay 模型）");
     return true;
@@ -186,6 +249,9 @@ void WinBorderBackend::UpdateSettings(const Settings& settings) {
 }
 
 void WinBorderBackend::Redraw(bool fromMove) {
+    // 锁屏期间画的东西谁也看不见，而快照里还混着 LockApp.exe。
+    if (suspended_) return;
+
     const bool trace = TraceOn();
     LONGLONG mark = trace ? Ticks() : 0;
     if (trace) {
@@ -238,6 +304,7 @@ void WinBorderBackend::Redraw(bool fromMove) {
 }
 
 void WinBorderBackend::Stop() noexcept {
+    StopSessionWatch();
     overlays_.Destroy();
     models_.clear();
     lastStrokes_.clear();

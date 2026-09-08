@@ -129,6 +129,7 @@ if(WIN32)
         d2d1
         dwrite
         shcore
+        wtsapi32
     )
 
     target_include_directories(WindowMark PRIVATE

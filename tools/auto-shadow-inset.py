@@ -217,6 +217,7 @@ else:
                                     max(0, right), max(0, bottom))
         print()
         print('--apply：直接写进配置并重启。')
+        import io
         import os
         import subprocess
         import time
