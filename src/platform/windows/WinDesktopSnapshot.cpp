@@ -104,6 +104,19 @@ DesktopSnapshot CaptureDesktop(const std::vector<ShadowInset>& shadowInsets,
     DesktopSnapshot snapshot;
     snapshot.foreground = GetForegroundWindow();
 
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR monitor, HDC, LPRECT, LPARAM param) -> BOOL {
+            MONITORINFO mi{};
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoW(monitor, &mi) != FALSE) {
+                reinterpret_cast<std::vector<MonitorArea>*>(param)->push_back(
+                    MonitorArea{mi.rcMonitor, mi.rcWork});
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&snapshot.monitors));
+
     HWND hwnd = GetTopWindow(nullptr);
     for (int step = 0; step < kZOrderLimit && hwnd != nullptr; ++step) {
         if (IsWindowVisible(hwnd) != FALSE && !IsOwnWindow(hwnd)) {

@@ -78,4 +78,12 @@ namespace windowmark {
 [[nodiscard]] std::vector<Rect> VisibleBorderSegments(const Rect& outer, const Rect& inner,
                                                       const std::vector<Rect>& occluders);
 
+// 把线段限制在 bounds 之内，整个落在外面的丢掉。
+//
+// 和 ClipSegments 正好相反：那个是「减去挡住的」，这个是「只留在框里的」。边框不该
+// 越过屏幕/工作区边界时用它——夹取不能直接改边框环的外矩形，因为圆角的路径以那个矩形
+// 为基准，改了弧就错位；外矩形保持不动、只限制可见范围，弧才还是原来那条弧。
+[[nodiscard]] std::vector<Rect> ClipToBounds(const std::vector<Rect>& segments,
+                                             const Rect& bounds);
+
 } // namespace windowmark

@@ -80,4 +80,18 @@ std::vector<Rect> VisibleBorderSegments(const Rect& outer, const Rect& inner,
     return segments;
 }
 
+std::vector<Rect> ClipToBounds(const std::vector<Rect>& segments, const Rect& bounds) {
+    std::vector<Rect> out;
+    out.reserve(segments.size());
+    for (const Rect& seg : segments) {
+        const Rect clipped{std::max(seg.left, bounds.left), std::max(seg.top, bounds.top),
+                           std::min(seg.right, bounds.right),
+                           std::min(seg.bottom, bounds.bottom)};
+        if (clipped.right > clipped.left && clipped.bottom > clipped.top) {
+            out.push_back(clipped);
+        }
+    }
+    return out;
+}
+
 } // namespace windowmark
