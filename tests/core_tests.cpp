@@ -459,6 +459,42 @@ void TestPinRegistry() {
 // 边框默认值是在屏幕上试出来的，不是算出来的——代码里看不出为什么是 3 而不是 4。
 // 这条测试不验证任何行为，只是不让它们被顺手改掉：真要改，得连这里一起改，那时至少
 // 是有意识的。
+void TestClipToBounds() {
+    using windowmark::ClipToBounds;
+    using windowmark::Rect;
+
+    const Rect bounds{0, 0, 100, 100};
+    {
+        // 整个在框里：原样留下。
+        const auto got = ClipToBounds({Rect{10, 10, 20, 20}}, bounds);
+        CHECK(got.size() == 1);
+        CHECK(got[0].left == 10 && got[0].right == 20);
+    }
+    {
+        // 跨过边界：切掉外面那截。这是边框压任务栏时的形状——窗口贴着工作区底边，
+        // 边框往外那两像素落在任务栏上。
+        const auto got = ClipToBounds({Rect{10, 90, 20, 110}}, bounds);
+        CHECK(got.size() == 1);
+        CHECK(got[0].top == 90 && got[0].bottom == 100);
+    }
+    {
+        // 整个在外面：丢掉，不留下空矩形让下游去判。
+        CHECK(ClipToBounds({Rect{10, 200, 20, 210}}, bounds).empty());
+    }
+    {
+        // 贴着边界但没越过：不动。
+        const auto got = ClipToBounds({Rect{0, 0, 100, 4}}, bounds);
+        CHECK(got.size() == 1);
+        CHECK(got[0].right == 100);
+    }
+    {
+        // 多段一起，只有越界的那段被切。
+        const auto got = ClipToBounds({Rect{0, 0, 10, 10}, Rect{50, 95, 60, 120}}, bounds);
+        CHECK(got.size() == 2);
+        CHECK(got[1].bottom == 100);
+    }
+}
+
 void TestBorderDefaults() {
     const Settings settings;
     CHECK(settings.border.enabled);
@@ -1101,6 +1137,7 @@ int main() {
     TestTitleSanitising();
     TestMoveDoesNotRequery();
     TestSettingsHotUpdate();
+    TestClipToBounds();
     TestBorderDefaults();
     TestBorders();
     TestPinRegistry();

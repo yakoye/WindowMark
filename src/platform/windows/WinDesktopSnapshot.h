@@ -26,6 +26,15 @@ struct SnapshotWindow {
     HWND owner{};          // GW_OWNER，判断「这是不是某个窗口自己的对话框」
 };
 
+// 一块显示器的两个矩形。
+//
+// 两个都要：最大化和半屏吸附的窗口贴的是**工作区**边界（底边差着整条任务栏的高度），
+// 而用户手动拖到盖住任务栏的窗口贴的是**监视器**边界。只看一个，另一种就判错。
+struct MonitorArea {
+    RECT bounds{};   // rcMonitor
+    RECT work{};     // rcWork
+};
+
 // 整个桌面在某一瞬间的样子。windows 按 z 序**从上到下**排列。
 //
 // 存在的理由是消灭 split-brain。以前 Coordinator 记着一份事件驱动的 active，平台层
@@ -38,6 +47,9 @@ struct SnapshotWindow {
 struct DesktopSnapshot {
     HWND foreground{};
     std::vector<SnapshotWindow> windows;
+    // 边框不该越过屏幕边界，判这件事要用到每块屏的两个矩形。放在快照里而不是现查：
+    // 规划阶段要按窗口逐个查，而显示器配置一帧之内不会变。
+    std::vector<MonitorArea> monitors;
 };
 
 // 现场取一份快照。

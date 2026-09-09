@@ -1,5 +1,7 @@
 #include "WinBorderPlan.h"
 
+#include "windowmark/core/BorderGeometry.h"
+
 #include "WinUtil.h"
 
 #include "windowmark/core/BorderOcclusion.h"
@@ -119,6 +121,21 @@ constexpr int kOccluderBite = 1;
     return out;
 }
 
+// 窗口中心落在哪块屏上。找不到就返回空——那时不夹，宁可多画一点也不要凭一个错的
+// 矩形去裁。
+[[nodiscard]] const MonitorArea* ScreenOf(const std::vector<MonitorArea>& monitors,
+                                          const RECT& frame) {
+    const LONG cx = frame.left + (frame.right - frame.left) / 2;
+    const LONG cy = frame.top + (frame.bottom - frame.top) / 2;
+    for (const auto& one : monitors) {
+        if (cx >= one.bounds.left && cx < one.bounds.right && cy >= one.bounds.top &&
+            cy < one.bounds.bottom) {
+            return &one;
+        }
+    }
+    return nullptr;
+}
+
 // 置顶压过活动状态：「这个窗口被钉在最前面」是更少见、也更值得一眼认出来的状态。
 [[nodiscard]] unsigned ColorOf(const BorderModel& model, const Settings& settings,
                                unsigned accent) {
@@ -231,9 +248,26 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                     const int grow = std::max(0, -settings.border.cornerInset);
                     const Rect paintOuter{outer.left - grow, outer.top - grow,
                                           outer.right + grow, outer.bottom + grow};
-                    const std::vector<Rect> units =
+                    std::vector<Rect> units =
                         roundWidth > 0.0F ? std::vector<Rect>{paintOuter}
                                           : BorderRingSegments(outer, inner);
+
+                    // 边框不该越过屏幕边界。窗口贴着工作区底边时，往外那两像素正好
+                    // 落在任务栏上——画布覆盖整块监视器，那里是有地方落笔的（跨屏那种
+                    // 越界画布边界自己就挡住了，这种挡不住）。
+                    //
+                    // 夹的是**可见范围**，不是 outer 本身：圆角的路径以 outer 为基准
+                    // 算半径和位置，改了 outer 弧就错位。outer 不动，弧还是原来那条，
+                    // 只是压出去的那截不画。
+                    if (const MonitorArea* screen = ScreenOf(snapshot.monitors, entry.frame);
+                        screen != nullptr) {
+                        const Rect limit = ClampBorderToScreen(
+                            frame, outer, ToCore(screen->bounds), ToCore(screen->work),
+                            reach);
+                        if (limit.right > limit.left && limit.bottom > limit.top) {
+                            units = ClipToBounds(units, limit);
+                        }
+                    }
                     std::vector<Rect> visible;
                     if (entry.hwnd == snapshot.foreground) {
                         // 前台窗口：只有 topmost 窗口、用户点名「视为置顶」的窗口，
