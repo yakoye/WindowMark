@@ -538,8 +538,10 @@ void TestDragSettingsRoundTrip() {
 
 void TestDragGeometry() {
     using windowmark::ApplyDrag;
+    using windowmark::CenterInWorkArea;
     using windowmark::DragEdges;
     using windowmark::HitZone;
+    using windowmark::IsTap;
     using windowmark::Rect;
 
     // 300x300 的窗口，九宫格每格正好 100
@@ -630,6 +632,75 @@ void TestDragGeometry() {
         CHECK(sized.top == 10);
         CHECK(sized.right == 300);
         CHECK(sized.bottom == 300);
+    }
+
+    // --- 单击判定 ---
+
+    // 一动没动，和手抖一两个像素，都算单击
+    {
+        CHECK(IsTap(0, 0, 4));
+        CHECK(IsTap(2, -3, 4));
+        CHECK(IsTap(4, 4, 4));
+        CHECK(IsTap(-4, -4, 4));
+    }
+
+    // 越过阈值就是拖动。两个方向分别判断，一个方向超了就够。
+    {
+        CHECK(!IsTap(5, 0, 4));
+        CHECK(!IsTap(0, -5, 4));
+        CHECK(!IsTap(300, 200, 4));
+    }
+
+    // slop 为 0：只有纹丝不动才算单击。负数当 0 用，不能反过来把什么都算成单击。
+    {
+        CHECK(IsTap(0, 0, 0));
+        CHECK(!IsTap(1, 0, 0));
+        // 负 slop 归零后仍然认得「纹丝不动」。用 (1,0,-10) 测不出来：夹与不夹都是 false，
+        // 那条断言在两种实现下都通过，等于没测。
+        CHECK(IsTap(0, 0, -10));
+        CHECK(!IsTap(1, 0, -10));
+    }
+
+    // --- 居中 ---
+
+    // 普通情形：尺寸不变，四周留白相等
+    {
+        const Rect work{0, 0, 1000, 800};
+        const Rect centered = CenterInWorkArea(Rect{700, 600, 900, 700}, work);
+        CHECK(centered.width() == 200);
+        CHECK(centered.height() == 100);
+        CHECK(centered.left == 400);
+        CHECK(centered.top == 350);
+        CHECK(centered.left - work.left == work.right - centered.right);
+        CHECK(centered.top - work.top == work.bottom - centered.bottom);
+    }
+
+    // 工作区不在原点（副屏、任务栏占掉一条）时按工作区自己的坐标算
+    {
+        const Rect work{-1920, 360, 0, 1400};
+        const Rect centered = CenterInWorkArea(Rect{5000, 5000, 5400, 5200}, work);
+        CHECK(centered.width() == 400);
+        CHECK(centered.height() == 200);
+        CHECK(centered.left == -1160);
+        CHECK(centered.top == 780);
+    }
+
+    // 窗口比工作区高：纵向夹到顶，标题栏必须留在屏幕里——这个手势就是为「够不着标题栏」
+    // 而存在的，居中反而把它顶出去就本末倒置了。
+    {
+        const Rect work{0, 100, 1000, 700};
+        const Rect centered = CenterInWorkArea(Rect{0, 0, 300, 900}, work);
+        CHECK(centered.top == 100);
+        CHECK(centered.height() == 900);
+    }
+
+    // 窗口比工作区宽：横向不夹，左右均等溢出，两边都还够得着
+    {
+        const Rect work{0, 0, 1000, 800};
+        const Rect centered = CenterInWorkArea(Rect{0, 0, 1400, 200}, work);
+        CHECK(centered.left == -200);
+        CHECK(centered.right == 1200);
+        CHECK(centered.left - work.left == work.right - centered.right);
     }
 
     // 最小尺寸：继续拖也不会缩过头，更不会反转

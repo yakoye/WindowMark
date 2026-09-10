@@ -30,4 +30,16 @@ struct DragEdges {
 [[nodiscard]] Rect ApplyDrag(const Rect& start, const DragEdges& edges, int dx, int dy,
                              int minWidth, int minHeight);
 
+// 按下到松开几乎没动 = 单击，不是拖动。slop 是允许的抖动，单位像素，两个方向分别判断。
+//
+// 只看位移不看时间：按住修饰键瞄准、犹豫两秒再松手，仍然是一次单击。加时限只会让慢的人
+// 得不到反应，而他们恰恰是最需要这个手势的人。
+[[nodiscard]] bool IsTap(int dx, int dy, int slop);
+
+// 把窗口摆到工作区正中，尺寸不变。
+//
+// 纵向夹到 work.top：窗口比工作区高时，居中会把标题栏顶出屏幕外，那正好毁掉这个手势要
+// 解决的问题——够不着标题栏。横向不夹，比工作区宽的窗口左右均等溢出，两边都还够得着。
+[[nodiscard]] Rect CenterInWorkArea(const Rect& frame, const Rect& work);
+
 } // namespace windowmark

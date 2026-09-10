@@ -44,6 +44,11 @@ private:
     [[nodiscard]] HWND TargetWindowAt(POINT pt) const;
     [[nodiscard]] bool IsExcluded(HWND hwnd) const;
     void RestoreForDrag(POINT cursor);
+    // 把窗口摆到光标所在那块屏的正中。单击（按下几乎没动就松开）走这里。
+    void CenterOnCursorMonitor(POINT cursor);
+
+    // 单击和拖动的分界，像素。4 够容下按键时手上的抖动，又远小于任何有意的拖动。
+    static constexpr int kTapSlop = 4;
 
     HHOOK mouseHook_{};
     // 只在配置勾了左/右 Win 时才装。键盘钩子比鼠标钩子更敏感——杀毒软件更关注、
@@ -73,6 +78,12 @@ private:
     bool traceOn_{false};
 
     bool dragging_{false};
+    // 这次拖动是左键起的。右键在正中那一格也会得到「移动」，光看 edges_ 分不出来，
+    // 而居中只归左键。
+    bool leftButton_{false};
+    // 目标是最大化的，等真的开始移动了再还原。放在按下时做的话，按住修饰键点一下
+    // 最大化窗口就会把它还原并挪走——用户什么都没拖，窗口却变了。
+    bool pendingRestore_{false};
     HWND target_{};
     POINT startCursor_{};
     Rect startFrame_{};
