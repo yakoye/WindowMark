@@ -1,6 +1,7 @@
 #include "windowmark/core/BorderGeometry.h"
 #include "windowmark/core/BorderOcclusion.h"
 #include "windowmark/core/ConfigLocation.h"
+#include "windowmark/core/DragModifiers.h"
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/DrawerState.h"
 #include "windowmark/core/Hotkey.h"
@@ -493,6 +494,65 @@ void TestClipToBounds() {
         CHECK(got.size() == 2);
         CHECK(got[1].bottom == 100);
     }
+}
+
+void TestDragModifiers() {
+    using windowmark::DragModifiers;
+    using windowmark::FormatDragModifiers;
+    using windowmark::ParseDragModifiers;
+    using windowmark::ParseKeyName;
+    using windowmark::PresetModifiers;
+
+    // 六个预设各自能解析，且往返稳定
+    for (const auto& preset : PresetModifiers()) {
+        const DragModifiers one = ParseDragModifiers(preset.name);
+        CHECK(one.keys.size() == 1);
+        CHECK(one.Contains(preset.vk));
+        CHECK(FormatDragModifiers(one) == preset.name);
+    }
+
+    // 左右必须分得开——整个功能的前提。不分的话按左 Alt 也会触发，和应用自己的
+    // Alt+拖动撞上，而这种错误肉眼极难发现。
+    const DragModifiers rightAlt = ParseDragModifiers("RAlt");
+    CHECK(rightAlt.Contains(0xA5));    // VK_RMENU
+    CHECK(!rightAlt.Contains(0xA4));   // VK_LMENU
+
+    // 多个键：任一按下即触发，所以是集合不是组合
+    const DragModifiers two = ParseDragModifiers("RAlt|LWin");
+    CHECK(two.keys.size() == 2);
+    CHECK(two.Contains(0xA5));
+    CHECK(two.Contains(0x5B));         // VK_LWIN
+
+    // 大小写、空格、顺序都不影响
+    CHECK(ParseDragModifiers("ralt | lwin") == two);
+    CHECK(ParseDragModifiers("LWin|RAlt") == two);
+    // 规范形式按固定顺序输出，与输入顺序无关——否则配置文件会因为重排产生无谓的 diff
+    CHECK(FormatDragModifiers(ParseDragModifiers("LWin|RAlt")) == "RAlt|LWin");
+
+    // 配置文件是手写的：一个拼错的名字只跳过它自己，不该让整个功能静默失效
+    const DragModifiers partial = ParseDragModifiers("RAlt|Nonsense|LCtrl");
+    CHECK(partial.keys.size() == 2);
+    CHECK(partial.Contains(0xA5));
+    CHECK(partial.Contains(0xA2));     // VK_LCONTROL
+
+    // 空 = 不启用任何触发键
+    CHECK(ParseDragModifiers("").Empty());
+    CHECK(ParseDragModifiers("   ").Empty());
+    CHECK(FormatDragModifiers(DragModifiers{}) == "");
+
+    // 重复的名字不该产生重复的键
+    CHECK(ParseDragModifiers("RAlt|RAlt").keys.size() == 1);
+
+    // 预设之外的任意键：复用 Hotkey 的键名表，spec 要求配置文件能补任意按键
+    const DragModifiers f13 = ParseDragModifiers("F13");
+    CHECK(f13.keys.size() == 1);
+    CHECK(f13.Contains(0x7C));         // VK_F13
+
+    // ParseKeyName 本身
+    CHECK(ParseKeyName("F5") == 0x74);
+    CHECK(ParseKeyName("space") == 0x20);
+    CHECK(ParseKeyName("A") == 'A');
+    CHECK(ParseKeyName("Nonsense") == 0);
 }
 
 void TestBorderDefaults() {
@@ -1150,6 +1210,7 @@ int main() {
     TestBorderClamping();
     TestConfigLocationPriority();
     TestBorderOcclusion();
+    TestDragModifiers();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }
