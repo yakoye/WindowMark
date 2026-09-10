@@ -30,13 +30,6 @@ HWND HwndFromId(WindowId id) {
     return reinterpret_cast<HWND>(static_cast<std::uintptr_t>(id));
 }
 
-std::string LowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
-
 } // namespace
 
 WinWindowBackend::WinWindowBackend(int geometryThrottleMs)

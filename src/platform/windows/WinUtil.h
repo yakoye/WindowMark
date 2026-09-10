@@ -13,6 +13,21 @@ namespace windowmark::win {
 [[nodiscard]] std::string WideToUtf8(const std::wstring& value);
 [[nodiscard]] std::wstring Utf8ToWide(const std::string& value);
 [[nodiscard]] std::wstring QueryProcessPath(DWORD processId);
+
+// ASCII 小写化。用来算「应用身份」这个 key：规范化的可执行文件路径。
+//
+// 放在这里而不是各自实现一份：边框的排除名单、书签的禁用名单、拖动的排除名单算的是
+// 同一个 key，两份实现必然漂移，而 key 算不一致的后果是名单**静默失效**——看起来
+// 一切正常，就是不生效。
+[[nodiscard]] std::string LowerAscii(std::string value);
+
+// 这个窗口是不是本进程的。
+//
+// 项目里还有两处同名判断，语义不同，别混用：WinDesktopSnapshot 那份按类名前缀
+// （遮挡计算只关心「屏幕上那些 WindowMark.* 的画布」），WinWindowBackend 那份是
+// 成员函数、用缓存的 processId_。这一份给不持有那个缓存的调用方用，按进程比，
+// 比取类名便宜，也不会漏掉将来某个不叫 WindowMark.* 的自家窗口。
+[[nodiscard]] bool IsOwnProcessWindow(HWND hwnd);
 [[nodiscard]] std::string FileStemUtf8(const std::wstring& path);
 [[nodiscard]] Rect ToCoreRect(const RECT& rect);
 [[nodiscard]] RECT ToWinRect(const Rect& rect);

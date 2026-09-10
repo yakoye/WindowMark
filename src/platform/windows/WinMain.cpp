@@ -2,6 +2,7 @@
 #include "WinBorderBackend.h"
 #include "WinConfigPathDialog.h"
 #include "WinControlWindow.h"
+#include "WinDragBackend.h"
 #include "WinOverlayBackend.h"
 #include "PinDiag.h"
 #include "WinPinBackend.h"
@@ -205,7 +206,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // only actually started further down, once the coordinator is running.
     windowmark::win::WinControlWindow control;
 
+    // 拖动的钩子。配置一变就要重新装/卸，所以放在 persist 旁边，两者总是一起调用。
+    windowmark::win::WinDragBackend dragBackend;
+    const auto applyDrag = [&]() {
+        dragBackend.Apply(coordinator.CurrentSettings().drag);
+    };
+
     const auto persist = [&]() {
+        applyDrag();
         if (!windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings())) {
             MessageBoxW(control.NativeHandle(),
                         L"设置已在本次运行中生效，但保存 settings.conf 失败，下次启动不会保留。",
@@ -587,6 +595,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return out;
     });
 
+    // 钩子在这里第一次装上。放在消息循环之前、控制窗口起来之后：钩子回调要靠这个
+    // 线程的消息泵驱动，装早了没人处理。
+    applyDrag();
+
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
@@ -595,6 +607,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     // Explicit shutdown order: UI first, then overlay/preview/hooks.
     // Even if the process is force-terminated, all owned HWNDs disappear with the process.
+    dragBackend.Shutdown();
     control.Stop();
     coordinator.Stop();
     return static_cast<int>(msg.wParam);
