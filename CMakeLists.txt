@@ -86,6 +86,7 @@ if(WIN32)
         src/platform/windows/WinBorderBackend.cpp
         src/platform/windows/WinDesktopSnapshot.cpp
         src/platform/windows/WinBorderPlan.cpp
+        src/platform/windows/WinDragBackend.cpp
         src/platform/windows/WinOverlay.cpp
         src/platform/windows/WinWindowBackend.cpp
         src/platform/windows/WinOverlayBackend.cpp
