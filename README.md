@@ -154,6 +154,51 @@ PowerToys 也进不去。这类窗口请用准星或快捷键。
 
 被排除的应用一旦被置顶仍然会画边框，那是置顶生效的唯一提示。
 
+## 窗口拖动
+
+**按住修饰键，在窗口内的任意位置按下鼠标就能拖它**——不用够到标题栏，也不用瞄准四条边。
+
+它主要解决一件事：**窗口跑到屏幕外面，只剩一个角还露着**。这时候标题栏和拖动区都在屏幕
+之外，鼠标根本点不到，窗口就再也拉不回来了。有了这个手势，在露出来的那一小块上按住修饰键
+拖一下就能把它请回来。
+
+- **左键拖 = 整窗移动**。窗口内任意一点都行，按住哪儿就从哪儿开始拖。
+- **右键拖 = 缩放**。按下的位置落在窗口的九宫格哪一格，就决定拉动哪几条边：四角拉两条边，
+  四边拉一条，正中那格仍然是移动。
+- 拖最大化的窗口会先自动还原，并把窗口挪到光标底下，接着就能继续拖——和拖标题栏一样。
+- 拖动**不抢焦点**（`SWP_NOACTIVATE`），可以直接整理背景窗口而不打断手上的活。
+
+默认关闭。托盘 →「窗口拖动」→「启用」打开。
+
+### 触发键默认是右 Alt，不是左 Alt
+
+托盘 →「窗口拖动」→「拖动设置...」里有六个预设：左/右 Ctrl、左/右 Alt、左/右 Win，可以多选，
+**按住其中任意一个**都能触发。
+
+默认只勾右 Alt。左 Alt + 拖动被很多程序自己占着（Photoshop 复制图层、IDE 列选、Blender
+视角），装在左 Alt 上会把那些操作一起吞掉；右 Alt 几乎没人用。想要左 Alt 就自己勾上。
+
+配置文件里还可以写预设之外的键（如 `F13`），设置界面不显示它们，但**也不会把它们抹掉**。
+
+一个触发键都不勾等于关掉：钩子根本不装，不会让每个鼠标事件白白多绕一圈。
+
+### 会不会拖慢鼠标
+
+`WH_MOUSE_LL` 在安装它的线程上同步处理每一个鼠标事件，这里慢一点整个系统的鼠标就跟着钝。
+所以空闲路径只有两行：先看在不在拖动，再看修饰键按没按（`GetAsyncKeyState`，几十纳秒），
+不查窗口、不算几何、不碰配置。实测装与不装钩子的差值落在噪声里（见 `tools/bench-drag-hook.py`）。
+
+**键盘钩子只在勾了 Win 键时才装**。单独按一下 Win 再松开会弹出开始菜单，要压掉被手势用掉的
+那一次抬起只能靠 `WH_KEYBOARD_LL`。键盘钩子比鼠标钩子更敏感（杀毒软件更关注），不该让所有人
+默认承担。
+
+### 排除不参与拖动的应用
+
+托盘 →「窗口拖动」→「排除应用...」。勾上的应用按住修饰键也不拖动，把手势让回给它自己。
+这份名单和「不画边框」是**分开的两件事**。
+
+「暂停所有」会把拖动一起停掉，钩子也跟着卸。
+
 ## 剪贴板守护
 
 针对 **ToDesk 等远程会话中截图后 `Ctrl+V` 失效**的问题：`Win+V` 历史里看得到图片，但
@@ -417,6 +462,13 @@ pin.hotkey=
 
 performance.geometry_throttle_ms=33
 
+drag.enabled=false
+# 触发键，多个用 | 分隔，按住任意一个即可。预设：LCtrl RCtrl LAlt RAlt LWin RWin。
+# 留空 = 关掉（钩子不装）。预设之外的虚拟键码也认，设置界面不显示但不会抹掉。
+drag.modifiers=RAlt
+# 按住修饰键也不拖动的应用，按可执行文件路径。用「窗口拖动 -> 排除应用」勾选。
+drag.excluded_apps=
+
 # Extra window classes to ignore completely - no bookmark, no border. Adds to the
 # built-in list. Run WindowMarkInspect.exe to find a class name.
 #
@@ -464,6 +516,8 @@ would change one of them needs to be raised first, not decided in passing.
 | `pin.width` | **10** | 置顶高亮的线宽。6 看着和普通边框没区别；PowerToys 用 15，偏重了 |
 | `pin.color` | **accent** | 跟随系统强调色，置顶窗口看起来像属于这个桌面 |
 | `pin.hotkey` | **空** | 全局快捷键先到先得，不主动从别的程序手里抢 |
+| `drag.enabled` | **false** | 装鼠标钩子这件事得用户自己点头，不默认替他决定 |
+| `drag.modifiers` | **RAlt** | 左 Alt + 拖动被 Photoshop、IDE、Blender 占着，装在上面会吞掉那些操作；右 Alt 几乎没人用 |
 
 Same rule for the settings dialog's layout numbers in
 `src/platform/windows/WinSettingsDialog.cpp` — the label/hint column widths were measured
