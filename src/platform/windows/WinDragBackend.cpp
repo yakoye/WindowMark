@@ -37,7 +37,27 @@ void WinDragBackend::Apply(const DragSettings& settings) {
         return;
     }
 
-    if (mouseHook_ != nullptr) return;   // 已经装着，配置变了也不用重装
+    // 键盘钩子只为 Win 键而装：Win 键按下再松开、中间什么都没发生时会弹出开始菜单，
+    // 要压掉那一次抬起只能靠 WH_KEYBOARD_LL。配置里没勾 Win 就不装——键盘钩子比鼠标
+    // 钩子更敏感（杀毒软件更关注、出错影响更大），不该让所有人默认承担。
+    const bool needsKeyboard = modifiers_.Contains(0x5B) || modifiers_.Contains(0x5C);
+    if (!needsKeyboard && keyboardHook_ != nullptr) {
+        UnhookWindowsHookEx(keyboardHook_);
+        keyboardHook_ = nullptr;
+        winConsumed_ = false;
+        PinDiag(L"拖动：键盘钩子已卸（配置里没有 Win 键）");
+    }
+
+    if (mouseHook_ != nullptr) {
+        // 鼠标钩子已经装着，但配置可能刚勾上 Win 键，键盘钩子还得补装。
+        if (needsKeyboard && keyboardHook_ == nullptr) {
+            keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &WinDragBackend::KeyboardProc,
+                                              GetModuleHandleW(nullptr), 0);
+            PinDiag(L"拖动：键盘钩子%s（配置含 Win 键）",
+                    keyboardHook_ != nullptr ? L"已装" : L"装不上");
+        }
+        return;
+    }
 
     g_instance = this;
     mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, &WinDragBackend::MouseProc,
@@ -48,9 +68,22 @@ void WinDragBackend::Apply(const DragSettings& settings) {
         return;
     }
     PinDiag(L"拖动：鼠标钩子已装，触发键 %d 个", static_cast<int>(modifiers_.keys.size()));
+
+    if (needsKeyboard) {
+        keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &WinDragBackend::KeyboardProc,
+                                          GetModuleHandleW(nullptr), 0);
+        PinDiag(L"拖动：键盘钩子%s（配置含 Win 键）",
+                keyboardHook_ != nullptr ? L"已装" : L"装不上");
+    }
 }
 
 void WinDragBackend::Shutdown() noexcept {
+    if (keyboardHook_ != nullptr) {
+        UnhookWindowsHookEx(keyboardHook_);
+        keyboardHook_ = nullptr;
+        PinDiag(L"拖动：键盘钩子已卸");
+    }
+    winConsumed_ = false;
     if (mouseHook_ != nullptr) {
         UnhookWindowsHookEx(mouseHook_);
         mouseHook_ = nullptr;
@@ -80,6 +113,33 @@ LRESULT CALLBACK WinDragBackend::MouseProc(int code, WPARAM wParam, LPARAM lPara
     }
 
     return g_instance->HandleMouse(wParam, lParam);
+}
+
+LRESULT CALLBACK WinDragBackend::KeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code != HC_ACTION || g_instance == nullptr) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+    const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+    if (info == nullptr) return CallNextHookEx(nullptr, code, wParam, lParam);
+
+    const bool isWin = info->vkCode == VK_LWIN || info->vkCode == VK_RWIN;
+    const bool isUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+
+    // 只吞「确实被手势用掉」的那一次抬起。winConsumed_ 在拖动真正开始、且当时按住的
+    // 是 Win 键时才置位。
+    //
+    // 这个「只吞一次」是这段代码的全部要点：吞过头会把 Win 键整个废掉——单独按一下
+    // Win 键再也弹不出开始菜单——那比不做这个功能更糟。
+    if (g_instance->winConsumed_ && isWin && isUp) {
+        g_instance->winConsumed_ = false;
+        return 1;
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+bool WinDragBackend::WinKeyDown() {
+    return (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+           (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
 }
 
 bool WinDragBackend::AnyModifierDown() const {
@@ -159,6 +219,9 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
                      ? DragEdges{true, true, true, true}
                      : HitZone(startFrame_, info->pt.x, info->pt.y);
         dragging_ = true;
+        // 这次拖动是按着 Win 键触发的话，它的抬起就归这次手势了。只有装了键盘钩子
+        // 才谈得上吞——没装的话置位也没人读。
+        if (keyboardHook_ != nullptr && WinKeyDown()) winConsumed_ = true;
         if (IsZoomed(target_) != FALSE) RestoreForDrag(info->pt);
         return 1;   // 吞掉：这一次按下已经被手势用掉了
     }

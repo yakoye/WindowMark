@@ -36,13 +36,21 @@ public:
 
 private:
     static LRESULT CALLBACK MouseProc(int code, WPARAM wParam, LPARAM lParam);
+    // 只为 Win 键而存在，见 .cpp 里的说明。
+    static LRESULT CALLBACK KeyboardProc(int code, WPARAM wParam, LPARAM lParam);
     [[nodiscard]] LRESULT HandleMouse(WPARAM message, LPARAM lParam);
     [[nodiscard]] bool AnyModifierDown() const;
+    [[nodiscard]] static bool WinKeyDown();
     [[nodiscard]] HWND TargetWindowAt(POINT pt) const;
     [[nodiscard]] bool IsExcluded(HWND hwnd) const;
     void RestoreForDrag(POINT cursor);
 
     HHOOK mouseHook_{};
+    // 只在配置勾了左/右 Win 时才装。键盘钩子比鼠标钩子更敏感——杀毒软件更关注、
+    // 出错影响更大——不该让只用 Alt / Ctrl 的用户承担它。
+    HHOOK keyboardHook_{};
+    // 这一次拖动是靠按住 Win 键触发的，所以它的抬起要被吞掉，否则开始菜单会弹出来。
+    bool winConsumed_{false};
     DragModifiers modifiers_;
     std::vector<std::string> excluded_;
 
