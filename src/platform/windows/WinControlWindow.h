@@ -30,6 +30,10 @@ public:
         // from the numbers on the settings page.
         std::function<void()> onBorderExcludeApps;
         std::function<void()> onTogglePinning;
+        // 窗口拖动。三项和边框那组同构：开关、排除应用、设置。
+        std::function<void()> onToggleDrag;
+        std::function<void()> onDragSettings;
+        std::function<void()> onDragExcludeApps;
         std::function<void(WindowId)> onTogglePinWindow;
         // Crosshair grab. Preview fires as the cursor crosses windows, commit when the
         // user settles on one, cancel on right-click or if capture is taken away.
@@ -61,6 +65,7 @@ public:
     void Stop() noexcept;
     void SetEnabledState(bool enabled);
     void SetBorderState(bool enabled);
+    void SetDragState(bool enabled);
     void SetPinState(bool enabled);
     // Registers `hotkey`, replacing whatever was registered before. An empty Hotkey just
     // unregisters. Returns false when Windows refused the combination - always because
@@ -94,6 +99,9 @@ private:
     static constexpr UINT kGrabToPinCommand = 1011;
     static constexpr UINT kPinSettingsCommand = 1013;
     static constexpr UINT kUnpinAllCommand = 1014;
+    static constexpr UINT kToggleDragCommand = 1018;
+    static constexpr UINT kDragSettingsCommand = 1019;
+    static constexpr UINT kDragExcludeCommand = 1020;
     // Dynamic block: one command per currently pinned window, allocated when the menu is
     // built. Kept well clear of the fixed ids above so adding a fixed item never collides.
     static constexpr UINT kPinnedWindowCommandBase = 1100;
@@ -151,6 +159,7 @@ private:
     Handlers handlers_;
     bool enabled_{true};
     bool bordersEnabled_{false};
+    bool dragEnabled_{false};
     bool pinningEnabled_{true};
     PinnedProvider pinnedProvider_;
     // What is currently registered, so a settings change can unregister the old one before

@@ -56,6 +56,12 @@ public:
     // worth a bookmark and not worth an outline, and the reverse.
     [[nodiscard]] std::vector<AppSelectionModel> BorderSelectionSnapshot() const;
     void ApplyBorderSelection(const std::vector<AppSelectionModel>& selection);
+
+    // 拖动的排除名单。只有 app 级粒度：拖动按「鼠标底下那个窗口属于哪个应用」判断，
+    // 没有「同一个应用的这个窗口能拖、那个不能」这种说法。窗口那一层照样填出来，
+    // 但都跟着 app 走——选择面板因此不用为它长一套单独的界面。
+    [[nodiscard]] std::vector<AppSelectionModel> DragSelectionSnapshot() const;
+    void ApplyDragSelection(const std::vector<AppSelectionModel>& selection);
     [[nodiscard]] const Settings& CurrentSettings() const noexcept { return settings_; }
 
     // Pushes edited settings to the backends and redraws, so the settings UI does not

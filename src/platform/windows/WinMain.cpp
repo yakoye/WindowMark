@@ -3,6 +3,7 @@
 #include "WinConfigPathDialog.h"
 #include "WinControlWindow.h"
 #include "WinDragBackend.h"
+#include "WinDragSettingsDialog.h"
 #include "WinOverlayBackend.h"
 #include "PinDiag.h"
 #include "WinPinBackend.h"
@@ -242,6 +243,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // 窗口边框 -> 排除应用. Mirrors handlers.onSelection, with two differences: the list is
     // keyed for borders rather than bookmarks, and the highlight follows the selected row
     // so the user can see which window a line refers to without any numbering.
+    const auto excludeDragApps = [&](HWND owner) {
+        auto selection = coordinator.DragSelectionSnapshot();
+        windowmark::win::SelectionDialogOptions options;
+        options.title = L"WindowMark - 排除不参与拖动的应用/窗口";
+        options.checkedMeansExcluded = true;
+        options.note =
+            L"说明：勾上 = 按住修饰键也不拖动它。有些程序自己就用 Alt+拖动做别的事"
+            L"（Photoshop 等），把它们勾上，手势就不会把那些操作吞掉。"
+            L"这份名单和「不画边框」是分开的两件事。"
+            L"选中一行时，对应窗口会在屏幕上高亮。";
+        options.onHighlight = [&](windowmark::WindowId id) { coordinator.SetPinPreview(id); };
+        const bool applied =
+            windowmark::win::WinSelectionDialog::ShowModal(owner, selection, options);
+        if (applied) {
+            coordinator.ApplyDragSelection(selection);
+            persist();
+        }
+        coordinator.SetPinPreview(0);
+    };
+
     const auto excludeBorderApps = [&](HWND owner) {
         auto selection = coordinator.BorderSelectionSnapshot();
         windowmark::win::SelectionDialogOptions options;
@@ -269,6 +290,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
             coordinator.UpdateSettings(draft);
             control.SetBorderState(coordinator.CurrentSettings().border.enabled);
+            control.SetDragState(coordinator.CurrentSettings().drag.enabled);
             control.SetPinState(coordinator.CurrentSettings().pin.enabled);
             if (reapplyHotkey) reapplyHotkey();
             persist();
@@ -306,12 +328,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // do nothing visible on the next click would be worse than no switch.
     handlers.onToggleAll = [&]() {
         windowmark::Settings draft = coordinator.CurrentSettings();
-        const bool anythingOn = draft.drawer.enabled || draft.border.enabled;
+        // 拖动也算在内：它和书签/边框一样是 WindowMark 自己的功能，暂停时该连钩子
+        // 一起卸掉。剪贴板守护不在其列——那是独立进程。
+        const bool anythingOn =
+            draft.drawer.enabled || draft.border.enabled || draft.drag.enabled;
         draft.drawer.enabled = !anythingOn;
         draft.border.enabled = !anythingOn;
+        draft.drag.enabled = !anythingOn;
         coordinator.UpdateSettings(draft);
         control.SetEnabledState(draft.drawer.enabled);
         control.SetBorderState(draft.border.enabled);
+        control.SetDragState(draft.drag.enabled);
         persist();
     };
     handlers.onToggleBookmarks = [&]() {
@@ -338,6 +365,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     handlers.onBorderExcludeApps = [&]() {
         exclusive([&] { excludeBorderApps(control.NativeHandle()); });
+    };
+    handlers.onToggleDrag = [&]() {
+        windowmark::Settings draft = coordinator.CurrentSettings();
+        draft.drag.enabled = !draft.drag.enabled;
+        coordinator.UpdateSettings(draft);
+        control.SetDragState(draft.drag.enabled);
+        persist();
+    };
+    handlers.onDragExcludeApps = [&]() {
+        exclusive([&] { excludeDragApps(control.NativeHandle()); });
+    };
+    handlers.onDragSettings = [&]() {
+        exclusive([&] {
+            windowmark::Settings draft = coordinator.CurrentSettings();
+            std::string modifiers = draft.drag.modifiers;
+            if (windowmark::win::WinDragSettingsDialog::ShowModal(control.NativeHandle(),
+                                                                 modifiers)) {
+                draft.drag.modifiers = modifiers;
+                coordinator.UpdateSettings(draft);
+                persist();
+            }
+        });
     };
     handlers.onBorderSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Borders);
@@ -556,6 +605,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 6;
     }
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);
+    control.SetDragState(coordinator.CurrentSettings().drag.enabled);
     control.SetPinState(coordinator.CurrentSettings().pin.enabled);
 
     // Applies the shortcut from settings, and says so out loud when Windows refuses it.
