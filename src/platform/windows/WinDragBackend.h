@@ -54,6 +54,24 @@ private:
     DragModifiers modifiers_;
     std::vector<std::string> excluded_;
 
+    // 一次拖动的逐事件记录。拖动中只往数组里写，松手时才落盘——理由见 .cpp。
+    struct TraceEntry {
+        long long qpc;
+        WPARAM message;
+        POINT pt;
+        RECT applied;
+        long long setPosMicros;
+        BOOL setPosOk;
+    };
+    void TraceReset();
+    void TraceAdd(WPARAM message, POINT pt, RECT applied, long long micros, BOOL ok);
+    void TraceDump(const wchar_t* why) const;
+
+    static constexpr int kTraceCap = 512;
+    TraceEntry trace_[kTraceCap]{};
+    int traceCount_{0};
+    bool traceOn_{false};
+
     bool dragging_{false};
     HWND target_{};
     POINT startCursor_{};
