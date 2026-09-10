@@ -90,6 +90,21 @@ struct AutoStartLocation {
     return HasRunnableCommand(location) && ApprovalAllowsStartup(location);
 }
 
+// 删掉批准记录。留着它就是留下一条指向不存在的启动项的批准——重装时那条记录还在，
+// 而 Run 键里的命令已经没了，两边对不上。查「为什么开机没启动」的人会先看到那个 02，
+// 以为一切正常。
+inline bool ClearApproval(const AutoStartLocation& location) {
+    HKEY key = nullptr;
+    const LSTATUS opened = RegOpenKeyExW(HKEY_CURRENT_USER, location.approvedKeyPath, 0,
+                                         KEY_SET_VALUE, &key);
+    if (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND) return true;
+    if (opened != ERROR_SUCCESS) return false;
+    LSTATUS status = RegDeleteValueW(key, location.valueName);
+    RegCloseKey(key);
+    if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
+    return status == ERROR_SUCCESS;
+}
+
 inline bool WriteApprovalEnabled(const AutoStartLocation& location) {
     HKEY key = nullptr;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, location.approvedKeyPath, 0, nullptr, 0,
@@ -123,7 +138,10 @@ inline bool SetAutoStart(const AutoStartLocation& location, const std::wstring& 
         LSTATUS status = RegDeleteValueW(key, location.valueName);
         RegCloseKey(key);
         if (status == ERROR_FILE_NOT_FOUND) status = ERROR_SUCCESS;
-        return status == ERROR_SUCCESS;
+        if (status != ERROR_SUCCESS) return false;
+        // 命令删了，批准记录也要删。留着它，下次有人查「为什么开机没启动」会先看到
+        // 那条 02 以为一切正常，而真正缺的是 Run 键里的命令。
+        return ClearApproval(location);
     }
 
     if (exePath.empty() || exePath.find(L'"') != std::wstring::npos) return false;
