@@ -1,6 +1,7 @@
 #include "windowmark/core/BorderGeometry.h"
 #include "windowmark/core/BorderOcclusion.h"
 #include "windowmark/core/ConfigLocation.h"
+#include "windowmark/core/DragGeometry.h"
 #include "windowmark/core/DragModifiers.h"
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/DrawerState.h"
@@ -493,6 +494,131 @@ void TestClipToBounds() {
         const auto got = ClipToBounds({Rect{0, 0, 10, 10}, Rect{50, 95, 60, 120}}, bounds);
         CHECK(got.size() == 2);
         CHECK(got[1].bottom == 100);
+    }
+}
+
+void TestDragGeometry() {
+    using windowmark::ApplyDrag;
+    using windowmark::DragEdges;
+    using windowmark::HitZone;
+    using windowmark::Rect;
+
+    // 300x300 的窗口，九宫格每格正好 100
+    const Rect frame{0, 0, 300, 300};
+
+    // 四角各拉两条边
+    {
+        const DragEdges tl = HitZone(frame, 50, 50);
+        CHECK(tl.left && tl.top && !tl.right && !tl.bottom);
+        const DragEdges br = HitZone(frame, 250, 250);
+        CHECK(!br.left && !br.top && br.right && br.bottom);
+        const DragEdges tr = HitZone(frame, 250, 50);
+        CHECK(!tr.left && tr.top && tr.right && !tr.bottom);
+        const DragEdges bl = HitZone(frame, 50, 250);
+        CHECK(bl.left && !bl.top && !bl.right && bl.bottom);
+    }
+
+    // 四边各拉一条
+    {
+        const DragEdges top = HitZone(frame, 150, 50);
+        CHECK(!top.left && top.top && !top.right && !top.bottom);
+        const DragEdges right = HitZone(frame, 250, 150);
+        CHECK(!right.left && !right.top && right.right && !right.bottom);
+    }
+
+    // 正中间 = 移动（四条边一起动），否则中间按下无事可做
+    {
+        const DragEdges middle = HitZone(frame, 150, 150);
+        CHECK(middle.IsMove());
+    }
+
+    // 边界值：正好落在格线上。100 属于中间格（左闭右开），这条必须钉死，
+    // 否则 off-by-one 会让某一列的行为随窗口尺寸漂移。
+    //
+    // y 取 50 而不是 150：正中格（中列 + 中行）有「等同于移动」这条特殊规则，四条边
+    // 全为真，会把要测的列归属整个盖过去。测哪一维的格线，另一维就得避开中间。
+    {
+        CHECK(!HitZone(frame, 100, 50).left);
+        CHECK(HitZone(frame, 99, 50).left);
+        CHECK(HitZone(frame, 200, 50).right);
+        CHECK(!HitZone(frame, 199, 50).right);
+        // 行方向同理，x 避开中间
+        CHECK(!HitZone(frame, 50, 100).top);
+        CHECK(HitZone(frame, 50, 99).top);
+        CHECK(HitZone(frame, 50, 200).bottom);
+        CHECK(!HitZone(frame, 50, 199).bottom);
+    }
+
+    // 极窄窗口：格子退化也不能崩，也不能算出既 left 又 right
+    {
+        const Rect thin{0, 0, 2, 2};
+        const DragEdges e = HitZone(thin, 1, 1);
+        CHECK(!(e.left && e.right && !e.IsMove()));
+    }
+
+    // 窗口不在原点时，命中判断按相对位置
+    {
+        const Rect offset{1000, 500, 1300, 800};
+        CHECK(HitZone(offset, 1050, 550).left);
+        CHECK(HitZone(offset, 1250, 750).bottom);
+    }
+
+    // 移动：四条边同幅度平移，尺寸不变
+    {
+        const DragEdges move{true, true, true, true};
+        const Rect moved = ApplyDrag(frame, move, 40, -20, 100, 100);
+        CHECK(moved.left == 40);
+        CHECK(moved.top == -20);
+        CHECK(moved.width() == 300);
+        CHECK(moved.height() == 300);
+    }
+
+    // 缩放右下角
+    {
+        const DragEdges br{false, false, true, true};
+        const Rect sized = ApplyDrag(frame, br, 50, 30, 100, 100);
+        CHECK(sized.left == 0);
+        CHECK(sized.top == 0);
+        CHECK(sized.right == 350);
+        CHECK(sized.bottom == 330);
+    }
+
+    // 缩放左上角：动的是左上，右下不动
+    {
+        const DragEdges tl{true, true, false, false};
+        const Rect sized = ApplyDrag(frame, tl, 20, 10, 100, 100);
+        CHECK(sized.left == 20);
+        CHECK(sized.top == 10);
+        CHECK(sized.right == 300);
+        CHECK(sized.bottom == 300);
+    }
+
+    // 最小尺寸：继续拖也不会缩过头，更不会反转
+    {
+        const DragEdges br{false, false, true, true};
+        const Rect clamped = ApplyDrag(frame, br, -400, -400, 100, 100);
+        CHECK(clamped.width() == 100);
+        CHECK(clamped.height() == 100);
+        CHECK(clamped.left == 0);
+        CHECK(clamped.top == 0);
+    }
+
+    // 从左上角缩到下限时，固定的应当是右下角
+    {
+        const DragEdges tl{true, true, false, false};
+        const Rect clamped = ApplyDrag(frame, tl, 400, 400, 100, 100);
+        CHECK(clamped.width() == 100);
+        CHECK(clamped.height() == 100);
+        CHECK(clamped.right == 300);
+        CHECK(clamped.bottom == 300);
+    }
+
+    // 移动不受最小尺寸影响——把窗口拖出屏幕是用户的自由，Windows 自己也允许
+    {
+        const DragEdges move{true, true, true, true};
+        const Rect moved = ApplyDrag(frame, move, -5000, -5000, 100, 100);
+        CHECK(moved.width() == 300);
+        CHECK(moved.height() == 300);
     }
 }
 
@@ -1211,6 +1337,7 @@ int main() {
     TestConfigLocationPriority();
     TestBorderOcclusion();
     TestDragModifiers();
+    TestDragGeometry();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }
