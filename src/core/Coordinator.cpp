@@ -289,6 +289,78 @@ std::vector<AppSelectionModel> Coordinator::BorderSelectionSnapshot() const {
     return result;
 }
 
+std::vector<AppSelectionModel> Coordinator::DragSelectionSnapshot() const {
+    // 结构和 BorderSelectionSnapshot 一样，只是「勾没勾上」读的是拖动那份名单。
+    std::unordered_map<std::string, std::vector<const WindowInfo*>> groups;
+    for (const auto& [_, window] : windows_) {
+        if (!window.groupKey.empty()) {
+            groups[window.groupKey].push_back(&window);
+        }
+    }
+
+    std::vector<AppSelectionModel> result;
+    result.reserve(groups.size());
+    for (auto& [groupKey, members] : groups) {
+        std::sort(members.begin(), members.end(),
+                  [this](const WindowInfo* a, const WindowInfo* b) {
+                      const auto ao = stableOrder_.find(a->id);
+                      const auto bo = stableOrder_.find(b->id);
+                      const std::size_t av = ao == stableOrder_.end() ? 0 : ao->second;
+                      const std::size_t bv = bo == stableOrder_.end() ? 0 : bo->second;
+                      return av < bv;
+                  });
+
+        const bool enabled =
+            std::find(settings_.drag.excludedAppKeys.begin(),
+                      settings_.drag.excludedAppKeys.end(),
+                      groupKey) == settings_.drag.excludedAppKeys.end();
+
+        AppSelectionModel app;
+        app.groupKey = groupKey;
+        app.appName = members.empty() ? groupKey : members.front()->appName;
+        app.enabled = enabled;
+        app.windows.reserve(members.size());
+        for (const WindowInfo* window : members) {
+            // 窗口那一层跟着 app 走，见头文件里的说明。
+            app.windows.push_back(WindowSelectionModel{
+                window->id,
+                window->title.empty() ? window->appName : window->title,
+                enabled,
+            });
+        }
+        result.push_back(std::move(app));
+    }
+
+    std::sort(result.begin(), result.end(),
+              [](const AppSelectionModel& a, const AppSelectionModel& b) {
+                  const std::string an = LowerAscii(a.appName);
+                  const std::string bn = LowerAscii(b.appName);
+                  if (an != bn) return an < bn;
+                  return a.groupKey < b.groupKey;
+              });
+    return result;
+}
+
+void Coordinator::ApplyDragSelection(const std::vector<AppSelectionModel>& selection) {
+    for (const auto& app : selection) {
+        auto it = std::find(settings_.drag.excludedAppKeys.begin(),
+                            settings_.drag.excludedAppKeys.end(), app.groupKey);
+        if (app.enabled) {
+            if (it != settings_.drag.excludedAppKeys.end()) {
+                settings_.drag.excludedAppKeys.erase(it);
+            }
+        } else if (it == settings_.drag.excludedAppKeys.end()) {
+            settings_.drag.excludedAppKeys.push_back(app.groupKey);
+        }
+    }
+
+    std::sort(settings_.drag.excludedAppKeys.begin(), settings_.drag.excludedAppKeys.end());
+    settings_.drag.excludedAppKeys.erase(
+        std::unique(settings_.drag.excludedAppKeys.begin(),
+                    settings_.drag.excludedAppKeys.end()),
+        settings_.drag.excludedAppKeys.end());
+}
+
 void Coordinator::ApplyBorderSelection(const std::vector<AppSelectionModel>& selection) {
     for (const auto& app : selection) {
         auto disabledIt = std::find(

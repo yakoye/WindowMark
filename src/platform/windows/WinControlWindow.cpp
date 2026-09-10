@@ -51,6 +51,9 @@ bool WinControlWindow::Start(Handlers handlers) {
     // it is to say so at startup rather than wait for someone to notice.
     const std::pair<const wchar_t*, bool> wired[] = {
         {L"onToggleAll", static_cast<bool>(handlers_.onToggleAll)},
+        {L"onToggleDrag", static_cast<bool>(handlers_.onToggleDrag)},
+        {L"onDragSettings", static_cast<bool>(handlers_.onDragSettings)},
+        {L"onDragExcludeApps", static_cast<bool>(handlers_.onDragExcludeApps)},
         {L"onToggleBookmarks", static_cast<bool>(handlers_.onToggleBookmarks)},
         {L"onSelection", static_cast<bool>(handlers_.onSelection)},
         {L"onBookmarkSettings", static_cast<bool>(handlers_.onBookmarkSettings)},
@@ -135,6 +138,8 @@ bool WinControlWindow::SetPinHotkey(const Hotkey& hotkey) {
 void WinControlWindow::SetEnabledState(bool enabled) {
     enabled_ = enabled;
 }
+
+void WinControlWindow::SetDragState(bool enabled) { dragEnabled_ = enabled; }
 
 void WinControlWindow::SetBorderState(bool enabled) {
     bordersEnabled_ = enabled;
@@ -541,6 +546,17 @@ void WinControlWindow::ShowMenu() {
                     reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
     }
 
+    HMENU dragging = CreatePopupMenu();
+    if (dragging) {
+        AppendMenuW(dragging, MF_STRING | (dragEnabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    kToggleDragCommand, L"启用窗口拖动");
+        AppendMenuW(dragging, MF_STRING, kDragExcludeCommand, L"排除应用...");
+        AppendMenuW(dragging, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(dragging, MF_STRING, kDragSettingsCommand, L"拖动设置...");
+        AppendMenuW(menu, MF_POPUP | (dragEnabled_ ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(dragging), L"窗口拖动");
+    }
+
     // 剪贴板守护。它是独立进程（ClipKeeper.exe），这一项开关的是它的**面板**：
     // 对勾 = 面板当前可见，与点击行为一一对应。停止守护在 ClipKeeper 自己的面板里做。
     //
@@ -705,6 +721,9 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
         case kBorderExcludeCommand:  handler = &handlers_.onBorderExcludeApps; break;
         case kTogglePinningCommand:  handler = &handlers_.onTogglePinning; break;
+        case kToggleDragCommand:     handler = &handlers_.onToggleDrag; break;
+        case kDragSettingsCommand:   handler = &handlers_.onDragSettings; break;
+        case kDragExcludeCommand:    handler = &handlers_.onDragExcludeApps; break;
 
         case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;
         case kPinSettingsCommand:    handler = &handlers_.onPinSettings; break;
