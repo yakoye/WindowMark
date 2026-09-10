@@ -43,9 +43,13 @@ private:
     [[nodiscard]] static bool WinKeyDown();
     [[nodiscard]] HWND TargetWindowAt(POINT pt) const;
     [[nodiscard]] bool IsExcluded(HWND hwnd) const;
+    // 这个窗口能不能当拖动目标。
+    [[nodiscard]] bool CanDrag(HWND hwnd) const;
     void RestoreForDrag(POINT cursor);
     // 把窗口摆到光标所在那块屏的正中。单击（按下几乎没动就松开）走这里。
     void CenterOnCursorMonitor(POINT cursor);
+    // 移动事件放行（不能吞，否则光标被钉死、位移累加不起来）。
+    static LRESULT PassMoveThrough(WPARAM message, LPARAM lParam);
 
     // 单击和拖动的分界，像素。4 够容下按键时手上的抖动，又远小于任何有意的拖动。
     static constexpr int kTapSlop = 4;

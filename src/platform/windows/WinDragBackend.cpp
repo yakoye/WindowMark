@@ -151,17 +151,37 @@ bool WinDragBackend::AnyModifierDown() const {
     return false;
 }
 
-HWND WinDragBackend::TargetWindowAt(POINT pt) const {
-    HWND hit = WindowFromPoint(pt);
-    if (hit == nullptr) return nullptr;
-    // WindowFromPoint 给的是鼠标底下那个子控件，要一路上溯到顶级窗口。
-    HWND top = GetAncestor(hit, GA_ROOT);
-    if (top == nullptr) return nullptr;
+bool WinDragBackend::CanDrag(HWND hwnd) const {
     // 桌面、任务栏这类不能拖。复用书签/边框那套资格判断，标准一致。
-    if (!IsEligibleTopLevelWindow(top)) return nullptr;
-    if (IsOwnProcessWindow(top)) return nullptr;
-    if (IsExcluded(top)) return nullptr;
-    return top;
+    if (hwnd == nullptr) return false;
+    if (!IsEligibleTopLevelWindow(hwnd)) return false;
+    if (IsOwnProcessWindow(hwnd)) return false;
+    if (IsExcluded(hwnd)) return false;
+    return true;
+}
+
+HWND WinDragBackend::TargetWindowAt(POINT pt) const {
+    // WindowFromPoint 给的是鼠标底下那个子控件，要一路上溯到顶级窗口。
+    HWND hit = WindowFromPoint(pt);
+    HWND top = hit != nullptr ? GetAncestor(hit, GA_ROOT) : nullptr;
+    if (CanDrag(top)) return top;
+
+    // 鼠标底下那个不能拖，但不能就此放弃。系统会留下一些**看不见却铺满整块屏**的
+    // topmost 窗口：锁屏的 Windows.UI.Core.CoreWindow（LockApp.exe）和它的
+    // LockScreenInputOcclusionFrame，解锁之后有时并不消失，IsWindowVisible 仍然是 1。
+    // 只问 WindowFromPoint 一次就放弃的话，整个手势会在那块屏上彻底失效，而屏幕上
+    // 什么异常都看不出来——正是最难查的那种。
+    //
+    // 于是往 z 序下面找第一个能拖、且盖住这个点的窗口。只在按下时走一次，移动时不走，
+    // 所以这点遍历开销不进热路径。
+    for (HWND w = GetTopWindow(nullptr); w != nullptr; w = GetWindow(w, GW_HWNDNEXT)) {
+        if (!CanDrag(w)) continue;
+        RECT frame{};
+        if (GetWindowRect(w, &frame) == FALSE) continue;
+        if (PtInRect(&frame, pt) == FALSE) continue;
+        return w;
+    }
+    return nullptr;
 }
 
 bool WinDragBackend::IsExcluded(HWND hwnd) const {
@@ -235,6 +255,22 @@ void WinDragBackend::TraceDump(const wchar_t* why) const {
     }
 }
 
+LRESULT WinDragBackend::PassMoveThrough(WPARAM message, LPARAM lParam) {
+    // 移动事件必须放行，绝对不能像按下/松开那样吞掉。
+    //
+    // WH_MOUSE_LL 返回非零 = 这个事件不再往下走，对移动来说就是**光标不动**。而真实鼠标
+    // 报的是相对位移，系统拿「当前光标位置 + 这一跳的位移」算出 MSLLHOOKSTRUCT::pt——
+    // 光标被钉死，pt 就永远只在按下点附近晃一个鼠标 tick 的距离，永不累加。表现正是
+    // 「窗口只晃一下就不动了」。
+    //
+    // 这个 bug 能躲过合成测试：SendInput 用绝对坐标时 pt 不依赖当前光标位置，照样累加，
+    // 看起来完全正常。要测出来，注入的必须是相对位移（见 tools/check-drag-offscreen.py）。
+    //
+    // 放行的代价只是应用会看到光标划过——按下已经被吞了，它不认为有键按着，最多触发一点
+    // 悬停高亮。比起拖不动，这不值一提。
+    return CallNextHookEx(nullptr, HC_ACTION, message, lParam);
+}
+
 void WinDragBackend::CenterOnCursorMonitor(POINT cursor) {
     // 按光标所在的那块屏，不是窗口现在大部分身体所在的那块。这个手势最主要的用途是
     // 把跑到屏幕外的窗口找回来，那时用户正盯着自己点的地方，窗口就该回到眼前这块屏。
@@ -294,7 +330,7 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
         if (!traceOn_) {
             SetWindowPos(target_, nullptr, r.left, r.top, r.right - r.left,
                          r.bottom - r.top, SWP_NOACTIVATE | SWP_NOZORDER);
-            return 1;
+            return PassMoveThrough(message, lParam);
         }
         LARGE_INTEGER t0{};
         LARGE_INTEGER t1{};
@@ -308,7 +344,7 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
         const long long micros =
             freq.QuadPart > 0 ? (t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart : 0;
         TraceAdd(message, info->pt, r, micros, ok);
-        return 1;
+        return PassMoveThrough(message, lParam);
     }
 
     case WM_LBUTTONUP:
