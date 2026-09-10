@@ -200,6 +200,40 @@ void WinDragBackend::RestoreForDrag(POINT cursor) {
     startFrame_ = ToCoreRect(WindowRectOf(target_));
 }
 
+void WinDragBackend::TraceReset() {
+    // 有没有开诊断只在按下的那一刻查一次。每个事件都去查文件属性的话，光这一下就够
+    // 让钩子变慢。
+    traceOn_ = PinDiagOn();
+    traceCount_ = 0;
+}
+
+void WinDragBackend::TraceAdd(WPARAM message, POINT pt, RECT applied, long long micros,
+                              BOOL ok) {
+    if (!traceOn_ || traceCount_ >= kTraceCap) return;
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    trace_[traceCount_++] =
+        TraceEntry{now.QuadPart, message, pt, applied, micros, ok};
+}
+
+void WinDragBackend::TraceDump(const wchar_t* why) const {
+    if (!traceOn_ || traceCount_ == 0) return;
+    LARGE_INTEGER freq{};
+    QueryPerformanceFrequency(&freq);
+    const double tick = freq.QuadPart > 0 ? 1000.0 / static_cast<double>(freq.QuadPart) : 0.0;
+    const long long base = trace_[0].qpc;
+    PinDiag(L"拖动跟踪（%s）：%d 条", why, traceCount_);
+    for (int i = 0; i < traceCount_; ++i) {
+        const TraceEntry& e = trace_[i];
+        PinDiag(L"  +%7.1fms  msg=%llu  pt=(%ld,%ld)  ->(%ld,%ld,%ld,%ld)  "
+                L"SetWindowPos %lldus %s",
+                static_cast<double>(e.qpc - base) * tick,
+                static_cast<unsigned long long>(e.message), e.pt.x, e.pt.y, e.applied.left,
+                e.applied.top, e.applied.right, e.applied.bottom, e.setPosMicros,
+                e.setPosOk != FALSE ? L"ok" : L"失败");
+    }
+}
+
 LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
     const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
     if (info == nullptr) return CallNextHookEx(nullptr, HC_ACTION, message, lParam);
@@ -219,6 +253,8 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
                      ? DragEdges{true, true, true, true}
                      : HitZone(startFrame_, info->pt.x, info->pt.y);
         dragging_ = true;
+        TraceReset();
+        TraceAdd(message, info->pt, ToWinRect(startFrame_), 0, TRUE);
         // 这次拖动是按着 Win 键触发的话，它的抬起就归这次手势了。只有装了键盘钩子
         // 才谈得上吞——没装的话置位也没人读。
         if (keyboardHook_ != nullptr && WinKeyDown()) winConsumed_ = true;
@@ -234,14 +270,33 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
                                     GetSystemMetrics(SM_CYMINTRACK));
         const RECT r = ToWinRect(next);
         // SWP_NOACTIVATE：拖背景窗口不该抢焦点，这正是这个手势好用的地方。
-        SetWindowPos(target_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                     SWP_NOACTIVATE | SWP_NOZORDER);
+        // 诊断关着的时候（默认如此）这里只有一次 SetWindowPos，一个多余的时钟调用都没有。
+        if (!traceOn_) {
+            SetWindowPos(target_, nullptr, r.left, r.top, r.right - r.left,
+                         r.bottom - r.top, SWP_NOACTIVATE | SWP_NOZORDER);
+            return 1;
+        }
+        LARGE_INTEGER t0{};
+        LARGE_INTEGER t1{};
+        LARGE_INTEGER freq{};
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&t0);
+        const BOOL ok =
+            SetWindowPos(target_, nullptr, r.left, r.top, r.right - r.left,
+                         r.bottom - r.top, SWP_NOACTIVATE | SWP_NOZORDER);
+        QueryPerformanceCounter(&t1);
+        const long long micros =
+            freq.QuadPart > 0 ? (t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart : 0;
+        TraceAdd(message, info->pt, r, micros, ok);
         return 1;
     }
 
     case WM_LBUTTONUP:
     case WM_RBUTTONUP: {
         if (!dragging_) break;
+        TraceAdd(message, info->pt, RECT{}, 0, TRUE);
+        TraceDump(L"松开");
+        traceOn_ = false;
         dragging_ = false;
         target_ = nullptr;
         // 两个键的抬起都要吞，因为对应的按下已经被吞掉了——放行一个没有配对按下的
