@@ -1,6 +1,7 @@
 #include "windowmark/core/DragGeometry.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace windowmark {
 namespace {
@@ -64,6 +65,19 @@ Rect ApplyDrag(const Rect& start, const DragEdges& edges, int dx, int dy, int mi
         }
     }
     return out;
+}
+
+bool IsTap(int dx, int dy, int slop) {
+    const int limit = std::max(0, slop);
+    return std::abs(dx) <= limit && std::abs(dy) <= limit;
+}
+
+Rect CenterInWorkArea(const Rect& frame, const Rect& work) {
+    const int w = frame.width();
+    const int h = frame.height();
+    const int left = work.left + (work.width() - w) / 2;
+    const int top = std::max(work.top, work.top + (work.height() - h) / 2);
+    return Rect{left, top, left + w, top + h};
 }
 
 } // namespace windowmark

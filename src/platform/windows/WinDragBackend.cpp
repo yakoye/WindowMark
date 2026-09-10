@@ -91,6 +91,7 @@ void WinDragBackend::Shutdown() noexcept {
     }
     if (g_instance == this) g_instance = nullptr;
     dragging_ = false;
+    pendingRestore_ = false;
     target_ = nullptr;
 }
 
@@ -234,6 +235,21 @@ void WinDragBackend::TraceDump(const wchar_t* why) const {
     }
 }
 
+void WinDragBackend::CenterOnCursorMonitor(POINT cursor) {
+    // 按光标所在的那块屏，不是窗口现在大部分身体所在的那块。这个手势最主要的用途是
+    // 把跑到屏幕外的窗口找回来，那时用户正盯着自己点的地方，窗口就该回到眼前这块屏。
+    HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (monitor == nullptr || GetMonitorInfoW(monitor, &info) == FALSE) return;
+
+    // 用工作区而不是整块屏：任务栏占掉的那一条不该算进居中的范围。
+    const Rect centered =
+        CenterInWorkArea(ToCoreRect(WindowRectOf(target_)), ToCoreRect(info.rcWork));
+    SetWindowPos(target_, nullptr, centered.left, centered.top, 0, 0,
+                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE);
+}
+
 LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
     const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
     if (info == nullptr) return CallNextHookEx(nullptr, HC_ACTION, message, lParam);
@@ -249,21 +265,25 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
         startCursor_ = info->pt;
         startFrame_ = ToCoreRect(WindowRectOf(target));
         // 左键整窗移动，右键按九宫格决定拉哪几条边。
-        edges_ = message == WM_LBUTTONDOWN
-                     ? DragEdges{true, true, true, true}
-                     : HitZone(startFrame_, info->pt.x, info->pt.y);
+        leftButton_ = message == WM_LBUTTONDOWN;
+        edges_ = leftButton_ ? DragEdges{true, true, true, true}
+                             : HitZone(startFrame_, info->pt.x, info->pt.y);
         dragging_ = true;
         TraceReset();
         TraceAdd(message, info->pt, ToWinRect(startFrame_), 0, TRUE);
         // 这次拖动是按着 Win 键触发的话，它的抬起就归这次手势了。只有装了键盘钩子
         // 才谈得上吞——没装的话置位也没人读。
         if (keyboardHook_ != nullptr && WinKeyDown()) winConsumed_ = true;
-        if (IsZoomed(target_) != FALSE) RestoreForDrag(info->pt);
+        pendingRestore_ = IsZoomed(target_) != FALSE;
         return 1;   // 吞掉：这一次按下已经被手势用掉了
     }
 
     case WM_MOUSEMOVE: {
         if (!dragging_) break;
+        if (pendingRestore_) {
+            RestoreForDrag(info->pt);
+            pendingRestore_ = false;
+        }
         const Rect next = ApplyDrag(startFrame_, edges_, info->pt.x - startCursor_.x,
                                     info->pt.y - startCursor_.y,
                                     GetSystemMetrics(SM_CXMINTRACK),
@@ -294,10 +314,21 @@ LRESULT WinDragBackend::HandleMouse(WPARAM message, LPARAM lParam) {
     case WM_LBUTTONUP:
     case WM_RBUTTONUP: {
         if (!dragging_) break;
+        // 按下到松开几乎没动 = 单击，把窗口居中。这一次点击本来就已经被按下那一步吞掉了，
+        // 应用永远收不到它——不接这个手势，它就是白白浪费的一个事件。
+        //
+        // 只认左键：右键的单击也被吞了，但右键管缩放，让它改位置会很意外。
+        // 最大化的窗口不动：它已经占满屏幕，居中没有意义。
+        if (leftButton_ && target_ != nullptr && IsZoomed(target_) == FALSE &&
+            IsTap(info->pt.x - startCursor_.x, info->pt.y - startCursor_.y, kTapSlop)) {
+            CenterOnCursorMonitor(info->pt);
+            TraceAdd(message, info->pt, WindowRectOf(target_), 0, TRUE);
+        }
         TraceAdd(message, info->pt, RECT{}, 0, TRUE);
         TraceDump(L"松开");
         traceOn_ = false;
         dragging_ = false;
+        pendingRestore_ = false;
         target_ = nullptr;
         // 两个键的抬起都要吞，因为对应的按下已经被吞掉了——放行一个没有配对按下的
         // 抬起，应用的状态机会错乱。右键这一次尤其关键：放行它，应用会当成一次完整
