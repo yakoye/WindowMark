@@ -497,6 +497,45 @@ void TestClipToBounds() {
     }
 }
 
+void TestDragSettingsRoundTrip() {
+    using windowmark::DragModifiers;
+    using windowmark::ParseDragModifiers;
+    using windowmark::Settings;
+
+    // 默认值：功能默认关闭（它接管全局鼠标事件，不该在用户没要求时就生效），
+    // 触发键默认只有右 Alt
+    const Settings fresh;
+    CHECK(!fresh.drag.enabled);
+    CHECK(fresh.drag.modifiers == "RAlt");
+    CHECK(fresh.drag.excludedAppKeys.empty());
+
+    // 存一次读回来，三个字段都不能变——这是发现读写不对称最有效的手段
+    const auto path = std::filesystem::temp_directory_path() / "windowmark-drag-test.conf";
+    Settings written;
+    written.drag.enabled = true;
+    written.drag.modifiers = "RAlt|LWin";
+    written.drag.excludedAppKeys = {"c:/apps/photoshop.exe", "c:/apps/gimp.exe"};
+    CHECK(Settings::Save(path, written));
+
+    const Settings read = Settings::LoadOrCreate(path);
+    CHECK(read.drag.enabled);
+    CHECK(read.drag.modifiers == "RAlt|LWin");
+    CHECK(read.drag.excludedAppKeys.size() == 2);
+    // 读回来是排好序的：EncodeList 会排序去重，这样配置文件不会因为勾选顺序不同
+    // 而产生无谓的 diff。断言按排序后的顺序写，是在钉住这个行为而不是迁就它。
+    CHECK(read.drag.excludedAppKeys[0] == "c:/apps/gimp.exe");
+    CHECK(read.drag.excludedAppKeys[1] == "c:/apps/photoshop.exe");
+
+    // 存进去的修饰键必须能被解析回同一组键
+    const DragModifiers parsed = ParseDragModifiers(read.drag.modifiers);
+    CHECK(parsed.keys.size() == 2);
+    CHECK(parsed.Contains(0xA5));   // VK_RMENU
+    CHECK(parsed.Contains(0x5B));   // VK_LWIN
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 void TestDragGeometry() {
     using windowmark::ApplyDrag;
     using windowmark::DragEdges;
@@ -1338,6 +1377,7 @@ int main() {
     TestBorderOcclusion();
     TestDragModifiers();
     TestDragGeometry();
+    TestDragSettingsRoundTrip();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }

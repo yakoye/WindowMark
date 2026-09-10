@@ -206,9 +206,26 @@ struct TrackingSettings {
     std::vector<std::string> treatAsTopmostClasses;
 };
 
+// 按住修饰键拖动窗口。默认关闭：它接管全局鼠标事件，不该在用户没要求时就生效。
+struct DragSettings {
+    // 不参与拖动的应用，键与 border.excludedAppKeys 同样是规范化的可执行文件路径。
+    // 独立成一项而不是共用边框那份：有些程序自己就用 Alt+拖动（Photoshop 等），
+    // 不想要拖动和不想要边框是两件事。
+    std::vector<std::string> excludedAppKeys;
+
+    // 触发键，"RAlt" / "RAlt|LWin"。任一按下即触发，不是组合键。
+    //
+    // 存字符串而不是解析后的键码：配置文件是手写的，原样保留用户写的东西——包括六个
+    // 预设之外的键名——比存一份解析结果更不容易丢信息。
+    std::string modifiers{"RAlt"};
+
+    bool enabled{false};
+};
+
 struct Settings {
     DrawerSettings drawer;
     BorderSettings border;
+    DragSettings drag;
     PinSettings pin;
     PreviewSettings preview;
     PerformanceSettings performance;

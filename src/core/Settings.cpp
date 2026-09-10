@@ -316,6 +316,15 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     if (const auto it = values.find("border.excluded_apps"); it != values.end()) {
         settings.border.excludedAppKeys = ParseEncodedList(it->second);
     }
+    if (const auto it = values.find("drag.enabled"); it != values.end()) {
+        settings.drag.enabled = ParseBool(it->second, settings.drag.enabled);
+    }
+    if (const auto it = values.find("drag.modifiers"); it != values.end()) {
+        settings.drag.modifiers = it->second;
+    }
+    if (const auto it = values.find("drag.excluded_apps"); it != values.end()) {
+        settings.drag.excludedAppKeys = ParseEncodedList(it->second);
+    }
     if (const auto it = values.find("tracking.exclude_classes"); it != values.end()) {
         settings.tracking.excludeClasses = ParseEncodedList(it->second);
     }
@@ -446,6 +455,19 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "# 边框设置 -> 排除应用. Separate from selection.disabled_apps, which is the\n";
     output << "# bookmark list - not wanting an outline is not the same as not wanting a bookmark.\n";
     output << "border.excluded_apps=" << EncodeList(settings.border.excludedAppKeys) << "\n\n";
+    output << "# 按住修饰键拖动窗口：左键拖=移动，右键拖=缩放。默认关闭。\n";
+    output << "# modifiers 里的键**任一按下即触发**，不是组合键。多个用 | 分隔。\n";
+    output << "# 六个预设：LAlt RAlt LWin RWin LCtrl RCtrl，另外可写任意键名（F13、\n";
+    output << "# CapsLock 等，与 pin.hotkey 用同一张键名表）。设置界面只呈现那六个，\n";
+    output << "# 这里写的其他键界面读得懂也不会覆盖掉。\n";
+    output << "#\n";
+    output << "# 勾选 Win 键会让程序额外安装一个键盘钩子，用来吞掉抬起时的开始菜单。\n";
+    output << "# 只用 Alt / Ctrl 时不会安装。\n";
+    output << "drag.enabled=" << (settings.drag.enabled ? "true" : "false") << "\n";
+    output << "drag.modifiers=" << settings.drag.modifiers << "\n";
+    output << "# 不参与拖动的应用。和 border.excluded_apps 分开：有些程序自己就用\n";
+    output << "# Alt+拖动（Photoshop 等）。用「窗口拖动 -> 排除应用」勾选。\n";
+    output << "drag.excluded_apps=" << EncodeList(settings.drag.excludedAppKeys) << "\n\n";
     output << "# Application selections are persistent. Individual-window selections are session-only.\n";
     output << "selection.disabled_apps=" << EncodeList(settings.selection.disabledAppKeys) << "\n";
     return static_cast<bool>(output);
