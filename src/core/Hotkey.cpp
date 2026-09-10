@@ -130,6 +130,13 @@ constexpr std::array<NamedKey, 24> kNamedKeys{{
 
 } // namespace
 
+unsigned ParseKeyName(std::string_view name) {
+    // KeyFromToken 要的是已经大写、去过空格的 token，而公开接口不该有这种前提。
+    return KeyFromToken(Trim(Upper(name)));
+}
+
+std::string FormatKeyName(unsigned vk) { return KeyToken(vk); }
+
 Hotkey ParseHotkey(std::string_view text) {
     Hotkey result{};
     const std::string upper = Upper(text);

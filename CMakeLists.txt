@@ -12,6 +12,7 @@ add_library(windowmark_core STATIC
     src/core/BorderOcclusion.cpp
     src/core/ConfigLocation.cpp
     src/core/Coordinator.cpp
+    src/core/DragModifiers.cpp
     src/core/DrawerState.cpp
     src/core/Hotkey.cpp
     src/core/LayoutEngine.cpp

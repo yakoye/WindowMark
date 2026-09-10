@@ -38,6 +38,16 @@ struct Hotkey {
 // separators. An empty or unparseable string yields an empty Hotkey, which callers treat
 // as "no shortcut" - there is no separate error channel because the settings file is
 // hand-editable and a typo should disable the shortcut, not refuse to start.
+// 单个按键名 -> Win32 虚拟键码。"F5"、"Space"、"A"、"1" 都认，不认识返回 0。
+// 大小写不敏感，两侧空格会被去掉。
+//
+// 暴露出来是给 DragModifiers 复用同一张键名表的：两份表必然漂移，而「用户在配置文件里
+// 写的键名叫什么」正是最不该在两处各有一套答案的东西。
+[[nodiscard]] unsigned ParseKeyName(std::string_view name);
+
+// 虚拟键码 -> 规范键名，ParseKeyName 的反函数。无法命名的键返回 ""。
+[[nodiscard]] std::string FormatKeyName(unsigned vk);
+
 [[nodiscard]] Hotkey ParseHotkey(std::string_view text);
 
 // Canonical form, always "Ctrl+Alt+Shift+Win+KEY" order regardless of how it was typed.
