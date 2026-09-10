@@ -100,6 +100,21 @@ if (-not (Test-Path $setup)) {
     exit 1
 }
 
+# 卸载会关掉自启动，而这里是升级不是卸载——先记下来，装完再传回去。
+#
+# 判据和程序里那套一致：Run 键里有命令，且 StartupApproved 没有否决它。少看一边都会
+# 得出错的结论（否决字节会盖过 Run 键）。
+$autoStartWasOn = $false
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$approvedKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+$runValue = (Get-ItemProperty $runKey -ErrorAction SilentlyContinue).WindowMark
+if ($runValue) {
+    $approval = (Get-ItemProperty $approvedKey -ErrorAction SilentlyContinue).WindowMark
+    # 没有批准记录 = 没被否决；有的话看第一个字节的最低位，1 表示被禁用。
+    $autoStartWasOn = (-not $approval) -or (($approval[0] -band 1) -eq 0)
+}
+Write-Host ("自启动当前状态：{0}" -f $(if ($autoStartWasOn) { '开' } else { '关' }))
+
 # ---- 2. 卸载旧版 ----
 Step '卸载旧版'
 
@@ -149,7 +164,10 @@ Start-Sleep -Milliseconds 1200   # 互斥量释放比进程消失还要晚一点
 
 # ---- 3. 安装新版 ----
 Step '安装新版'
-$p = Start-Process -FilePath $setup -ArgumentList '/S' -PassThru
+# 把卸载前的自启动状态显式传回去，别让安装器去读那个刚被卸载器清空的状态。
+$setupArgs = @('/S')
+$setupArgs += $(if ($autoStartWasOn) { '/StartWithWindows' } else { '/NoStartWithWindows' })
+$p = Start-Process -FilePath $setup -ArgumentList $setupArgs -PassThru
 if (-not $p.WaitForExit(60000)) {
     Write-Host '安装超时。' -ForegroundColor Red
     exit 1
