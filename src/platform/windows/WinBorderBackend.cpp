@@ -178,15 +178,31 @@ LRESULT CALLBACK WinBorderBackend::SessionProc(HWND hwnd, UINT msg, WPARAM wPara
         auto* self =
             reinterpret_cast<WinBorderBackend*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (self != nullptr) {
+            // 只有锁屏挂起，**其余每一个会话事件都恢复**。
+            //
+            // 原来只认 UNLOCK 一个恢复事件，于是挂起状态可能再也出不来：锁屏之后走
+            // ToDesk 之类的远程接入，到达的是 CONSOLE_CONNECT / REMOTE_CONNECT，
+            // UNLOCK 未必来。结果是进程好好跑着、消息循环正常、一条边框也不画，而且
+            // overlays_.Sync() 在挂起判断后面，画布尺寸也跟着停在显示配置变化之前
+            // （实测挂起时画布还是 1536x864，屏幕已经换成 1920x1080）。
+            //
+            // 写成「LOCK 挂起，其余一律恢复」而不是逐个列出恢复事件：新的事件类型
+            // 只会把它推向「恢复」，不会把它锁死在挂起里。多画几帧没人看的东西是小事，
+            // 永远不画是大事。
             if (wParam == WTS_SESSION_LOCK) {
                 self->suspended_ = true;
                 // 空列表 = 把画布擦干净。不擦的话锁屏界面上会留着上一帧的线。
                 self->overlays_.Render({});
                 self->lastStrokes_.clear();
                 PinDiag(L"会话锁定，边框挂起");
-            } else if (wParam == WTS_SESSION_UNLOCK) {
+            } else {
+                const bool wasSuspended = self->suspended_;
                 self->suspended_ = false;
-                PinDiag(L"会话解锁，边框恢复");
+                PinDiag(L"会话事件 %llu，边框%s",
+                        static_cast<unsigned long long>(wParam),
+                        wasSuspended ? L"恢复" : L"本来就在跑");
+                // 恢复时一定要重画一次：Redraw 里的 overlays_.Sync() 会按当前的显示器
+                // 配置重建画布，挂起期间的插拔和分辨率变化全靠这一下补上。
                 self->Redraw();
             }
         }

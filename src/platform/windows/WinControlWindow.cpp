@@ -93,6 +93,13 @@ bool WinControlWindow::Start(Handlers handlers) {
     // instance without either side treating "already running" as a failure.
     requestQuitMessage_ = RegisterWindowMessageW(app::kRequestQuitMessage);
     secondInstanceMessage_ = RegisterWindowMessageW(app::kSecondInstanceMessage);
+    // explorer 一重启，系统就把所有托盘图标销毁重来，然后广播这条消息让大家重新加。
+    // 不接它，图标就再也回不来了——而程序还好好跑着，用户只会看到「托盘里没了」，
+    // 再双击 exe 又被单例挡下，什么都不发生，看起来就是「启动不了」。
+    //
+    // explorer 重启比想象中常见：改显示配置、远程桌面/ToDesk 接入、它自己崩一次都会。
+    // 实测一次就是这么来的：WindowMark 15:15 启动，explorer 18:46 重启，图标随之消失。
+    taskbarCreatedMessage_ = RegisterWindowMessageW(L"TaskbarCreated");
 
     // No hotkey is claimed here. RegisterHotKey takes a combination away from every other
     // program for the whole session and the loser is not told, so this app only asks once
@@ -180,7 +187,12 @@ void WinControlWindow::ShowAlreadyRunningHint() {
     data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
     wcscpy_s(data.szInfoTitle, L"WindowMark 已在运行");
     wcscpy_s(data.szInfo, L"书签层已经启用。右键此图标可以隐藏书签或选择参与的应用。");
-    Shell_NotifyIconW(NIM_MODIFY, &data);
+    // NIM_MODIFY 往一个不存在的图标上发会失败，而且是静默失败。图标没了的时候用户
+    // 恰恰最可能双击 exe——那正是这条路唯一被走到的时候，不能在这里哑掉。
+    if (Shell_NotifyIconW(NIM_MODIFY, &data) == FALSE) {
+        AddTrayIcon();
+        Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
 }
 
 void WinControlWindow::RemoveTrayIcon() {
@@ -622,6 +634,12 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
     }
     if (secondInstanceMessage_ != 0 && msg == secondInstanceMessage_) {
         ShowAlreadyRunningHint();
+        return 0;
+    }
+    if (taskbarCreatedMessage_ != 0 && msg == taskbarCreatedMessage_) {
+        // 图标已经被 explorer 销毁了，直接重新加，不用先 NIM_DELETE。
+        PinDiag(L"收到 TaskbarCreated，重新加托盘图标");
+        AddTrayIcon();
         return 0;
     }
 
