@@ -475,8 +475,12 @@ border.corner_radius=12
 #
 # 加宽只往**窗口外**长。窗口内侧盖多少由 border.offset 一个人说了算（盖 -offset
 # 像素，正好压住 Windows 自己那条 1px 边框），加多少宽都不动它——往内长会连窗口
-# 内容一起吃掉。corner_inset 把整圈往窗口中心挪，负数往外，两条沿一起动。
-border.corner_width_extra=3
+# 内容一起吃掉。
+#
+# 往窗口外伸多远 = reach + corner_width_extra =（border.width + border.offset）+ extra。
+# 默认这套是 (3 + -1) + 1 = 3px 在外、1px 在内。
+# corner_inset 把整圈往窗口中心挪，负数往外，两条沿一起动。
+border.corner_width_extra=1
 border.corner_inset=0
 border.active_color=#6274E7
 border.inactive_color=#7080AA
@@ -550,7 +554,7 @@ would change one of them needs to be raised first, not decided in passing.
 | `pin.width` | **10** | 置顶高亮的线宽。6 看着和普通边框没区别；PowerToys 用 15，偏重了 |
 | `pin.color` | **accent** | 跟随系统强调色，置顶窗口看起来像属于这个桌面 |
 | `pin.hotkey` | **空** | 全局快捷键先到先得，不主动从别的程序手里抢 |
-| `border.corner_width_extra` | **3** | 圆角模式下整圈的加宽，补抗锯齿吃掉的那部分。往窗口外长，不影响内侧盖多少 |
+| `border.corner_width_extra` | **1** | 圆角模式下整圈的加宽，补抗锯齿吃掉的那部分。只往窗口**外**长，不影响内侧盖多少。往外伸 `reach + extra` = 3px，窗口内仍是 `-offset` = 1px |
 | `drag.enabled` | **false** | 装鼠标钩子这件事得用户自己点头，不默认替他决定 |
 | `drag.modifiers` | **RAlt** | 左 Alt + 拖动被 Photoshop、IDE、Blender 占着，装在上面会吞掉那些操作；右 Alt 几乎没人用 |
 

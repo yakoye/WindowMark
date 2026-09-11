@@ -108,15 +108,20 @@ struct BorderSettings {
     // 125%. On a different scale factor it wants adjusting - that is the price of a knob
     // that means exactly what it says.
     int cornerRadius{12};
-    // 画圆角时在 width 上多加这么宽，多出来的部分全长在窗口内侧，外沿不动。
+    // 画圆角时在 width 上多加这么宽，多出来的部分全长在**窗口外侧**，内沿不动。
     //
-    // 圆角模式下整圈——四条边加四个角——都是同一条 D2D 弧矩形，所以这个增量作用于
-    // 整圈。要它的理由是抗锯齿：弧在两侧各留约 1px 渐变，画出来的实心部分比名义线宽
-    // 窄（实测 width=4 时名义 4 只剩 2px 实心，名义 5 剩 4px，名义 7 剩 7px）。
+    // 圆角模式下整圈——四条边加四个角——都是同一条弧矩形，所以这个增量作用于整圈。
+    // 要它的理由是抗锯齿：弧在两侧各留约 1px 渐变，画出来的实心部分比名义线宽窄
+    //（实测 width=4 时名义 4 只剩 2px 实心，名义 5 剩 4px，名义 7 剩 7px）。
     //
-    // 默认 3 是在屏幕上逐档试出来的，不是算出来的：抗锯齿吃掉多少取决于弧的曲率和
-    // 它落在像素格的哪个位置，没有一个能一次算准的公式。设 0 就是不补，负数更细。
-    int cornerWidthExtra{3};
+    // 只能往外长。窗口内侧盖多少由 offset 一个人说了算（盖 -offset 像素，正好压住
+    // Windows 自己那条 1px 边框），加多少宽都不动它——往内长会连窗口内容一起吃掉。
+    // 早先的版本正是往内长的，width=3 / offset=-1 / extra=3 时窗口内被盖了 4px，
+    // 而其中只有 1px 是压那条灰边需要的。
+    //
+    // 边框往窗口外伸多远 = reach + cornerWidthExtra = (width + offset) + extra。
+    // 默认 1：3px 在外、1px 在内，整条线 4px。设 0 就是严格的 width（2 外 1 内）。
+    int cornerWidthExtra{1};
     // 整圈弧往窗口中心挪多少。正=向内，负=向外。默认 0：外沿和直角模式齐平。
     int cornerInset{0};
     // 0xAARRGGBB. Alpha lives in the colour itself, as in tacky-borders, so there is one
