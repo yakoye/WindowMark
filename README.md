@@ -469,9 +469,13 @@ border.offset=-1
 border.corners=custom
 # 物理像素，不跟 DPI 缩放。12 是 125% 下试出来的，别的缩放比例要自己调。
 border.corner_radius=12
-# 下面两项只在边框画成圆角时起作用。圆角模式下整圈是一条抗锯齿的弧矩形，
-# 抗锯齿在弧两侧各吃掉约 1px，corner_width_extra 把这部分补回来（向窗口
-# 内侧长，外沿不动）；corner_inset 把整圈往窗口中心挪，负数往外。
+# 下面两项只在边框画成圆角时起作用。圆角模式下**整圈**都是一条抗锯齿的弧矩形，
+# 直边也是它画的——所以 corner_width_extra 加的是整圈的宽，不只是四个角。
+# 抗锯齿在弧两侧各吃掉约 1px，这一项把那部分补回来。
+#
+# 加宽只往**窗口外**长。窗口内侧盖多少由 border.offset 一个人说了算（盖 -offset
+# 像素，正好压住 Windows 自己那条 1px 边框），加多少宽都不动它——往内长会连窗口
+# 内容一起吃掉。corner_inset 把整圈往窗口中心挪，负数往外，两条沿一起动。
 border.corner_width_extra=3
 border.corner_inset=0
 border.active_color=#6274E7
@@ -546,6 +550,7 @@ would change one of them needs to be raised first, not decided in passing.
 | `pin.width` | **10** | 置顶高亮的线宽。6 看着和普通边框没区别；PowerToys 用 15，偏重了 |
 | `pin.color` | **accent** | 跟随系统强调色，置顶窗口看起来像属于这个桌面 |
 | `pin.hotkey` | **空** | 全局快捷键先到先得，不主动从别的程序手里抢 |
+| `border.corner_width_extra` | **3** | 圆角模式下整圈的加宽，补抗锯齿吃掉的那部分。往窗口外长，不影响内侧盖多少 |
 | `drag.enabled` | **false** | 装鼠标钩子这件事得用户自己点头，不默认替他决定 |
 | `drag.modifiers` | **RAlt** | 左 Alt + 拖动被 Photoshop、IDE、Blender 占着，装在上面会吞掉那些操作；右 Alt 几乎没人用 |
 

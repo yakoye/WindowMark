@@ -1,6 +1,7 @@
 #include "windowmark/core/BorderGeometry.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace windowmark {
 namespace {
@@ -43,6 +44,28 @@ Rect ClampBorderToScreen(const Rect& frame, const Rect& outer, const Rect& monit
     }
 
     return result;
+}
+
+RoundedRing RoundedRingOf(int stroke, int widthExtra, int cornerInset) {
+    RoundedRing ring;
+    ring.width = static_cast<float>(std::max(1, stroke + widthExtra));
+    // 内沿钉在窗口内 stroke - reach（= -offset）像素处，加宽全长在外侧：
+    // 中心线 = 内沿 - width/2，换算成「相对外矩形往里」就是下面这个。
+    ring.inset = static_cast<float>(stroke) - ring.width * 0.5F +
+                 static_cast<float>(cornerInset);
+    // 环的外沿相对外矩形往外多远。cornerInset 为负时整圈还要再往外挪同样多。
+    const float outward = ring.width - static_cast<float>(stroke) -
+                          static_cast<float>(cornerInset);
+    ring.grow = outward > 0.0F ? static_cast<int>(std::ceil(outward)) : 0;
+    return ring;
+}
+
+float RingInnerEdge(const RoundedRing& ring, int reach) {
+    return ring.inset + ring.width * 0.5F - static_cast<float>(reach);
+}
+
+float RingOuterEdge(const RoundedRing& ring, int reach) {
+    return ring.inset - ring.width * 0.5F - static_cast<float>(reach);
 }
 
 } // namespace windowmark
