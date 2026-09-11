@@ -156,6 +156,8 @@ private:
     HWND hwnd_{};
     UINT requestQuitMessage_{};
     UINT secondInstanceMessage_{};
+    // explorer 重启后系统广播的「任务栏建好了」。不接这条，图标就永久没了。
+    UINT taskbarCreatedMessage_{};
     Handlers handlers_;
     bool enabled_{true};
     bool bordersEnabled_{false};
