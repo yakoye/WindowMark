@@ -1,11 +1,11 @@
-# WindowMark v0.5.0
+# WindowMark v0.5.1
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, temporary always-on-top pinning, and modifier-key window dragging**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.5.0 at a glance
+## v0.5.1 at a glance
 
 Four window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -24,6 +24,9 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
+v0.5.1 fixes three things that all looked like "WindowMark stopped working": the tray icon
+never came back after an Explorer restart, borders could stay suspended forever once the
+session had been locked, and the border sat 4px inside the window instead of 1px.
 v0.5.0 adds 窗口拖动. v0.4.10 fixed start-with-Windows being lost on every upgrade and
 stopped borders from covering the taskbar. v0.4.9 replaced the border z-order model with a
 per-monitor overlay canvas, which fixed inactive borders landing at the wrong depth and the
@@ -32,8 +35,8 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.5.0-win64.zip` from the
-   [v0.5.0 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.0).
+1. Download `WindowMark-v0.5.1-win64.zip` from the
+   [v0.5.1 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.1).
 2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 3. Open at least two normal windows from the same application to see bookmarks.
@@ -41,7 +44,7 @@ full history.
    independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.5.0.
+scaffold and does not provide a working macOS application in v0.5.1.
 
 ## Interaction
 
@@ -655,7 +658,7 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.5.0** is the current release. The line includes window bookmarks, per-window borders
+**v0.5.1** is the current release. The line includes window bookmarks, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
 modifier-key window dragging, `WindowMarkInspect.exe`, reliable start-with-Windows state
 handling with a login-attempt audit log, borders clamped to the window's own monitor and kept
@@ -664,7 +667,7 @@ clipboard guard, and an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.5.0 remains auditable.
+v0.5.1 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
