@@ -542,13 +542,23 @@ void TestRoundedRing() {
     using windowmark::RoundedRing;
     using windowmark::RoundedRingOf;
 
-    // 用户定过的那套：width=3、offset=-1（于是 reach=2）、corner_width_extra=3。
+    // 用户定过的那套：width=3、offset=-1（于是 reach=2）、corner_width_extra=1。
+    // 往外 3px、往内 1px，整条线 4px。这三个数是用户在屏幕上定的，改动要先问过。
+    {
+        const RoundedRing ring = RoundedRingOf(3, 1, 0);
+        CHECK(ring.width == 4.0F);
+        CHECK(RingInnerEdge(ring, 2) == 1.0F);        // 窗口内只盖 1px = -offset
+        CHECK(RingOuterEdge(ring, 2) == -3.0F);       // 往窗口外 3px
+        CHECK(ring.grow >= 1);                        // 长出去的那截不能被自己裁掉
+    }
+
+    // 加宽更大时同样只往外长，内沿纹丝不动
     {
         const RoundedRing ring = RoundedRingOf(3, 3, 0);
-        CHECK(ring.width == 6.0F);                    // 线还是 6px 粗，只是位置变了
-        CHECK(RingInnerEdge(ring, 2) == 1.0F);        // 窗口内只盖 1px = -offset
-        CHECK(RingOuterEdge(ring, 2) == -5.0F);       // 加宽全长在窗口外
-        CHECK(ring.grow >= 3);                        // 长出去的那截不能被自己裁掉
+        CHECK(ring.width == 6.0F);
+        CHECK(RingInnerEdge(ring, 2) == 1.0F);
+        CHECK(RingOuterEdge(ring, 2) == -5.0F);
+        CHECK(ring.grow >= 3);
     }
 
     // 加宽为 0 时退化成「线宽就是 border.width」：外 reach、内 -offset，加起来正好 stroke。
@@ -859,7 +869,10 @@ void TestBorderDefaults() {
     CHECK(settings.border.offset == -1);
     CHECK(settings.border.corners == BorderCorners::Custom);
     CHECK(settings.border.cornerRadius == 12);
-    CHECK(settings.border.cornerWidthExtra == 3);
+    // 加宽方向从「往窗口内」改成「往窗口外」之后，这个数的含义就变了，得重新定：
+    // 以前它决定往窗口里吃多少（3 -> 吃 4px），现在决定往窗口外伸多远（reach + extra）。
+    // 1 是用户在屏幕上定的——往外 3px、往内 1px。
+    CHECK(settings.border.cornerWidthExtra == 1);
     CHECK(settings.border.cornerInset == 0);
 }
 
