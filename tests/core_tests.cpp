@@ -536,6 +536,67 @@ void TestDragSettingsRoundTrip() {
     std::filesystem::remove(path, ec);
 }
 
+void TestRoundedRing() {
+    using windowmark::RingInnerEdge;
+    using windowmark::RingOuterEdge;
+    using windowmark::RoundedRing;
+    using windowmark::RoundedRingOf;
+
+    // 用户定过的那套：width=3、offset=-1（于是 reach=2）、corner_width_extra=3。
+    {
+        const RoundedRing ring = RoundedRingOf(3, 3, 0);
+        CHECK(ring.width == 6.0F);                    // 线还是 6px 粗，只是位置变了
+        CHECK(RingInnerEdge(ring, 2) == 1.0F);        // 窗口内只盖 1px = -offset
+        CHECK(RingOuterEdge(ring, 2) == -5.0F);       // 加宽全长在窗口外
+        CHECK(ring.grow >= 3);                        // 长出去的那截不能被自己裁掉
+    }
+
+    // 加宽为 0 时退化成「线宽就是 border.width」：外 reach、内 -offset，加起来正好 stroke。
+    {
+        const RoundedRing ring = RoundedRingOf(3, 0, 0);
+        CHECK(ring.width == 3.0F);
+        CHECK(RingInnerEdge(ring, 2) == 1.0F);
+        CHECK(RingOuterEdge(ring, 2) == -2.0F);
+        CHECK(ring.grow == 0);
+    }
+
+    // 关键不变量：内沿只跟 stroke - reach 有关，**加多少宽都不动**。
+    // 加宽往内长正是这次要修的 bug——那会让 offset 说了不算。
+    {
+        for (int extra = 0; extra <= 12; ++extra) {
+            const RoundedRing ring = RoundedRingOf(3, extra, 0);
+            CHECK(RingInnerEdge(ring, 2) == 1.0F);
+        }
+    }
+
+    // 置顶走同一套，只是 stroke 换成 pin.width。内沿同样只盖 1px。
+    {
+        const RoundedRing ring = RoundedRingOf(10, 3, 0);
+        CHECK(ring.width == 13.0F);
+        CHECK(RingInnerEdge(ring, 9) == 1.0F);
+        CHECK(RingOuterEdge(ring, 9) == -12.0F);
+    }
+
+    // cornerInset 把整圈往窗口中心挪，正数往里、负数往外，两条沿一起动。
+    {
+        const RoundedRing inward = RoundedRingOf(3, 3, 2);
+        CHECK(RingInnerEdge(inward, 2) == 3.0F);
+        CHECK(RingOuterEdge(inward, 2) == -3.0F);
+
+        const RoundedRing outward = RoundedRingOf(3, 3, -2);
+        CHECK(RingInnerEdge(outward, 2) == -1.0F);
+        CHECK(RingOuterEdge(outward, 2) == -7.0F);
+        // 往外挪得越多，裁剪单元要放得越大，否则挪出去的部分被自己切掉，调了等于没调
+        CHECK(outward.grow >= 5);
+    }
+
+    // 线宽下限：stroke + extra 再小也得画得出来
+    {
+        const RoundedRing ring = RoundedRingOf(1, -5, 0);
+        CHECK(ring.width >= 1.0F);
+    }
+}
+
 void TestDragGeometry() {
     using windowmark::ApplyDrag;
     using windowmark::CenterInWorkArea;
@@ -1447,6 +1508,7 @@ int main() {
     TestConfigLocationPriority();
     TestBorderOcclusion();
     TestDragModifiers();
+    TestRoundedRing();
     TestDragGeometry();
     TestDragSettingsRoundTrip();
     std::cout << "WindowMark core tests passed.\n";

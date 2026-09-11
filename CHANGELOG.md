@@ -1,5 +1,42 @@
 # Changelog
 
+## 未发布
+
+### 边框往窗口里吃了 4px
+
+`border.width=3`、`border.offset=-1`，按文档窗口内侧该只盖 1px。实测是 2px 在外、
+**4px 在内**，整条线 6px——`border.width` 说了不算。
+
+两处合起来造成的：
+
+**`corner_width_extra` 加的是整圈的宽，不只是四个角。** `corners` 一开，整圈都由一条
+抗锯齿的弧矩形画出来，独立的直边段根本不存在了。而加宽的方向写死了往窗口内侧长，于是
+`stroke - reach + widthExtra` = 1 + 3 = 4px 全落在窗口内容上。像素剖面显示 Windows 自己
+那条灰边完全被盖住——4px 里只有约 1px 是压那条灰边需要的，另外 3px 纯粹在吃内容。
+
+改成往窗口外长：内沿钉在 `stroke - reach`（= `-offset`），加多少宽都不动它。线的粗细
+不变，只是位置从「偏里」变成「偏外」。抽成 core 的 `RoundedRingOf` 纯函数，正负号和
+「相对谁」这类错误由测试钉住——那种偏差得盯着屏幕看才发现。
+
+**屏幕夹取按 `outer` 算，把外扩的部分又裁了回去。** `ClampBorderToScreen` 返回的 limit
+是从传进去的矩形开始只缩不放的，随后 `ClipToBounds` 会裁掉超出 limit 的部分。传 `outer`
+进去，等于把环长到 `outer` 之外的那一截裁掉——加宽白加。改传 `paintOuter`，判据也从
+`reach` 换成 `reach + grow`：窗口离任务栏 4px 时按 `reach=2` 算「没贴上」，可边框实际
+往外画 5px，照样会压上去。
+
+`grow` 以前默认是 0（只有 `corner_inset` 为负才非零），这条路径一直没被触发。
+
+实测（`width=3` / `offset=-1` / `corner_width_extra=3`）：
+
+| | 修之前 | 修之后 |
+|---|---|---|
+| 窗口外 | 2px | 5px |
+| 窗口内 | **4px** | **1px** |
+| 线宽 | 6px | 6px |
+
+置顶边框走同一套公式（`stroke` 换成 `pin.width`），之前同样往里吃 4px，只是线有 13px
+宽，4px 占比小才看不出来；现在也是 1px。
+
 ## v0.5.0
 
 ### 窗口拖动

@@ -227,17 +227,18 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                     // 半径跟着路径走：弧要和窗口自己的圆角同心，圆心不动，所以路径
                     // 往里收多少，半径就减多少。
                     const float windowRadius = CornerRadiusOf(entry.hwnd, settings);
-                    float roundWidth = 0.0F;
-                    float roundInset = 0.0F;
+                    RoundedRing ring;
                     float radius = 0.0F;
                     if (windowRadius > 0.0F) {
-                        roundWidth = static_cast<float>(
-                            std::max(1, stroke + settings.border.cornerWidthExtra));
-                        roundInset = roundWidth * 0.5F +
-                                     static_cast<float>(settings.border.cornerInset);
-                        radius = std::max(0.0F, windowRadius +
-                                                    static_cast<float>(reach) - roundInset);
+                        ring = RoundedRingOf(stroke, settings.border.cornerWidthExtra,
+                                             settings.border.cornerInset);
+                        // 半径跟着路径走：弧要和窗口自己的圆角同心，圆心不动，所以
+                        // 路径往里收多少半径就减多少（往外长则加）。
+                        radius = std::max(0.0F, windowRadius + static_cast<float>(reach) -
+                                                    ring.inset);
                     }
+                    const float roundWidth = ring.width;
+                    const float roundInset = ring.inset;
 
                     // 裁剪单元：直角用四条边（互不重叠，填满即可）；圆角用整个
                     // 外矩形一块——角上的弧跨越相邻两条边，按四条边裁会把角削平，
@@ -245,7 +246,7 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                     //
                     // cornerInset 为负时弧往外顶出环外沿，单元跟着放大同样多，否则
                     // 顶出去的那部分会被自己的裁剪框切掉，调了等于没调。
-                    const int grow = std::max(0, -settings.border.cornerInset);
+                    const int grow = ring.grow;
                     const Rect paintOuter{outer.left - grow, outer.top - grow,
                                           outer.right + grow, outer.bottom + grow};
                     std::vector<Rect> units =
@@ -259,11 +260,17 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                     // 夹的是**可见范围**，不是 outer 本身：圆角的路径以 outer 为基准
                     // 算半径和位置，改了 outer 弧就错位。outer 不动，弧还是原来那条，
                     // 只是压出去的那截不画。
+                    //
+                    // 夹的对象是 paintOuter 而不是 outer，判据也用 paintReach：圆角环
+                    // 可以长到 outer 之外（加宽往外长、cornerInset 为负），传 outer 进去
+                    // 等于把长出去的那一截又裁回来，加宽白加。判据同理——窗口离任务栏
+                    // 4px 时按 reach=2 算「没贴上」，可边框实际往外画 5px，照样压上去。
+                    const int paintReach = reach + grow;
                     if (const MonitorArea* screen = ScreenOf(snapshot.monitors, entry.frame);
                         screen != nullptr) {
                         const Rect limit = ClampBorderToScreen(
-                            frame, outer, ToCore(screen->bounds), ToCore(screen->work),
-                            reach);
+                            frame, paintOuter, ToCore(screen->bounds),
+                            ToCore(screen->work), paintReach);
                         if (limit.right > limit.left && limit.bottom > limit.top) {
                             units = ClipToBounds(units, limit);
                         }
