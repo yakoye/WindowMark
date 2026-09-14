@@ -1,11 +1,11 @@
-# WindowMark v0.5.1
+# WindowMark v0.5.2
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, temporary always-on-top pinning, and modifier-key window dragging**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.5.1 at a glance
+## v0.5.2 at a glance
 
 Four window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -13,7 +13,7 @@ alongside it:
 - **Window bookmarks** for identifying, previewing, renaming, and switching between
   multiple windows of the same application.
 - **Window borders** for outlining every eligible top-level window with separate active
-  and inactive colors. Borders are optional and disabled by default.
+  and inactive colors. Enabled by default; maximized windows are not outlined.
 - **Window pinning** through the target window's system menu, a crosshair picker, or an
   optional global hotkey. Pinned windows always receive a visible highlight.
 - **窗口拖动** for moving or resizing any window by holding a modifier key and dragging
@@ -24,6 +24,8 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
+v0.5.2 adds `WindowMarkDiag.exe` — run it when something is wrong and paste the report — and
+documents why a freshly downloaded copy can refuse to start at all (see 「双击没反应」 below).
 v0.5.1 fixes three things that all looked like "WindowMark stopped working": the tray icon
 never came back after an Explorer restart, borders could stay suspended forever once the
 session had been locked, and the border sat 4px inside the window instead of 1px.
@@ -35,16 +37,53 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.5.1-win64.zip` from the
-   [v0.5.1 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.1).
-2. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
+1. Download `WindowMark-v0.5.2-win64.zip` from the
+   [v0.5.2 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.2).
+2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
+3. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
-3. Open at least two normal windows from the same application to see bookmarks.
-4. Use the tray menu to configure **书签**, **窗口边框**, **窗口置顶** and **窗口拖动**
+4. Open at least two normal windows from the same application to see bookmarks.
+5. Use the tray menu to configure **书签**, **窗口边框**, **窗口置顶** and **窗口拖动**
    independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.5.1.
+scaffold and does not provide a working macOS application in v0.5.2.
+
+## 双击没反应 / 看不到边框
+
+### 先排除「程序根本没起来」
+
+WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。**没有图标却也没有任何报错**，
+最常见的原因是 Windows 把它拦下了：
+
+- 从网上下载的文件带着「来自网络」标记。WindowMark 的 exe **没有数字签名**，带着这个标记
+  双击时要先过 SmartScreen 那一关。
+- SmartScreen 按下载量积累的「信誉」决定要不要弹「Windows 已保护你的电脑」。新版本刚发布、
+  信誉还没攒起来，就会弹。
+- 弹窗本身是个系统组件。在 **LTSC / IoT 企业版**（精简掉了这类组件），或者系统更新装了一半、
+  这个组件在崩溃的机器上，**连警告都弹不出来**——表现就是双击毫无反应，以管理员身份运行
+  也一样。
+
+这也解释了一个很迷惑的现象：**老版本能启动、新版本不行**。老版本发布得早、信誉已经够了，
+不会触发警告；而且如果某个新版本已经在后台跑着，老版本一启动发现「已在运行」就把消息转给
+它、自己退出——托盘里看到的版本号于是是新的那个。
+
+**解决**：退出 WindowMark，右键下载的 zip →「属性」→ 勾选「解除锁定」→ 确定，然后**重新解压**。
+已经解压出来的，也可以对每个 exe 单独做同样的操作。
+
+### 程序在跑，但边框没画出来
+
+双击 `WindowMarkDiag.exe`。它会把诊断报告存到桌面、复制到剪贴板，**直接粘贴发给开发者**
+就行。报告开头的「发现的问题」一节通常已经说明了原因，常见的几种：
+
+| 报告里说 | 意思 |
+|---|---|
+| 前台窗口是最大化的 | 最大化的窗口按设计不画边框（v0.4.9 起） |
+| border.enabled=false | 边框功能被关掉了 |
+| 每一个的整圈边框都被遮挡计算裁掉了 | 有个看不见的窗口挡在所有窗口前面，报告会点名是谁 |
+| 截不到这个会话的屏幕 | 远程桌面最小化或锁屏时运行的，换个能看到桌面的时候再跑一次 |
+
+报告只读不写，不含窗口标题，路径里的用户目录会换成 `%USERPROFILE%`。
 
 ## Interaction
 
@@ -658,16 +697,17 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.5.1** is the current release. The line includes window bookmarks, per-window borders
+**v0.5.2** is the current release. The line includes window bookmarks, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
-modifier-key window dragging, `WindowMarkInspect.exe`, reliable start-with-Windows state
+modifier-key window dragging, the `WindowMarkDiag.exe` diagnostic report,
+`WindowMarkInspect.exe`, reliable start-with-Windows state
 handling with a login-attempt audit log, borders clamped to the window's own monitor and kept
 off the taskbar, a configurable config-file location (portable or custom path), the ClipKeeper
 clipboard guard, and an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.5.1 remains auditable.
+v0.5.2 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and

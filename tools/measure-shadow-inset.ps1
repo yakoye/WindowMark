@@ -1,4 +1,4 @@
-# 量出一个窗口自己画在窗口矩形里的阴影有多宽，输出可以直接粘进 settings.conf 的一行。
+﻿# 量出一个窗口自己画在窗口矩形里的阴影有多宽，输出可以直接粘进 settings.conf 的一行。
 #
 # 为什么需要手工量：GTK 这类客户端自绘装饰（CSD）把阴影画在自己的窗口矩形内部，
 # 而 GetWindowRect、DWMWA_EXTENDED_FRAME_BOUNDS、GetClientRect 三者返回同一个矩形，
