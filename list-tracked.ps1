@@ -1,4 +1,4 @@
-# 抓「实际被 WindowMark 画了边框」的窗口。
+﻿# 抓「实际被 WindowMark 画了边框」的窗口。
 #
 # 不复刻 C++ 里的过滤规则——那样脚本和代码会走偏。这里反查真实存在的
 # WindowMark.WindowBorder 窗口，看它围着的是谁。

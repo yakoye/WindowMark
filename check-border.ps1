@@ -1,4 +1,4 @@
-# 边框现场诊断。看到某条边没出来时，让那个窗口保持在前台，然后跑：
+﻿# 边框现场诊断。看到某条边没出来时，让那个窗口保持在前台，然后跑：
 #
 #   powershell -ExecutionPolicy Bypass -File .\check-border.ps1
 #   powershell -ExecutionPolicy Bypass -File .\check-border.ps1 -Title 安装

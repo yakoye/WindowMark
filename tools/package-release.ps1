@@ -1,4 +1,4 @@
-# 打发布包：把构建产物、文档和几个用得上的工具拢到 dist\WindowMark-<版本>-win64\，
+﻿# 打发布包：把构建产物、文档和几个用得上的工具拢到 dist\WindowMark-<版本>-win64\，
 # 再压成同名的 zip。
 #
 # 版本号只有一个来源：src\shared\AppIdentity.h 里的 kProductVersion。这里读它，不重复
@@ -24,6 +24,7 @@ Write-Host "打包 v$version"
 
 $binaries = @(
     'WindowMark.exe',
+    'WindowMarkDiag.exe',        # 出问题时双击运行，把报告贴回来
     'WindowMarkInspect.exe',
     'WindowMarkSetup.exe',
     'WindowMarkUninstall.exe',
