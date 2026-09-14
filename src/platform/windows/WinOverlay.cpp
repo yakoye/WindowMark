@@ -1,5 +1,6 @@
 #include "WinOverlay.h"
 
+#include "AppIdentity.h"
 #include "windowmark/core/BorderOcclusion.h"
 
 #include <algorithm>
@@ -35,7 +36,7 @@ RenderTrace TakeRenderTrace() {
 
 namespace {
 
-constexpr const wchar_t* kOverlayClass = L"WindowMark.Overlay";
+constexpr const wchar_t* kOverlayClass = app::kOverlayWindowClass;
 
 // 遍历 z 序的上限，防止病态 z 序把线程转死。
 constexpr int kZOrderLimit = 4096;
