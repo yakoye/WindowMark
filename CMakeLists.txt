@@ -168,6 +168,30 @@ if(WIN32)
         target_compile_options(WindowMarkInspect PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
     endif()
 
+    # 诊断工具：出了问题让用户双击运行，把报告贴回来。
+    #
+    # 和上面的 Inspect 相反，它**链接** WindowMark 自己的快照、规划和配置解析代码：报告里
+    # 「WindowMark 会怎么判断」的部分必须和程序一字不差，另写一份规则迟早会漂移。
+    # WIN32 子系统：双击时不该冒出一个黑色控制台窗口。
+    add_executable(WindowMarkDiag WIN32
+        src/tools/DiagMain.cpp
+        src/platform/windows/WinDesktopSnapshot.cpp
+        src/platform/windows/WinBorderPlan.cpp
+        src/platform/windows/WinUtil.cpp
+        ${WINDOWMARK_RC}
+    )
+    target_include_directories(WindowMarkDiag PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/shared
+    )
+    target_compile_definitions(WindowMarkDiag PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(WindowMarkDiag PRIVATE
+        windowmark_core user32 gdi32 shell32 ole32 advapi32 dwmapi shcore version)
+    if(MSVC)
+        target_compile_options(WindowMarkDiag PRIVATE /W4 /WX /permissive- /EHsc)
+    endif()
+
     # 剪贴板守护。独立进程而不是 WindowMark 的一部分，两条理由都是硬的：
     #   1. 它抢占 Clipboard Viewer Chain 的链头，而链头是「谁最后注册谁在前面」。
     #      WindowMark 开机自启，必然早于 ToDesk；排在后面就来不及在剪贴板被清空前

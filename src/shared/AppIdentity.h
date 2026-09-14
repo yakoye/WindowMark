@@ -23,6 +23,10 @@ inline constexpr wchar_t kControlWindowClass[] = L"WindowMark.Control";
 // the outlines on screen by class name; two copies of the string would drift.
 inline constexpr wchar_t kBorderWindowClass[] = L"WindowMark.WindowBorder";
 
+// v0.4.9 起的边框画布，每块显示器一张。WindowMarkDiag.exe 按这个类名找它，核对画布
+// 在不在、尺寸对不对得上显示器——理由同上，两份字符串会漂移。
+inline constexpr wchar_t kOverlayWindowClass[] = L"WindowMark.Overlay";
+
 // Resolve with RegisterWindowMessageW before use.
 inline constexpr wchar_t kRequestQuitMessage[] = L"WindowMark.RequestQuit.v1";
 inline constexpr wchar_t kSecondInstanceMessage[] = L"WindowMark.SecondInstance.v1";
