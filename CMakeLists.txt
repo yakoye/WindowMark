@@ -7,6 +7,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(WINDOWMARK_BUILD_TESTS "Build WindowMark tests" ON)
 
+# 源码是无 BOM 的 UTF-8，满是中文注释。MSVC 不加 /utf-8 就按系统代码页读——简体中文
+# Windows 是 936（GBK），中文注释行尾的字节会和换行拼成一个 GBK 字符，**把下一行代码
+# 一起吞进注释里**，报出来的错误和真正的原因毫不相干（「border 不是 Settings 的成员」）。
+#
+# 以前是逐个 target 加的，核心库 windowmark_core 恰好漏了。开发机开着系统级 UTF-8
+# （代码页 65001）把它掩盖了，换到一台代码页 936 的机器上第一次编译就炸。放在这里
+# 全局生效，新加的 target 不会再漏。
+if(MSVC)
+    add_compile_options(/utf-8)
+    # 资源编译器是同一个坑，而且 /utf-8 管不到它。ClipKeeper.rc 里「剪贴板守护」五个字
+    # 15 个字节，按 GBK 两两一读，落单的最后一个字节把收尾的引号吃掉，下一行跟着报
+    # RC2133。WindowMark.rc.in 里的中文字节数恰好是偶数才没炸——同一个隐患，只是没踩到。
+    set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /c65001")
+endif()
+
 add_library(windowmark_core STATIC
     src/core/BorderGeometry.cpp
     src/core/BorderOcclusion.cpp
