@@ -131,11 +131,20 @@ constexpr int kZOrderAttemptLimit = 16;
 // Our own decoration windows for a host - the outline and the strip - stack in a fixed
 // order between the host and everything else, so the z-order walk steps over them rather
 // than treating them as obstacles to insert below.
+// 自家画在别人窗口上的东西：书签条，和 v0.4.9 起的边框画布。v0.4.9 之前的边框是每个
+// 窗口一个 WindowMark.WindowBorder，那种窗口已经不存在，这里曾经一直认的是它，新画布
+// 反而不认。
 [[nodiscard]] bool IsOwnDecoration(HWND hwnd) {
     wchar_t cls[64]{};
     if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) == 0) return false;
     return std::wcscmp(cls, kOverlayClass) == 0 ||
-           std::wcscmp(cls, windowmark::app::kBorderWindowClass) == 0;
+           std::wcscmp(cls, windowmark::app::kOverlayWindowClass) == 0;
+}
+
+[[nodiscard]] bool IsBookmarkStrip(HWND hwnd) {
+    wchar_t cls[64]{};
+    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) == 0) return false;
+    return std::wcscmp(cls, kOverlayClass) == 0;
 }
 constexpr UINT_PTR kAnimationTimerId = 1;
 constexpr UINT_PTR kPreviewTimerId = 2;
@@ -383,10 +392,16 @@ public:
         HWND host = HwndFromId(model_.hostWindowId);
         if (!IsWindow(host)) { DiagZ(L"跳过: 宿主已失效", nullptr, 0); return; }
 
-        // The common case: the host is the window in front, the strip was created topmost,
-        // and it is already exactly where it belongs. Nothing to do, and nothing may be
-        // done - every raise from here would be ignored anyway.
-        if (GetForegroundWindow() == host) { DiagZ(L"宿主在前台, 保持置顶", nullptr, 0); return; }
+        // 常见情形：宿主就是前台窗口。书签条挪到 topmost 层的末尾——见 MoveToTopmostBandTail。
+        //
+        // 宿主自己是置顶窗口时例外（被置顶功能钉住的，或者本来就 always-on-top 的程序）：
+        // 层末尾在它下面，挪过去书签条就压到宿主身下，搭在窗口边上的那几像素被宿主盖住。
+        // 这种情况走下面「贴在宿主正上方」那段。
+        if (GetForegroundWindow() == host &&
+            (GetWindowLongPtrW(host, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) {
+            MoveToTopmostBandTail();
+            return;
+        }
 
         // Host is buried, which only happens with drawer.active_window_only off. Lowering
         // is not restricted the way raising is, so the strip can be walked down to sit
@@ -428,6 +443,55 @@ public:
         // Found nothing to anchor to. Staying topmost is the safe outcome: visible but
         // possibly in front of something it should be behind, rather than invisible.
         DiagZ(L"没找到锚点, 维持原状", nullptr, 0);
+    }
+
+    // 挪到 topmost 层的末尾：比所有普通窗口高（宿主就在普通层里），比别的程序的 topmost
+    // 窗口低——右键菜单、输入法候选框、任务栏、悬浮小窗都能压在书签上面。
+    //
+    // 不能「保持置顶」了事：topmost 窗口之间谁在上面，看谁最后一次被显示。书签条跟着前台
+    // 窗口隐藏、显示，右键一点焦点一晃，它就重新跳回 topmost 层最顶上，把刚弹出来的右键
+    // 菜单盖住。
+    //
+    // 往下挪不算「抬高」，不会被系统静默拒绝。边框画布（WinOverlay 的 MoveToBandTail）
+    // 靠同一个做法已经跑了几个版本。
+    //
+    // 找锚点要跳过自家的窗口。边框画布也在往层末尾挪，书签又应该压在边框线上面：要是把
+    // 画布当成锚点，书签条就被插到画布下面，画布下一次再把书签条当锚点插回它下面，两边
+    // 每次更新都互换一次位置。
+    void MoveToTopmostBandTail() {
+        HWND anchor = nullptr;   // 最靠后的一个「别人家的、可见的」topmost 窗口
+        HWND hwnd = GetTopWindow(nullptr);
+        for (int step = 0; step < kZOrderStepLimit && hwnd != nullptr; ++step) {
+            if (hwnd != hwnd_ && IsWindowVisible(hwnd) != FALSE) {
+                if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) break;
+                if (!IsOwnDecoration(hwnd)) anchor = hwnd;
+            }
+            hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+        }
+        if (anchor == nullptr) {
+            // topmost 层里只有自家的窗口：已经在别人的 topmost 窗口下面了，没有要让的。
+            DiagZ(L"层里没有别人家的置顶窗口", nullptr, 0);
+            return;
+        }
+
+        // 已经紧挨在锚点下面就不动：中间只允许隔着看不见的窗口和别的书签条。拖动宿主时
+        // 这里每次几何更新都会走一遍，稳态下必须一次 SetWindowPos 都不发。
+        HWND below = GetWindow(anchor, GW_HWNDNEXT);
+        for (int step = 0; step < kZOrderStepLimit && below != nullptr;
+             ++step, below = GetWindow(below, GW_HWNDNEXT)) {
+            if (below == hwnd_) {
+                DiagZ(L"已在置顶层末尾", anchor, 0);
+                return;
+            }
+            if (IsWindowVisible(below) == FALSE || IsBookmarkStrip(below)) continue;
+            break;
+        }
+
+        if (SetWindowPos(hwnd_, anchor, 0, 0, 0, 0, kOverlayZFlags)) {
+            DiagZ(L"挪到置顶层末尾", anchor, 0);
+        } else {
+            DiagZ(L"挪到置顶层末尾被拒", anchor, GetLastError());
+        }
     }
 
     // 只在 WINDOWMARK_DIAG=1 时写；层级这条路径出问题时从外面完全看不见发生了什么。

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(WindowMark VERSION 0.5.2 LANGUAGES CXX)
+project(WindowMark VERSION 0.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,18 @@ if(MSVC)
     # RC2133。WindowMark.rc.in 里的中文字节数恰好是偶数才没炸——同一个隐患，只是没踩到。
     set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /c65001")
 endif()
+
+# C/C++ 运行库静态链接进每个 exe，不依赖系统里装没装 VC++ 运行库。
+#
+# 动态链接（CMake 默认的 /MD）要求目标机器上有 MSVCP140.dll、VCRUNTIME140.dll、
+# VCRUNTIME140_1.dll。全新安装的 Windows 10/11、LTSC、IoT 版上常常没有，双击直接报
+# 「找不到 VCRUNTIME140.dll」。用 dumpbin 核对过，从 0.4.1 到 0.5.2 每个发布版的这三项
+# 依赖完全相同，所以在没装运行库的机器上一个版本都起不来。对一个解压即用的托盘小工具，
+# 让用户先去装运行库说不过去；每个 exe 大几百 KB 是值得的。
+#
+# 必须在任何 target 创建之前设：它是 MSVC_RUNTIME_LIBRARY 属性的初始值，target 建好了
+# 再设不生效。需要 CMP0091（3.15+），cmake_minimum_required 已经保证了。
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_library(windowmark_core STATIC
     src/core/BorderGeometry.cpp
