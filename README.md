@@ -1,11 +1,11 @@
-# WindowMark v0.5.2
+# WindowMark v0.5.3
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, temporary always-on-top pinning, and modifier-key window dragging**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.5.2 at a glance
+## v0.5.3 at a glance
 
 Four window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -24,6 +24,8 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
+v0.5.3 no longer needs the Visual C++ runtime installed — every exe carries its own — and
+keeps bookmarks below right-click menus instead of drawing over them.
 v0.5.2 adds `WindowMarkDiag.exe` — run it when something is wrong and paste the report — and
 documents why a freshly downloaded copy can refuse to start at all (see 「双击没反应」 below).
 v0.5.1 fixes three things that all looked like "WindowMark stopped working": the tray icon
@@ -37,8 +39,8 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.5.2-win64.zip` from the
-   [v0.5.2 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.2).
+1. Download `WindowMark-v0.5.3-win64.zip` from the
+   [v0.5.3 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.3).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
@@ -47,9 +49,17 @@ full history.
    independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.5.2.
+scaffold and does not provide a working macOS application in v0.5.3.
 
 ## 双击没反应 / 看不到边框
+
+### 弹出「找不到 VCRUNTIME140.dll」
+
+**v0.5.2 及以前的版本**需要系统里装有 Microsoft Visual C++ 运行库。全新安装的 Windows、LTSC、
+IoT 版上常常没有，双击会报「找不到 VCRUNTIME140.dll / MSVCP140.dll / VCRUNTIME140_1.dll」。
+安装方法见 [WindowMark-依赖安装.md](WindowMark-依赖安装.md)。
+
+**v0.5.3 起不再需要**：运行库已经静态链接进每个 exe，解压即用。
 
 ### 先排除「程序根本没起来」
 
@@ -697,17 +707,18 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.5.2** is the current release. The line includes window bookmarks, per-window borders
+**v0.5.3** is the current release. The line includes window bookmarks, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
 modifier-key window dragging, the `WindowMarkDiag.exe` diagnostic report,
-`WindowMarkInspect.exe`, reliable start-with-Windows state
+`WindowMarkInspect.exe`, executables with no Visual C++ runtime dependency,
+reliable start-with-Windows state
 handling with a login-attempt audit log, borders clamped to the window's own monitor and kept
 off the taskbar, a configurable config-file location (portable or custom path), the ClipKeeper
 clipboard guard, and an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.5.2 remains auditable.
+v0.5.3 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
