@@ -24,8 +24,9 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
-v0.5.3 no longer needs the Visual C++ runtime installed — every exe carries its own — and
-keeps bookmarks below right-click menus instead of drawing over them.
+v0.5.3 no longer needs the Visual C++ runtime installed — every exe carries its own —,
+keeps bookmarks below right-click menus instead of drawing over them, and stops full-screen
+transparent overlays such as WGestures' gesture-trail window from hiding every border.
 v0.5.2 adds `WindowMarkDiag.exe` — run it when something is wrong and paste the report — and
 documents why a freshly downloaded copy can refuse to start at all (see 「双击没反应」 below).
 v0.5.1 fixes three things that all looked like "WindowMark stopped working": the tray icon
