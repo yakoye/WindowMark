@@ -185,6 +185,9 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
     for (const auto& entry : snapshot.windows) {
         if (entry.hwnd != snapshot.foreground) continue;
         if (entry.cloaked || entry.minimized) break;
+        // 鼠标能穿过去的窗口谁都不挡，理由同下面的 occluders。它几乎不可能成为前台，
+        // 但真成了也不能拿它的矩形去裁别人。
+        if (entry.passThrough) break;
         // 桌面当了前台（用户点了一下桌面空白处）时这条规则不适用：它铺满整个
         // 虚拟桌面却永远在 z 序最底，谁都不挡。拿它的矩形去裁就是一次裁光所有边框。
         if (entry.desktop) break;
@@ -289,6 +292,7 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                         for (const auto& other : snapshot.windows) {
                             if (other.hwnd == entry.hwnd) break;   // 只看排在它前面的
                             if (other.cloaked || other.minimized) continue;
+                            if (other.passThrough) continue;
                             if (other.topmost || other.treatAsTopmost ||
                                 other.owner == entry.hwnd) {
                                 fgOccluders.push_back(AsOccluder(other.frame));
@@ -312,7 +316,11 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
         }
 
         // 不管这个窗口有没有边框，它都会挡住排在它下面的窗口。
-        if (paintable) occluders.push_back(AsOccluder(entry.frame));
+        //
+        // 鼠标能穿过去的例外。WGestures 那种铺满全屏、置顶、完全透明的窗口，当成遮挡物
+        // 就是一次裁光屏幕上所有边框（v0.4.8 每个窗口一个边框窗口、遮挡交给系统合成，
+        // 所以没这个问题；v0.4.9 起遮挡由这里用矩形算，才冒出来）。
+        if (paintable && !entry.passThrough) occluders.push_back(AsOccluder(entry.frame));
     }
     return strokes;
 }

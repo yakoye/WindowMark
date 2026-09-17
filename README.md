@@ -90,7 +90,7 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
 |---|---|
 | 前台窗口是最大化的 | 最大化的窗口按设计不画边框（v0.4.9 起） |
 | border.enabled=false | 边框功能被关掉了 |
-| 每一个的整圈边框都被遮挡计算裁掉了 | 有个看不见的窗口挡在所有窗口前面，报告会点名是谁 |
+| 每一个的整圈边框都被遮挡计算裁掉了 | 有个看不见、但鼠标点得中的窗口挡在所有窗口前面，报告会点名是谁。鼠标能穿过去的透明窗口（比如 WGestures 画手势轨迹的那种）v0.5.3 起已经不算遮挡 |
 | 截不到这个会话的屏幕 | 远程桌面最小化或锁屏时运行的，换个能看到桌面的时候再跑一次 |
 
 报告只读不写，不含窗口标题，路径里的用户目录会换成 `%USERPROFILE%`。
@@ -121,6 +121,12 @@ This is **independent of bookmarks**: its own switch, its own settings window, i
 tray submenu, and it covers every top-level window — including single-window apps that
 never get a bookmark strip. Turn it on under **窗口边框 → 启用窗口边框**, or set
 `border.enabled=true`. It is off by default.
+
+Outlines are drawn on one transparent canvas per monitor, and WindowMark works out itself
+which parts of each outline are covered by windows in front. **A window the mouse passes
+through never counts as covering anything**: full-screen transparent overlays — the
+gesture-trail window of WGestures, for example — would otherwise hide every border on the
+screen. See the v0.5.3 entry in [CHANGELOG.md](CHANGELOG.md) for how that is decided.
 
 The idea comes from [tacky-borders](https://github.com/lukeyou05/tacky-borders); the
 implementation here is native rather than a bundled copy of it. That project is Rust and

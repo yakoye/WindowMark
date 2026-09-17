@@ -104,6 +104,7 @@ void ReportIfDue() {
                 head += name(entry.hwnd);
                 if (entry.hwnd == g_lastSnapshot.foreground) head += L"[前台]";
                 if (entry.cloaked) head += L"[cloaked]";
+                if (entry.passThrough) head += L"[穿透]";
                 if (entry.minimized) head += L"[最小化]";
             }
             ++index;
