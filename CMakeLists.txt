@@ -44,6 +44,7 @@ add_library(windowmark_core STATIC
     src/core/DrawerState.cpp
     src/core/Hotkey.cpp
     src/core/LayoutEngine.cpp
+    src/core/MagneticDock.cpp
     src/core/PinRegistry.cpp
     src/core/Settings.cpp
     src/core/Types.cpp

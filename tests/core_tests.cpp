@@ -7,6 +7,7 @@
 #include "windowmark/core/DrawerState.h"
 #include "windowmark/core/Hotkey.h"
 #include "windowmark/core/LayoutEngine.h"
+#include "windowmark/core/MagneticDock.h"
 #include "windowmark/core/PinRegistry.h"
 #include "windowmark/core/Settings.h"
 
@@ -605,6 +606,217 @@ void TestRoundedRing() {
         const RoundedRing ring = RoundedRingOf(1, -5, 0);
         CHECK(ring.width >= 1.0F);
     }
+}
+
+void TestMagneticDock() {
+    using windowmark::DockArrange;
+    using windowmark::DockBaseStarts;
+    using windowmark::DockItemAt;
+    using windowmark::DockItemBase;
+    using windowmark::DockItemVisual;
+    using windowmark::DockMaxGrowth;
+    using windowmark::DockParams;
+    using windowmark::DockPrimary;
+    using windowmark::DockTargetSizes;
+    using windowmark::LayoutDock;
+    using windowmark::MagnetInfluence;
+    using windowmark::SmoothToward;
+
+    const auto near = [](float a, float b, float eps) { return std::fabs(a - b) <= eps; };
+
+    // --- 衰减函数 ---
+    CHECK(MagnetInfluence(0.0F, 120.0F) == 1.0F);
+    CHECK(MagnetInfluence(120.0F, 120.0F) == 0.0F);
+    CHECK(MagnetInfluence(500.0F, 120.0F) == 0.0F);
+    CHECK(near(MagnetInfluence(60.0F, 120.0F), 0.5F, 1e-5F));
+    // 余弦，不是直线：R/4 处余弦是 0.8536，直线是 0.75
+    CHECK(near(MagnetInfluence(30.0F, 120.0F), 0.8535534F, 1e-4F));
+    // 中心是平顶：离中心 1px 几乎不衰减。直线在这里已经掉到 0.9917
+    CHECK(MagnetInfluence(1.0F, 120.0F) > 0.9998F);
+    CHECK(near(MagnetInfluence(-30.0F, 120.0F), MagnetInfluence(30.0F, 120.0F), 1e-6F));
+    for (float d = 0.0F; d < 120.0F; d += 0.5F) {
+        CHECK(MagnetInfluence(d + 0.5F, 120.0F) <= MagnetInfluence(d, 120.0F));
+    }
+
+    // 七个横排书签：base 宽 44、高 17；第 3 个是激活标签，宽 54、高 23
+    std::vector<DockItemBase> items(7, DockItemBase{44.0F, 17.0F});
+    items[3] = DockItemBase{54.0F, 23.0F};
+    const DockParams params{6.0F, 72.0F, 36.0F, 120.0F};
+    const std::vector<float> starts = DockBaseStarts(items, params.gap, 100.0F);
+    const auto center = [&](std::size_t i) { return starts[i] + items[i].main * 0.5F; };
+    const float lo = starts.front() - params.radius - 20.0F;
+    const float hi = starts.back() + items.back().main + params.radius + 20.0F;
+    std::vector<DockItemVisual> v;
+
+    // --- 峰值固定：鼠标在任何一个书签中心，它都精确到达峰值，激活标签也一样 ---
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        LayoutDock(items, starts, params, center(i), 1.0F, v);
+        CHECK(near(v[i].influence, 1.0F, 1e-6F));
+        CHECK(near(v[i].main, 72.0F, 1e-3F));
+        CHECK(near(v[i].cross, 36.0F, 1e-3F));
+    }
+
+    // base 已经比峰值大的书签被吸到时保持原样，不会反而缩小
+    {
+        const std::vector<DockItemBase> tall{{44.0F, 40.0F}};
+        const std::vector<float> tallStarts = DockBaseStarts(tall, 6.0F, 0.0F);
+        LayoutDock(tall, tallStarts, params, 22.0F, 1.0F, v);
+        CHECK(near(v[0].cross, 40.0F, 1e-4F));
+    }
+
+    // --- 距离达到半径的书签严格保持 base ---
+    LayoutDock(items, starts, params, center(0), 1.0F, v);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (std::fabs(center(i) - center(0)) >= params.radius) {
+            CHECK(v[i].main == items[i].main);
+            CHECK(v[i].cross == items[i].cross);
+        }
+    }
+
+    // --- 间隙不是死区：正中间两侧受力相等且都接近峰值 ---
+    {
+        const float mid = starts[0] + items[0].main + params.gap * 0.5F;
+        LayoutDock(items, starts, params, mid, 1.0F, v);
+        CHECK(near(v[0].influence, v[1].influence, 1e-5F));
+        CHECK(v[0].influence > 0.85F);
+        CHECK(near(v[0].main, v[1].main, 1e-3F));
+    }
+    // 从第一个书签中心扫到最后一个，任何位置都有书签受到强磁力，不存在「谁都没被选中」
+    for (float p = center(0); p <= center(items.size() - 1); p += 0.5F) {
+        DockTargetSizes(items, starts, params, p, 1.0F, v);
+        float strongest = 0.0F;
+        for (const DockItemVisual& item : v) strongest = std::max(strongest, item.influence);
+        CHECK(strongest > 0.85F);
+    }
+
+    // --- 连续：0.25px 步长正着扫一遍、倒着扫一遍，每一步任何书签的尺寸和位置都没有跳变 ---
+    {
+        const float pi = 3.14159265F;
+        const float slopeMain = (params.peakMain - 44.0F) * pi / (2.0F * params.radius);
+        const float slopeCross = (params.peakCross - 17.0F) * pi / (2.0F * params.radius);
+        const float slopeStart = 1.0F + static_cast<float>(items.size() + 1) * slopeMain;
+        const float step = 0.25F;
+        const auto sweep = [&](float from, float to) {
+            std::vector<DockItemVisual> prev;
+            const float dir = to > from ? step : -step;
+            for (float p = from; dir > 0.0F ? p <= to : p >= to; p += dir) {
+                LayoutDock(items, starts, params, p, 1.0F, v);
+                if (!prev.empty()) {
+                    for (std::size_t i = 0; i < items.size(); ++i) {
+                        CHECK(std::fabs(v[i].main - prev[i].main) <= step * slopeMain * 1.02F + 1e-3F);
+                        CHECK(std::fabs(v[i].cross - prev[i].cross) <= step * slopeCross * 1.02F + 1e-3F);
+                        CHECK(std::fabs(v[i].start - prev[i].start) <= step * slopeStart * 1.02F + 1e-3F);
+                    }
+                }
+                prev = v;
+            }
+        };
+        sweep(lo, hi);
+        sweep(hi, lo);
+    }
+
+    // --- 不动点：鼠标下面那个点始终在鼠标下面；相邻书签之间正好隔一个 gap，不重叠 ---
+    for (float p = starts.front(); p < starts.back() + items.back().main; p += 3.7F) {
+        LayoutDock(items, starts, params, p, 1.0F, v);
+        const int k = DockItemAt(items, starts, p);
+        if (k >= 0) {
+            const auto ks = static_cast<std::size_t>(k);
+            const float f = (p - starts[ks]) / items[ks].main;
+            CHECK(near(v[ks].start + f * v[ks].main, p, 1e-3F));
+        } else {
+            for (std::size_t i = 0; i + 1 < items.size(); ++i) {
+                const float end = starts[i] + items[i].main;
+                if (p >= end && p < starts[i + 1]) {
+                    CHECK(near(v[i].start + v[i].main + (p - end), p, 1e-3F));
+                }
+            }
+        }
+        for (std::size_t i = 0; i + 1 < items.size(); ++i) {
+            CHECK(near(v[i + 1].start, v[i].start + v[i].main + params.gap, 1e-3F));
+        }
+    }
+
+    // --- 鼠标在栏外时栏首 / 栏尾原地不动：只向另一侧挤，整条栏不跟着鼠标平移 ---
+    {
+        const float before = starts.front() - 30.0F;
+        LayoutDock(items, starts, params, before, 1.0F, v);
+        CHECK(near(v.front().start, starts.front(), 1e-3F));
+        const float lastEnd = starts.back() + items.back().main;
+        const float after = lastEnd + 30.0F;
+        LayoutDock(items, starts, params, after, 1.0F, v);
+        CHECK(near(v.back().start + v.back().main, lastEnd, 1e-3F));
+    }
+
+    // --- 磁场强度：0 时完全回到 base，0.5 时 influence 减半 ---
+    LayoutDock(items, starts, params, center(3), 0.0F, v);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        CHECK(v[i].influence == 0.0F);
+        CHECK(v[i].main == items[i].main);
+        CHECK(v[i].cross == items[i].cross);
+        CHECK(near(v[i].start, starts[i], 1e-3F));
+    }
+    LayoutDock(items, starts, params, center(3), 0.5F, v);
+    CHECK(near(v[3].influence, 0.5F, 1e-6F));
+
+    // --- base 与 visual 分离：同样的输入反复算，结果一模一样，base 不被改动 ---
+    {
+        const std::vector<float> startsBefore = starts;
+        std::vector<DockItemVisual> again;
+        LayoutDock(items, starts, params, center(2) + 7.0F, 1.0F, v);
+        LayoutDock(items, starts, params, center(2) + 7.0F, 1.0F, again);
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            CHECK(v[i].main == again[i].main);
+            CHECK(v[i].start == again[i].start);
+        }
+        CHECK(starts == startsBefore);
+    }
+
+    // --- 主标签：中点附近小幅抖动不来回切换；真的移过去才切；离开磁场没有主标签 ---
+    {
+        const float mid = starts[0] + items[0].main + params.gap * 0.5F;
+        LayoutDock(items, starts, params, mid - 3.0F, 1.0F, v);
+        int primary = DockPrimary(v, -1, 0.02F);
+        CHECK(primary == 0);
+        for (int t = 0; t < 20; ++t) {
+            LayoutDock(items, starts, params, mid + ((t % 2) != 0 ? 0.4F : -0.4F), 1.0F, v);
+            primary = DockPrimary(v, primary, 0.02F);
+            CHECK(primary == 0);
+        }
+        LayoutDock(items, starts, params, center(1), 1.0F, v);
+        primary = DockPrimary(v, primary, 0.02F);
+        CHECK(primary == 1);
+        LayoutDock(items, starts, params, -1000.0F, 1.0F, v);
+        CHECK(DockPrimary(v, primary, 0.02F) == -1);
+    }
+
+    // --- 最大挤开量：和更密的采样一致，给窗口留的余量不会不够 ---
+    {
+        const float growth = DockMaxGrowth(items, params);
+        float dense = 0.0F;
+        for (float p = lo; p <= hi; p += 0.25F) {
+            DockTargetSizes(items, starts, params, p, 1.0F, v);
+            float total = 0.0F;
+            for (std::size_t i = 0; i < items.size(); ++i) total += v[i].main - items[i].main;
+            dense = std::max(dense, total);
+        }
+        CHECK(growth > 0.0F);
+        CHECK(std::fabs(growth - dense) <= 0.05F);
+    }
+
+    // --- 指数逼近 ---
+    CHECK(SmoothToward(10.0F, 20.0F, 0.0F, 30.0F) == 10.0F);
+    CHECK(SmoothToward(10.0F, 20.0F, 5.0F, 0.0F) == 20.0F);
+    CHECK(SmoothToward(10.0F, 20.0F, 1000.0F, 30.0F) == 20.0F);
+    CHECK(near(SmoothToward(10.0F, 20.0F, 30.0F, 30.0F), 10.0F + 10.0F * (1.0F - std::exp(-1.0F)),
+               1e-3F));
+    CHECK(SmoothToward(20.0F, 10.0F, 30.0F, 30.0F) < 20.0F);
+    CHECK(SmoothToward(10.0F, 10.005F, 1.0F, 30.0F) == 10.005F);
+
+    // --- 命中：左闭右开，间隙和栏外都是 -1 ---
+    CHECK(DockItemAt(items, starts, center(2)) == 2);
+    CHECK(DockItemAt(items, starts, starts[2]) == 2);
+    CHECK(DockItemAt(items, starts, starts[2] + items[2].main) == -1);
+    CHECK(DockItemAt(items, starts, starts[0] - 1.0F) == -1);
 }
 
 void TestDragGeometry() {
@@ -1563,6 +1775,7 @@ int main() {
     TestDragModifiers();
     TestRoundedRing();
     TestDragGeometry();
+    TestMagneticDock();
     TestDragSettingsRoundTrip();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
