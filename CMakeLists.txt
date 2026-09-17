@@ -46,6 +46,7 @@ add_library(windowmark_core STATIC
     src/core/LayoutEngine.cpp
     src/core/MagneticDock.cpp
     src/core/PinRegistry.cpp
+    src/core/PreviewStack.cpp
     src/core/Settings.cpp
     src/core/Types.cpp
 )
