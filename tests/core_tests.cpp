@@ -8,6 +8,7 @@
 #include "windowmark/core/Hotkey.h"
 #include "windowmark/core/LayoutEngine.h"
 #include "windowmark/core/MagneticDock.h"
+#include "windowmark/core/PreviewStack.h"
 #include "windowmark/core/PinRegistry.h"
 #include "windowmark/core/Settings.h"
 
@@ -817,6 +818,162 @@ void TestMagneticDock() {
     CHECK(DockItemAt(items, starts, starts[2]) == 2);
     CHECK(DockItemAt(items, starts, starts[2] + items[2].main) == -1);
     CHECK(DockItemAt(items, starts, starts[0] - 1.0F) == -1);
+}
+
+void TestPreviewStack() {
+    using windowmark::LayoutPreviewStack;
+    using windowmark::Placement;
+    using windowmark::PreviewStackInput;
+    using windowmark::PreviewStackLayout;
+    using windowmark::RectF;
+    using windowmark::RectsOverlap;
+
+    const auto near = [](float a, float b) { return std::fabs(a - b) <= 1e-3F; };
+    const RectF work{0.0F, 0.0F, 1920.0F, 1080.0F};
+
+    // 五个书签，主轴每个 44、间距 6，从 400 开始；深度 17 25 36 25 17（主标签是第 2 个）
+    const float depths[5] = {17.0F, 25.0F, 36.0F, 25.0F, 17.0F};
+    const auto makeInput = [&](Placement placement, float root) {
+        PreviewStackInput in;
+        in.placement = placement;
+        in.workArea = work;
+        in.rootEdge = root;
+        for (int i = 0; i < 5; ++i) {
+            const float start = 400.0F + 50.0F * static_cast<float>(i);
+            const float end = start + 44.0F;
+            const float d = depths[i];
+            switch (placement) {
+            case Placement::Top: in.tabs.push_back(RectF{start, root, end, root + d}); break;
+            case Placement::Left: in.tabs.push_back(RectF{root, start, root + d, end}); break;
+            case Placement::Right: in.tabs.push_back(RectF{root - d, start, root, end}); break;
+            default: in.tabs.push_back(RectF{start, root - d, end, root}); break;
+            }
+        }
+        in.anchorMain = 400.0F + 100.0F + 22.0F;   // 主标签中心
+        const bool side = placement == Placement::Left || placement == Placement::Right;
+        in.titleMain = side ? 180.0F : 200.0F;      // 竖排标题主轴是高度
+        in.titleCross = 24.0F;
+        in.thumbnailMain = side ? 300.0F : 480.0F;
+        in.thumbnailCross = side ? 480.0F : 300.0F;
+        in.titleGap = 7.0F;
+        in.thumbnailGap = 10.0F;
+        in.minThumbnailMain = 80.0F;
+        in.minThumbnailCross = 80.0F;
+        return in;
+    };
+    const auto noOverlap = [&](const PreviewStackInput& in, const PreviewStackLayout& out) {
+        if (RectsOverlap(out.title, out.thumbnail)) return false;
+        for (const RectF& tab : in.tabs) {
+            if (RectsOverlap(out.title, tab)) return false;
+            if (out.thumbnailVisible && RectsOverlap(out.thumbnail, tab)) return false;
+        }
+        return true;
+    };
+
+    // --- Bottom：从下往上 书签 → 标题 → 缩略图，间距精确 ---
+    {
+        const PreviewStackInput in = makeInput(Placement::Bottom, 1000.0F);
+        const PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(noOverlap(in, out));
+        CHECK(out.thumbnailVisible);
+        CHECK(near(out.title.bottom, 1000.0F - 36.0F - 7.0F));
+        CHECK(near(out.title.height(), 24.0F));
+        CHECK(near((out.title.left + out.title.right) * 0.5F, in.anchorMain));
+        CHECK(near(out.thumbnail.bottom, out.title.top - 10.0F));
+        CHECK(near(out.thumbnail.height(), 300.0F));
+        CHECK(near((out.thumbnail.left + out.thumbnail.right) * 0.5F, in.anchorMain));
+    }
+
+    // --- 四个方向：三段都不重叠；Top/Bottom、Left/Right 严格镜像 ---
+    {
+        const PreviewStackInput bIn = makeInput(Placement::Bottom, 1000.0F);
+        const PreviewStackInput tIn = makeInput(Placement::Top, 80.0F);
+        const PreviewStackInput lIn = makeInput(Placement::Left, 300.0F);
+        const PreviewStackInput rIn = makeInput(Placement::Right, 1600.0F);
+        const PreviewStackLayout b = LayoutPreviewStack(bIn);
+        const PreviewStackLayout t = LayoutPreviewStack(tIn);
+        const PreviewStackLayout l = LayoutPreviewStack(lIn);
+        const PreviewStackLayout r = LayoutPreviewStack(rIn);
+        CHECK(noOverlap(bIn, b));
+        CHECK(noOverlap(tIn, t));
+        CHECK(noOverlap(lIn, l));
+        CHECK(noOverlap(rIn, r));
+
+        // Top：从上往下，离根边的距离和 Bottom 完全一样
+        CHECK(near(t.title.top - 80.0F, 1000.0F - b.title.bottom));
+        CHECK(near(t.thumbnail.top - 80.0F, 1000.0F - b.thumbnail.bottom));
+        CHECK(near(t.title.left, b.title.left));
+        // Left：从左往右；Right：从右往左，离根边的距离一样
+        CHECK(near(l.title.left, 300.0F + 36.0F + 7.0F));
+        CHECK(near(l.thumbnail.left, l.title.right + 10.0F));
+        CHECK(near(1600.0F - r.title.right, l.title.left - 300.0F));
+        CHECK(near(1600.0F - r.thumbnail.right, l.thumbnail.left - 300.0F));
+        CHECK(near(r.title.top, l.title.top));
+        // 竖排标题：主轴是高度
+        CHECK(near(l.title.height(), 180.0F));
+        CHECK(near(l.title.width(), 24.0F));
+    }
+
+    // --- 标题比主标签宽，盖到一个更深的邻居：必须躲开那个邻居，而不是只看主标签 ---
+    {
+        PreviewStackInput in = makeInput(Placement::Bottom, 1000.0F);
+        in.tabs[3].top = 1000.0F - 40.0F;   // 右边邻居比主标签还深
+        const PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(noOverlap(in, out));
+        CHECK(near(out.title.bottom, 1000.0F - 40.0F - 7.0F));
+    }
+
+    // --- 贴近工作区边缘：主轴夹回工作区，不跑出屏幕 ---
+    {
+        PreviewStackInput in = makeInput(Placement::Bottom, 1000.0F);
+        in.anchorMain = 30.0F;
+        PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(near(out.title.left, 0.0F));
+        CHECK(near(out.thumbnail.left, 0.0F));
+        in.anchorMain = 1900.0F;
+        out = LayoutPreviewStack(in);
+        CHECK(near(out.title.right, 1920.0F));
+        CHECK(near(out.thumbnail.right, 1920.0F));
+    }
+
+    // --- 交叉轴放不下：缩略图等比缩小，仍不重叠、不出工作区 ---
+    {
+        PreviewStackInput in = makeInput(Placement::Bottom, 200.0F);
+        const PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(out.thumbnailVisible);
+        CHECK(noOverlap(in, out));
+        CHECK(out.thumbnail.top >= -1e-3F);
+        CHECK(out.thumbnail.height() < 300.0F);
+        CHECK(near(out.thumbnail.width() / out.thumbnail.height(), 480.0F / 300.0F));
+        CHECK(near(out.thumbnail.bottom, out.title.top - 10.0F));
+    }
+    // 缩到比下限还小：不显示，标题照样摆好
+    {
+        PreviewStackInput in = makeInput(Placement::Bottom, 140.0F);
+        const PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(!out.thumbnailVisible);
+        CHECK(near(out.title.bottom, 140.0F - 36.0F - 7.0F));
+    }
+    // 没有缩略图（书签指向宿主自己）：只有标题
+    {
+        PreviewStackInput in = makeInput(Placement::Bottom, 1000.0F);
+        in.thumbnailMain = 0.0F;
+        const PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(!out.thumbnailVisible);
+        CHECK(near(out.title.bottom, 1000.0F - 36.0F - 7.0F));
+    }
+
+    // --- 主标签长高时：标题和缩略图同步外移，两个间距始终不变 ---
+    for (float depth = 17.0F; depth <= 36.0F; depth += 0.5F) {
+        PreviewStackInput in = makeInput(Placement::Bottom, 1000.0F);
+        in.tabs[2].top = 1000.0F - depth;
+        in.tabs[1].top = 1000.0F - 17.0F;
+        in.tabs[3].top = 1000.0F - 17.0F;
+        const PreviewStackLayout out = LayoutPreviewStack(in);
+        CHECK(noOverlap(in, out));
+        CHECK(near(out.title.bottom, 1000.0F - depth - 7.0F));
+        CHECK(near(out.thumbnail.bottom, out.title.top - 10.0F));
+    }
 }
 
 void TestDragGeometry() {
@@ -1776,6 +1933,7 @@ int main() {
     TestRoundedRing();
     TestDragGeometry();
     TestMagneticDock();
+    TestPreviewStack();
     TestDragSettingsRoundTrip();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
