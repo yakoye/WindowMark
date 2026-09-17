@@ -1346,6 +1346,45 @@ void TestConfigLocationPriority() {
 
 } // namespace
 
+void TestPassesMouseThrough() {
+    using windowmark::PassesMouseThrough;
+    using windowmark::ProbeHit;
+    const auto S = ProbeHit::Self;
+    const auto A = ProbeHit::Above;
+    const auto B = ProbeHit::Below;
+
+    // 不是分层窗口：跨进程穿不过去，探测点怎么说都算遮挡。
+    // WS_EX_TRANSPARENT 单独用只影响绘制顺序和同一线程的命中测试。
+    CHECK(!PassesMouseThrough(false, false, true, false, {B, B, B}));
+    CHECK(!PassesMouseThrough(false, true, true, false, {}));
+
+    // 分层 + WS_EX_TRANSPARENT：标准的穿透覆盖层（WGestures），不用探测
+    CHECK(PassesMouseThrough(true, true, true, false, {}));
+    // 被禁用也照样穿透——穿透是样式决定的，和能不能用无关
+    CHECK(PassesMouseThrough(true, true, false, false, {}));
+
+    // 用户点名「视为置顶」：明说了边框要给它让路，哪怕它样式上是穿透的
+    CHECK(!PassesMouseThrough(true, true, true, true, {}));
+    CHECK(!PassesMouseThrough(true, false, true, true, {B, B, B}));
+
+    // 只有分层、靠透明像素穿透：探测点全穿过去
+    CHECK(PassesMouseThrough(true, false, true, false, {B, B, B, B, B}));
+
+    // 任何一处接得住鼠标就算遮挡——中间透明、四周一圈框的选区窗口
+    CHECK(!PassesMouseThrough(true, false, true, false, {B, S, B, B, B}));
+    CHECK(!PassesMouseThrough(true, false, true, false, {S, S, S, S, S}));
+
+    // 部分被上面的窗口挡住：没挡住的地方穿过去了，照样算穿透
+    CHECK(PassesMouseThrough(true, false, true, false, {A, A, B, A, A}));
+
+    // 全被挡住、或者一个点都没测：说明不了，保守算遮挡
+    CHECK(!PassesMouseThrough(true, false, true, false, {A, A, A, A, A}));
+    CHECK(!PassesMouseThrough(true, false, true, false, {}));
+
+    // 被禁用的分层窗口：命中测试本来就跳过禁用窗口，测出「穿过去」不可信
+    CHECK(!PassesMouseThrough(true, false, false, false, {B, B, B, B, B}));
+}
+
 void TestBorderOcclusion() {
     // 一、矩形减矩形
     {
@@ -1519,6 +1558,7 @@ int main() {
     TestHotkeyParsing();
     TestBorderClamping();
     TestConfigLocationPriority();
+    TestPassesMouseThrough();
     TestBorderOcclusion();
     TestDragModifiers();
     TestRoundedRing();

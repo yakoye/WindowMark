@@ -86,4 +86,40 @@ namespace windowmark {
 [[nodiscard]] std::vector<Rect> ClipToBounds(const std::vector<Rect>& segments,
                                              const Rect& bounds);
 
+// 在窗口里某个点上做命中测试，打中了谁。
+enum class ProbeHit {
+    Self,    // 打中这个窗口自己：它在这里接得住鼠标
+    Above,   // 打中 z 序排在它上面的窗口：这个点被别人挡着，说明不了它
+    Below,   // 穿过了它，打到它下面的窗口或者桌面
+};
+
+// 这个窗口鼠标能不能穿过去。能穿过去的不算遮挡物。
+//
+// 边框的遮挡是 WindowMark 自己用矩形算的，系统说「可见」的窗口一律当成不透明的板子。
+// WGestures（鼠标手势）常驻一个铺满全屏、置顶、完全透明的窗口画轨迹——眼睛看不见，系统
+// 却说它可见，于是屏幕上所有边框被整圈裁光。
+//
+// 判据选「鼠标能不能穿过去」而不是「看不看得见」：透明度从外面问不出来，命中测试却问得
+// 出来。而且两者在现实里几乎总是一致的——一个铺满全屏、置顶、鼠标又穿不过去的窗口会让
+// 整个桌面点不动，只有真锁屏、全屏程序会这样，它们本来就该挡住边框。
+//
+// 跨进程让鼠标穿透只有两条路，都要求 WS_EX_LAYERED：
+//   - 再加 WS_EX_TRANSPARENT：样式位一看便知，不用做命中测试（transparentStyle）
+//   - 靠 alpha 为 0 的像素：样式位看不出来，只能靠命中测试。实测两种都会被
+//     WindowFromPoint 穿过去（tools/check-transparent-overlay.py）
+//
+// 判定依次是：
+//   1. 用户在 tracking.treat_as_topmost_classes 里点名的——明说了要边框给它让路——算遮挡
+//   2. 不是分层窗口——跨进程穿不过去——算遮挡
+//   3. 分层 + WS_EX_TRANSPARENT——穿透
+//   4. 被禁用的窗口（比如开着模态对话框的主窗口）命中测试本来就会跳过它，测不出东西——算遮挡
+//   5. 任何一个探测点打中了它自己——它在那里接得住鼠标——算遮挡
+//   6. 有探测点穿过了它——穿透
+//   7. 探测点全被上面的窗口挡着，或者一个都没测——说明不了，保守算遮挡
+//
+// 第 5、6 两条的顺序决定了「部分透明」的窗口怎么算：只要有一处接得住鼠标就算遮挡。
+// 录屏软件那种中间透明、四周一圈可见框的选区窗口，四个象限的探测点会打中那圈框。
+[[nodiscard]] bool PassesMouseThrough(bool layered, bool transparentStyle, bool enabled,
+                                      bool treatAsTopmost, const std::vector<ProbeHit>& probes);
+
 } // namespace windowmark

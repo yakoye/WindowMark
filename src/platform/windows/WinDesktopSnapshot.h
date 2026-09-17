@@ -24,6 +24,9 @@ struct SnapshotWindow {
     // 的边框，一裁就是全屏。
     bool desktop{false};
     HWND owner{};          // GW_OWNER，判断「这是不是某个窗口自己的对话框」
+    // 鼠标能穿过去（见 PassesMouseThrough）。这种窗口不算遮挡物：WGestures 那种铺满全屏、
+    // 置顶、完全透明的窗口眼睛看不见，当成遮挡物就会把屏幕上所有边框裁光。
+    bool passThrough{false};
 };
 
 // 一块显示器的两个矩形。

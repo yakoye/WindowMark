@@ -753,6 +753,8 @@ void CollectBorders(const Settings& settings, const std::vector<RunningCopy>& ru
                 for (size_t j = 0; j < i && listed < 3; ++j) {
                     const win::SnapshotWindow& other = *rows[j].window;
                     if (other.cloaked || other.minimized) continue;
+                    // 和 PlanBorders 同一口径：鼠标能穿过去的不算遮挡物
+                    if (other.passThrough) continue;
                     if (isForeground && !(other.topmost || other.treatAsTopmost ||
                                           other.owner == w.hwnd)) {
                         continue;
@@ -767,6 +769,7 @@ void CollectBorders(const Settings& settings, const std::vector<RunningCopy>& ru
             }
         }
 
+        if (w.passThrough) status += L"（鼠标可穿透，不算遮挡物）";
         if (shown < 40) {
             Line(L"%-3zu %-30ls %-18ls %-6zu %-6ls %-8ls %ls%ls", i + 1, ClassOf(w.hwnd).c_str(),
                  ProcessNameOf(w.hwnd).c_str(), own.size(), sample.c_str(),

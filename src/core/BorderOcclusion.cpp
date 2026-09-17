@@ -94,4 +94,14 @@ std::vector<Rect> ClipToBounds(const std::vector<Rect>& segments, const Rect& bo
     return out;
 }
 
+bool PassesMouseThrough(bool layered, bool transparentStyle, bool enabled,
+                        bool treatAsTopmost, const std::vector<ProbeHit>& probes) {
+    if (treatAsTopmost) return false;
+    if (!layered) return false;
+    if (transparentStyle) return true;
+    if (!enabled) return false;
+    if (std::find(probes.begin(), probes.end(), ProbeHit::Self) != probes.end()) return false;
+    return std::find(probes.begin(), probes.end(), ProbeHit::Below) != probes.end();
+}
+
 } // namespace windowmark

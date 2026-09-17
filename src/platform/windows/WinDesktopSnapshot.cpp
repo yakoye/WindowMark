@@ -1,5 +1,7 @@
 #include "WinDesktopSnapshot.h"
 
+#include "windowmark/core/BorderOcclusion.h"
+
 #include <dwmapi.h>
 
 #include <algorithm>
@@ -97,6 +99,74 @@ namespace {
     return entry.frame.right > entry.frame.left && entry.frame.bottom > entry.frame.top;
 }
 
+// 在窗口里取五个点做命中测试：正中，加四个象限的中心。
+//
+// 一个点不够：中间透明、四周一圈可见框的窗口（录屏软件的选区框）正中会穿过去，四个象限
+// 的点才打得到那圈框。
+//
+// WindowFromPoint 只给同一线程的窗口发 WM_NCHITTEST，别的进程的窗口按系统自己记着的
+// 形状和透明度判断，所以对面程序卡死也不会把这里卡住。
+[[nodiscard]] std::vector<ProbeHit> ProbeWindow(const DesktopSnapshot& snapshot, size_t index) {
+    const SnapshotWindow& entry = snapshot.windows[index];
+    const RECT& f = entry.frame;
+    const LONG w = f.right - f.left;
+    const LONG h = f.bottom - f.top;
+    const POINT points[] = {
+        {f.left + w / 2, f.top + h / 2},
+        {f.left + w / 4, f.top + h / 4},
+        {f.left + w * 3 / 4, f.top + h / 4},
+        {f.left + w / 4, f.top + h * 3 / 4},
+        {f.left + w * 3 / 4, f.top + h * 3 / 4},
+    };
+
+    std::vector<ProbeHit> hits;
+    hits.reserve(std::size(points));
+    for (const POINT& pt : points) {
+        const HWND hit = WindowFromPoint(pt);
+        const HWND root = hit != nullptr ? GetAncestor(hit, GA_ROOT) : nullptr;
+        if (root == entry.hwnd) {
+            hits.push_back(ProbeHit::Self);
+            continue;
+        }
+        if (root == nullptr) {
+            hits.push_back(ProbeHit::Below);
+            continue;
+        }
+        const auto it = std::find_if(snapshot.windows.begin(), snapshot.windows.end(),
+                                     [root](const SnapshotWindow& one) { return one.hwnd == root; });
+        if (it != snapshot.windows.end()) {
+            const auto at = static_cast<size_t>(it - snapshot.windows.begin());
+            hits.push_back(at < index ? ProbeHit::Above : ProbeHit::Below);
+            continue;
+        }
+        // 不在快照里又打得中的，最常见的是 WindowMark 自己的书签条：它接得住鼠标，而且
+        // 在上面。当成「穿过去了」会把书签条压着的那个分层窗口误判成透明。
+        hits.push_back(IsOwnWindow(root) ? ProbeHit::Above : ProbeHit::Below);
+    }
+    return hits;
+}
+
+// 给快照里的窗口标上「鼠标能不能穿过去」。
+//
+// 要等整份快照收齐再做：判断探测点打中的窗口在不在它上面，得知道 z 序。
+//
+// 只有分层窗口才需要做命中测试（跨进程穿透必须是分层窗口），普通窗口一次系统调用都不多。
+void MarkPassThrough(DesktopSnapshot& snapshot) {
+    for (size_t i = 0; i < snapshot.windows.size(); ++i) {
+        SnapshotWindow& entry = snapshot.windows[i];
+        const LONG_PTR style = GetWindowLongPtrW(entry.hwnd, GWL_EXSTYLE);
+        const bool layered = (style & WS_EX_LAYERED) != 0;
+        if (!layered || entry.desktop || entry.cloaked || entry.minimized) continue;
+
+        const bool transparent = (style & WS_EX_TRANSPARENT) != 0;
+        const bool enabled = IsWindowEnabled(entry.hwnd) != FALSE;
+        std::vector<ProbeHit> probes;
+        if (!transparent && enabled && !entry.treatAsTopmost) probes = ProbeWindow(snapshot, i);
+        entry.passThrough =
+            PassesMouseThrough(layered, transparent, enabled, entry.treatAsTopmost, probes);
+    }
+}
+
 } // namespace
 
 DesktopSnapshot CaptureDesktop(const std::vector<ShadowInset>& shadowInsets,
@@ -155,6 +225,7 @@ DesktopSnapshot CaptureDesktop(const std::vector<ShadowInset>& shadowInsets,
             }
         }
     }
+    MarkPassThrough(snapshot);
     return snapshot;
 }
 
