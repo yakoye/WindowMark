@@ -1,6 +1,6 @@
 # Changelog
 
-## 未发布
+## v0.5.4
 
 ### 书签栏改成磁性放大（Magnetic Dock）
 
