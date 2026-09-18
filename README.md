@@ -98,19 +98,32 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
 
 ## Interaction
 
-Normal windows prefer the **left outside edge**. Each bookmark has its own stable pastel/rainbow color during the process lifetime.
+书签条贴在宿主窗口**内侧**的一条边上（默认底边；左右两侧同样贴在窗口里、从窗口边往里长）。
+每个书签在进程生命周期内有固定的彩虹色。
 
 ```text
-        compact                         hover B
-
-     [ A… ]                          [ A… ]
-     [ B… ]     VS Code              [         PCIe Tool         ]  VS Code
-     [ C… ]                          [ C… ]
+            ┌────────────────────┐
+            │       缩略图       │   ← 第一次出现等 preview.delay_ms
+            └────────────────────┘
+          ┌── 主标签的完整标题 ──┐   ← 总是显示，超长末尾省略号
+     ▂▂   ▄▄   ██████   ▄▄   ▂▂      ← 离鼠标越近越大，正对中心时是固定峰值
+   ══════════════════════════════ 窗口下沿
 ```
 
-Only the hovered bookmark expands. The others remain compact. `Self` (the window that owns this bookmark strip) and `Active` (the current foreground window) are separate states.
+- **磁性放大**：鼠标是磁铁，书签是一排铁块。沿书签栏方向，离鼠标越近的书签越大，正对中心时
+  长到固定峰值（`drawer.bottom_magnet_max_*` / `drawer.magnet_max_*`，绝对像素——激活标签和
+  普通标签一样大），`drawer.magnet_radius` 以外完全不动，中间平滑衰减。放大的书签把邻居连续
+  挤开，鼠标下那一点始终留在鼠标下，书签不会跑开让鼠标去追。
+- **没有死区**：两个书签之间的间隙也接得住鼠标，停在正中间时两边一样大。只有离开整条栏才算
+  离开，而且要先过 `drawer.magnet_grace_ms` 宽限，回来得及时就当没离开过。
+- **三段式预览**：从窗口边缘往窗口内容，永远是 书签 → 浮动标题 → 缩略图，任何时刻互不重叠，
+  跟着磁场一起动。左右两侧的标题是竖排，两侧都从上往下读。主标签换人时标题和缩略图从旧位置
+  滑到新位置、内容交叉淡入淡出（`preview.crossfade_ms`）。
+- 书签里只显示短名（`drawer.short_name_chars`），完整名字看浮动标题。`Self`（这条书签栏所属的
+  窗口）只有标题、没有缩略图；`Active`（当前前台窗口）的书签平时更大一点，被吸到时和别人一样大。
 
-When a host window is maximized, automatic layout moves the bookmarks to a compact row at the **bottom edge**. Hovering a non-self bookmark waits for the configured preview delay and then shows one DWM thumbnail preview; only one preview exists at a time.
+`placement=auto`：最大化的窗口用底部横排，其余用左侧。书签条在窗口里面，不再需要窗口外有地方，
+所以它不会随窗口移动在左右之间跳。
 
 ## Window borders
 
@@ -399,8 +412,9 @@ WindowMark
 |
 +-- core/                         platform-neutral C++
 |   +-- Coordinator              grouping + synchronization + selection policy
-|   +-- LayoutEngine             left/right/top/bottom policy
-|   +-- DrawerState              compact/hover expansion state machine
+|   +-- LayoutEngine             left/right/top/bottom policy, strip geometry
+|   +-- MagneticDock             continuous magnetic field: tab sizes and positions
+|   +-- PreviewStack             bookmark -> title -> thumbnail, never overlapping
 |   +-- Settings                 portable settings model
 |   +-- AppSelectionModel        platform-neutral checkbox data
 |   +-- IWindowBackend
@@ -412,7 +426,7 @@ WindowMark
 |   +-- WinWindowBackend         EnumWindows + SetWinEventHook
 |   +-- WinOverlayBackend        Win32 + Direct2D/DirectWrite
 |   +-- WinBorderBackend         one layered window per outline, shared bitmap
-|   +-- WinPreviewBackend        DWM thumbnail preview
+|   +-- WinPreviewBackend        floating title (DirectWrite) + DWM thumbnail crossfade
 |   +-- WinControlWindow         tray icon and menu
 |   +-- WinSelectionDialog       native app/window checkbox UI
 |   +-- WinSettingsDialog        bookmark and border settings windows
@@ -432,7 +446,7 @@ A future macOS backend should implement the same interfaces rather than changing
 - overlay: `NSPanel` / `NSWindow`;
 - preview: ScreenCaptureKit / CoreGraphics;
 - native selection UI: AppKit frontend over the same `AppSelectionModel`;
-- configuration, grouping, selection policy, drawer state, colors, and placement policy remain in Core.
+- configuration, grouping, selection policy, the magnetic dock and preview stack math, colors, and placement policy remain in Core.
 
 No `HWND`, `RECT`, DWM, Direct2D, Cocoa, or CoreGraphics type is allowed in the platform-neutral public model.
 
@@ -502,22 +516,33 @@ Defaults:
 drawer.enabled=true
 placement=bottom
 drawer.collapsed_extent=30
-drawer.expanded_extent=180
 drawer.thickness=34
 drawer.gap=6
 drawer.corner_radius=10
 drawer.animation_ms=90
 drawer.short_name_chars=4
 drawer.top_offset=72
-drawer.attach_overlap=6
+drawer.magnet_max_extent=56
+drawer.magnet_max_thickness=52
+drawer.bottom_magnet_max_extent=72
+drawer.bottom_magnet_max_thickness=36
+drawer.magnet_radius=120
+drawer.magnet_grace_ms=60
 drawer.active_window_only=true
 drawer.active_extra_extent=10
 drawer.transparency=0
 
 drawer.bottom_collapsed_extent=44
-drawer.bottom_expanded_extent=120
 drawer.bottom_collapsed_thickness=0
 drawer.bottom_active_thickness=23
+
+preview.enabled=true
+preview.delay_ms=450
+preview.width=480
+preview.height=300
+preview.title_gap=7
+preview.thumbnail_gap=10
+preview.crossfade_ms=100
 
 border.enabled=true
 # 不画边框的应用，按可执行文件路径。用「边框设置 -> 排除应用」勾选。
@@ -591,7 +616,13 @@ tracking.shadow_insets=
 selection.disabled_apps=
 ```
 
-`drawer.animation_ms=0` gives an immediate no-animation expansion. `preview.width` and `preview.height` control preview size. `drawer.collapsed_extent` is how far a compact tab sticks out; `drawer.short_name_chars` is how many characters that compact tab shows (no ellipsis — the full label appears on hover).
+`drawer.animation_ms` 是进出书签栏时磁场强度的渐变时长，0 = 不渐变。`preview.width` /
+`preview.height` 是缩略图大小，`preview.enabled` 只管缩略图（浮动标题总是显示）。
+`drawer.collapsed_extent` 是侧边书签平时伸进窗口多深；`drawer.short_name_chars` 是书签里最多
+显示几个字（不加省略号——完整名字在浮动标题里）。
+
+已退役、仍会读写但不再生效的键：`drawer.expanded_extent`、`drawer.bottom_expanded_extent`（磁性
+书签栏里没有「展开」，由峰值取代）、`drawer.attach_overlap`（书签条不再挂在窗口外）。
 
 An existing `settings.conf` is never rewritten by an upgrade, so changed defaults only apply to new installs. Edit the file and restart WindowMark to pick them up, or run
 `rebuild_and_install.bat -Fresh`, which deletes it.
@@ -604,11 +635,15 @@ would change one of them needs to be raised first, not decided in passing.
 | 配置项 | 值 | 为什么是这个值 |
 |---|---|---|
 | `drawer.bottom_active_thickness` | **23** | 激活标签的高度。此前写死等于 `drawer.thickness`（34），只能靠改 `thickness` 来调，会连非激活项一起缩掉——所以给了它独立设置 |
-| `drawer.bottom_expanded_extent` | **120** | 悬停展开后的标签宽度 |
+| `drawer.bottom_expanded_extent` | **120** | 悬停展开后的标签宽度。**已退役**：磁性书签栏里没有「展开」，配置里照常读写、不再生效；悬停时的宽度改由 `drawer.bottom_magnet_max_extent` 决定 |
+| `drawer.magnet_grace_ms` | **60** | 磁性书签栏规格定的：只有离开整条栏才有宽限，标签之间不存在离开 |
+| `preview.title_gap` | **7** | 书签到浮动标题，规格给的范围 6–8px |
+| `preview.thumbnail_gap` | **10** | 浮动标题到缩略图，规格给的范围 8–12px |
+| `preview.crossfade_ms` | **100** | 主标签切换的交叉淡入淡出，规格给的范围 80–120ms |
 | `drawer.bottom_collapsed_extent` | **44** | 平时的标签宽度 |
 | `drawer.short_name_chars` | **4** | 折叠标签显示几个字 |
 | `border.width` + `border.offset` | **4 / -1** | `Reach = 4 + (-1) = 3`：窗口外 3px，再压住窗口自身边缘 1px。`offset=0` 会让 Windows 自己那条 1px 边框露出来变成灰缝（实测 `#4F5255`/`#646765`） |
-| `placement` | **bottom** | `auto` 会随窗口移动在左右之间跳，找不着 |
+| `placement` | **bottom** | `auto` 会随窗口移动在左右之间跳，找不着（磁性书签栏起 `auto` 不再跳：普通窗口左侧、最大化底部，但默认仍是 bottom） |
 | `drawer.active_window_only` | **true** | 只有前台窗口显示书签条 |
 | `pin.width` | **10** | 置顶高亮的线宽。6 看着和普通边框没区别；PowerToys 用 15，偏重了 |
 | `pin.color` | **accent** | 跟随系统强调色，置顶窗口看起来像属于这个桌面 |

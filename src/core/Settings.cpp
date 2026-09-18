@@ -259,6 +259,12 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     settings.drawer.bottomCollapsedThickness = ParseInt(values, "drawer.bottom_collapsed_thickness", settings.drawer.bottomCollapsedThickness, 0, 80);
     settings.drawer.bottomActiveThickness = ParseInt(values, "drawer.bottom_active_thickness", settings.drawer.bottomActiveThickness, 0, 80);
     settings.drawer.transparency = ParseInt(values, "drawer.transparency", settings.drawer.transparency, 0, 90);
+    settings.drawer.magnetMaxExtent = ParseInt(values, "drawer.magnet_max_extent", settings.drawer.magnetMaxExtent, 16, 320);
+    settings.drawer.magnetMaxThickness = ParseInt(values, "drawer.magnet_max_thickness", settings.drawer.magnetMaxThickness, 16, 320);
+    settings.drawer.bottomMagnetMaxExtent = ParseInt(values, "drawer.bottom_magnet_max_extent", settings.drawer.bottomMagnetMaxExtent, 16, 480);
+    settings.drawer.bottomMagnetMaxThickness = ParseInt(values, "drawer.bottom_magnet_max_thickness", settings.drawer.bottomMagnetMaxThickness, 8, 240);
+    settings.drawer.magnetRadius = ParseInt(values, "drawer.magnet_radius", settings.drawer.magnetRadius, 20, 800);
+    settings.drawer.magnetGraceMs = ParseInt(values, "drawer.magnet_grace_ms", settings.drawer.magnetGraceMs, 0, 1000);
     if (const auto it = values.find("drawer.enabled"); it != values.end()) {
         settings.drawer.enabled = ParseBool(it->second, settings.drawer.enabled);
     }
@@ -308,6 +314,9 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     settings.preview.width = ParseInt(values, "preview.width", settings.preview.width, 160, 1600);
     settings.preview.height = ParseInt(values, "preview.height", settings.preview.height, 100, 1200);
     settings.preview.cornerRadius = ParseInt(values, "preview.corner_radius", settings.preview.cornerRadius, 0, 32);
+    settings.preview.titleGap = ParseInt(values, "preview.title_gap", settings.preview.titleGap, 0, 64);
+    settings.preview.thumbnailGap = ParseInt(values, "preview.thumbnail_gap", settings.preview.thumbnailGap, 0, 64);
+    settings.preview.crossfadeMs = ParseInt(values, "preview.crossfade_ms", settings.preview.crossfadeMs, 0, 1000);
     settings.performance.geometryThrottleMs = ParseInt(values, "performance.geometry_throttle_ms", settings.performance.geometryThrottleMs, 8, 250);
 
     if (const auto it = values.find("selection.disabled_apps"); it != values.end()) {
@@ -359,13 +368,27 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "drawer.enabled=" << (settings.drawer.enabled ? "true" : "false") << "\n";
     output << "placement=" << ToString(settings.drawer.placement) << "\n";
     output << "drawer.collapsed_extent=" << settings.drawer.collapsedExtent << "\n";
-    output << "drawer.expanded_extent=" << settings.drawer.expandedExtent << "\n";
     output << "drawer.thickness=" << settings.drawer.thickness << "\n";
     output << "drawer.gap=" << settings.drawer.gap << "\n";
     output << "drawer.corner_radius=" << settings.drawer.cornerRadius << "\n";
     output << "drawer.animation_ms=" << settings.drawer.animationMs << "\n";
     output << "drawer.short_name_chars=" << settings.drawer.shortNameChars << "\n";
     output << "drawer.top_offset=" << settings.drawer.topOffset << "\n";
+    output << "# 磁性书签栏：鼠标正对一个标签中心时它长到的绝对尺寸（像素，不是倍率），\n";
+    output << "# 周围的标签按离鼠标的距离平滑衰减，radius 以外完全不动。\n";
+    output << "#   magnet_max_extent / magnet_max_thickness                 侧边：伸进窗口的深度 / 高度\n";
+    output << "#   bottom_magnet_max_extent / bottom_magnet_max_thickness   横排：宽度 / 伸进窗口的高度\n";
+    output << "#   magnet_grace_ms  鼠标离开整条栏后磁场再保持多久，回来得及时就当没离开过\n";
+    output << "drawer.magnet_max_extent=" << settings.drawer.magnetMaxExtent << "\n";
+    output << "drawer.magnet_max_thickness=" << settings.drawer.magnetMaxThickness << "\n";
+    output << "drawer.bottom_magnet_max_extent=" << settings.drawer.bottomMagnetMaxExtent << "\n";
+    output << "drawer.bottom_magnet_max_thickness=" << settings.drawer.bottomMagnetMaxThickness << "\n";
+    output << "drawer.magnet_radius=" << settings.drawer.magnetRadius << "\n";
+    output << "drawer.magnet_grace_ms=" << settings.drawer.magnetGraceMs << "\n";
+    output << "# 已退役，不再生效（磁性书签栏里没有「展开」，书签条也不再挂在窗口外）。\n";
+    output << "# 留着是为了不丢你写过的值。\n";
+    output << "drawer.expanded_extent=" << settings.drawer.expandedExtent << "\n";
+    output << "drawer.bottom_expanded_extent=" << settings.drawer.bottomExpandedExtent << "\n";
     output << "drawer.attach_overlap=" << settings.drawer.attachOverlap << "\n";
     output << "# Show bookmarks only on the foreground window. Turning this off restores a\n";
     output << "# strip on every window, but background strips can then overlap other windows.\n";
@@ -377,10 +400,9 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "# here the extent is a tab's width. A row tab rests at half thickness against\n";
     output << "# the window edge and grows upward on hover.\n";
     output << "#   bottom_collapsed_thickness  resting height; 0 = half of drawer.thickness\n";
-    output << "#   bottom_active_thickness     how tall the active tab stands, and the\n";
-    output << "#                               ceiling a hovered tab grows to; 0 = drawer.thickness\n";
+    output << "#   bottom_active_thickness     how tall the active tab stands at rest;\n";
+    output << "#                               0 = drawer.thickness\n";
     output << "drawer.bottom_collapsed_extent=" << settings.drawer.bottomCollapsedExtent << "\n";
-    output << "drawer.bottom_expanded_extent=" << settings.drawer.bottomExpandedExtent << "\n";
     output << "drawer.bottom_collapsed_thickness=" << settings.drawer.bottomCollapsedThickness << "\n";
     output << "drawer.bottom_active_thickness=" << settings.drawer.bottomActiveThickness << "\n\n";
     output << "# Window borders. Independent of bookmarks: these apply to every top-level\n";
@@ -423,11 +445,20 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "# Empty means no shortcut is registered at all. Format: Ctrl+Alt+T\n";
     output << "pin.hotkey=" << settings.pin.hotkey << "\n";
 
+    output << "\n";
+    output << "# 悬停时从书签往窗口内容方向依次排开：书签 -> 浮动标题 -> 缩略图，互不重叠。\n";
+    output << "#   enabled       只管缩略图；浮动标题总是显示（标签里只放得下几个字）\n";
+    output << "#   delay_ms      缩略图第一次出现前等多久，一扫而过时不乱闪\n";
+    output << "#   title_gap     书签到标题的间距；thumbnail_gap 标题到缩略图的间距\n";
+    output << "#   crossfade_ms  主标签换人时标题和缩略图交叉淡入淡出的时长\n";
     output << "preview.enabled=" << (settings.preview.enabled ? "true" : "false") << "\n";
     output << "preview.delay_ms=" << settings.preview.delayMs << "\n";
     output << "preview.width=" << settings.preview.width << "\n";
     output << "preview.height=" << settings.preview.height << "\n";
-    output << "preview.corner_radius=" << settings.preview.cornerRadius << "\n\n";
+    output << "preview.corner_radius=" << settings.preview.cornerRadius << "\n";
+    output << "preview.title_gap=" << settings.preview.titleGap << "\n";
+    output << "preview.thumbnail_gap=" << settings.preview.thumbnailGap << "\n";
+    output << "preview.crossfade_ms=" << settings.preview.crossfadeMs << "\n\n";
     output << "performance.geometry_throttle_ms=" << settings.performance.geometryThrottleMs << "\n";
     output << "\n";
     output << "# Extra window classes to ignore completely - no bookmark and no border.\n";

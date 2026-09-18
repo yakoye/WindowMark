@@ -60,11 +60,9 @@ bool Coordinator::Start() {
         previewBackend_.Hide();
         windowsBackend_.ActivateWindow(id);
     };
-    callbacks.onPreview = [this](const PreviewRequest& request) {
-        if (settings_.preview.enabled) {
-            previewBackend_.Show(request);
-        }
-    };
+    // preview.enabled 只管缩略图，由预览端自己看：浮动标题总是要显示的，标签里只放得下
+    // 几个字，完整名字只有它能给。
+    callbacks.onPreview = [this](const PreviewRequest& request) { previewBackend_.Show(request); };
     callbacks.onPreviewHide = [this]() { previewBackend_.Hide(); };
     callbacks.onRename = onRename_;
     callbacks.onOpenSettings = onOpenSettings_;
@@ -403,6 +401,7 @@ void Coordinator::UpdateSettings(Settings settings) {
 
     if (pinningWasOn && !settings_.pin.enabled) UnpinAll();
 
+    dockGrowth_.clear();
     previewBackend_.Hide();
     previewBackend_.UpdateSettings(settings_.preview);
     overlaysBackend_.UpdateSettings(settings_);
@@ -706,6 +705,11 @@ std::vector<OverlayModel> Coordinator::BuildModels() {
             return stableOrder_[a->id] < stableOrder_[b->id];
         });
 
+        int activeIndex = -1;
+        for (std::size_t i = 0; i < members.size(); ++i) {
+            if (members[i]->id == activeWindow_) activeIndex = static_cast<int>(i);
+        }
+
         for (const WindowInfo* host : members) {
             OverlayModel model;
             model.hostWindowId = host->id;
@@ -716,7 +720,15 @@ std::vector<OverlayModel> Coordinator::BuildModels() {
                 model.visible = model.visible && host->id == activeWindow_;
             }
             model.placement = LayoutEngine::ResolvePlacement(*host, settings_.drawer);
-            model.screenBounds = LayoutEngine::ComputeOverlayBounds(*host, members.size(), model.placement, settings_.drawer);
+            const DockSpec spec = LayoutEngine::DockSpecFor(
+                model.placement, members.size(), activeIndex, settings_.drawer);
+            const bool side =
+                model.placement == Placement::Left || model.placement == Placement::Right;
+            const DockBounds bounds = LayoutEngine::ComputeOverlayBounds(
+                *host, spec, DockGrowthFor(side, members.size(), activeIndex), model.placement,
+                settings_.drawer);
+            model.screenBounds = bounds.bounds;
+            model.dockOrigin = bounds.baseOrigin;
 
             model.items.reserve(members.size());
             for (const WindowInfo* member : members) {
@@ -737,6 +749,16 @@ std::vector<OverlayModel> Coordinator::BuildModels() {
     }
 
     return models;
+}
+
+float Coordinator::DockGrowthFor(bool side, std::size_t count, int activeIndex) {
+    const auto key = std::make_tuple(side, count, activeIndex);
+    if (const auto it = dockGrowth_.find(key); it != dockGrowth_.end()) return it->second;
+    const DockSpec spec = LayoutEngine::DockSpecFor(
+        side ? Placement::Left : Placement::Bottom, count, activeIndex, settings_.drawer);
+    const float growth = DockMaxGrowth(spec.items, spec.params);
+    dockGrowth_.emplace(key, growth);
+    return growth;
 }
 
 Color Coordinator::ColorFor(WindowId id) {

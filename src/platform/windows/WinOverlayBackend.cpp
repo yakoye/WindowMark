@@ -1,9 +1,10 @@
 #include "WinOverlayBackend.h"
 
 #include "AppIdentity.h"
+#include "WinLayeredSurface.h"
 #include "WinUtil.h"
-#include "windowmark/core/DrawerState.h"
 #include "windowmark/core/LayoutEngine.h"
+#include "windowmark/core/MagneticDock.h"
 
 #include <d2d1.h>
 #include <dwrite.h>
@@ -56,6 +57,9 @@ DiagState g_diag;
     QueryPerformanceCounter(&c);
     return static_cast<double>(c.QuadPart) / perMs;
 }
+
+// 磁场动画的帧时钟，毫秒。
+[[nodiscard]] double NowMs() { return DiagNowMs(); }
 
 // Scoped timer that adds elapsed microseconds to a field.
 class DiagTimer {
@@ -147,8 +151,17 @@ constexpr int kZOrderAttemptLimit = 16;
     return std::wcscmp(cls, kOverlayClass) == 0;
 }
 constexpr UINT_PTR kAnimationTimerId = 1;
+// 缩略图第一次出现前的延迟（preview.delay_ms）
 constexpr UINT_PTR kPreviewTimerId = 2;
+// 离开整条书签栏后的宽限（drawer.magnet_grace_ms）
+constexpr UINT_PTR kGraceTimerId = 3;
 constexpr UINT kAnimationTickMs = 16;
+// 视觉值的轻微平滑：约一帧。所有标签同一个时间常数、在同一帧里统一推进。
+constexpr float kVisualTauMs = 16.0F;
+// 新的主标签要比当前的 influence 高出这么多才换人，鼠标停在两个标签正中间抖动时标题不闪。
+constexpr float kPrimaryHysteresis = 0.02F;
+// 定时器在跑时两帧之间最多按这么久推进（系统一卡，下一帧也只走一步，不跳）。
+constexpr float kMaxFrameMs = 34.0F;
 constexpr UINT kRenameCommand = 4001;
 constexpr UINT kSettingsCommand = 4002;
 
@@ -171,8 +184,8 @@ Color Adjust(const Color& c, float delta) {
 
 
 // A collapsed tab is only ~30px wide. An ellipsis would eat one of the two or three
-// glyphs that actually fit, so truncation there is silent; the full label is one hover
-// away regardless.
+// glyphs that actually fit, so truncation there is silent; the full label is in the
+// floating title that appears on hover.
 std::wstring Shorten(const std::wstring& input, int maxCodePoints) {
     if (maxCodePoints <= 0 || input.empty()) return {};
     std::wstring out;
@@ -218,68 +231,6 @@ bool Contains(const LocalRect& rect, float x, float y) {
     return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
 }
 
-// Backing store for UpdateLayeredWindow: a top-down 32bpp DIB that Direct2D renders
-// into with premultiplied alpha, which is exactly the format ULW_ALPHA expects.
-class LayeredSurface {
-public:
-    ~LayeredSurface() { Reset(); }
-
-    bool Ensure(int width, int height) {
-        if (dc_ && width == width_ && height == height_) return true;
-        Reset();
-        if (width <= 0 || height <= 0) return false;
-
-        HDC screen = GetDC(nullptr);
-        dc_ = CreateCompatibleDC(screen);
-        ReleaseDC(nullptr, screen);
-        if (!dc_) return false;
-
-        BITMAPINFO info{};
-        info.bmiHeader.biSize = sizeof(info.bmiHeader);
-        info.bmiHeader.biWidth = width;
-        info.bmiHeader.biHeight = -height; // top-down
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        info.bmiHeader.biCompression = BI_RGB;
-
-        void* bits = nullptr;
-        bitmap_ = CreateDIBSection(dc_, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (!bitmap_) {
-            Reset();
-            return false;
-        }
-
-        previous_ = static_cast<HBITMAP>(SelectObject(dc_, bitmap_));
-        width_ = width;
-        height_ = height;
-        return true;
-    }
-
-    void Reset() {
-        if (dc_) {
-            if (previous_) SelectObject(dc_, previous_);
-            DeleteDC(dc_);
-        }
-        if (bitmap_) DeleteObject(bitmap_);
-        dc_ = nullptr;
-        bitmap_ = nullptr;
-        previous_ = nullptr;
-        width_ = 0;
-        height_ = 0;
-    }
-
-    [[nodiscard]] HDC dc() const noexcept { return dc_; }
-    [[nodiscard]] int width() const noexcept { return width_; }
-    [[nodiscard]] int height() const noexcept { return height_; }
-
-private:
-    HDC dc_{};
-    HBITMAP bitmap_{};
-    HBITMAP previous_{};
-    int width_{};
-    int height_{};
-};
-
 } // namespace
 
 class WinOverlayBackend::OverlayWindow {
@@ -287,7 +238,7 @@ public:
     OverlayWindow(
         WinOverlayBackend& owner,
         const OverlayModel& model)
-        : owner_(owner), model_(model), drawer_(MakeDrawer(owner, model.placement)) {}
+        : owner_(owner), model_(model) {}
 
     ~OverlayWindow() { Destroy(); }
 
@@ -322,7 +273,7 @@ public:
             this);
         if (!hwnd_) return false;
 
-        drawer_.Reset(model_.items.size());
+        RebuildDock(true);
         RebuildLabels();
         UpdatePositionAndVisibility();
         Redraw();
@@ -334,17 +285,11 @@ public:
         if (!hwnd_) return;
         KillTimer(hwnd_, kAnimationTimerId);
         KillTimer(hwnd_, kPreviewTimerId);
+        KillTimer(hwnd_, kGraceTimerId);
+        HidePreview();
         surface_.Reset();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
-    }
-
-    // Side and row placements size their tabs from different settings, so a host that
-    // switches between them (maximize/restore) needs its drawer rebuilt.
-    static DrawerState MakeDrawer(WinOverlayBackend& owner, Placement placement) {
-        const auto metrics = LayoutEngine::MetricsFor(placement, owner.settings_.drawer);
-        return DrawerState(metrics.collapsedExtent, metrics.expandedExtent,
-                           owner.settings_.drawer.animationMs);
     }
 
     [[nodiscard]] bool IsShown() const { return appliedVisible_; }
@@ -352,10 +297,15 @@ public:
     void UpdateModel(const OverlayModel& model) {
         const bool countChanged = model.items.size() != model_.items.size();
         const bool placementChanged = model.placement != model_.placement;
+        // base 只由方向、个数、激活标签和它在窗口里的起点决定；这些不变，磁场的状态就原样
+        // 接着用。
+        const bool dockChanged = countChanged || placementChanged ||
+                                 ActiveIndexOf(model.items) != ActiveIndexOf(model_.items) ||
+                                 model.dockOrigin != model_.dockOrigin;
         // Dragging a host window fires a geometry event every throttle interval. Those
         // only move the overlay, so the expensive part - re-rendering and re-uploading
         // the layered bitmap - is skipped unless the pixels would actually differ.
-        const bool contentChanged = countChanged || placementChanged || ItemsDiffer(model.items) ||
+        const bool contentChanged = dockChanged || ItemsDiffer(model.items) ||
                                     model.screenBounds.width() != model_.screenBounds.width() ||
                                     model.screenBounds.height() != model_.screenBounds.height();
         ++g_diag.update;
@@ -363,14 +313,11 @@ public:
         const bool wasVisible = model_.visible;
         model_ = model;
 
-        if (placementChanged) {
-            drawer_ = MakeDrawer(owner_, model_.placement);
-        }
         if (countChanged || placementChanged) {
-            hoveredIndex_ = -1;
-            drawer_.Reset(model_.items.size());
-            if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
+            // 旧的磁场状态对不上新的标签了：从静止重新开始。
+            ResetInteraction();
         }
+        if (dockChanged) RebuildDock(countChanged || placementChanged || !Engaged());
         if (contentChanged) {
             ++g_diag.rebuild;
             DiagTimer t(g_diag.rebuildUs);
@@ -378,8 +325,14 @@ public:
         }
 
         UpdatePositionAndVisibility();
-        if (contentChanged || (model_.visible && !wasVisible)) Redraw();
+        if (dockChanged && Engaged()) {
+            Frame();   // 鼠标正在栏上：新的 base 由下一帧平滑接过去
+        } else if (contentChanged || (model_.visible && !wasVisible)) {
+            Redraw();
+        }
         SyncZOrder();
+        // 宿主挪了，预览栈跟着挪。
+        if (previewShown_) EmitPreview();
     }
 
     // Sit directly above the host window. The host is in another process, so ownership -
@@ -395,8 +348,8 @@ public:
         // 常见情形：宿主就是前台窗口。书签条挪到 topmost 层的末尾——见 MoveToTopmostBandTail。
         //
         // 宿主自己是置顶窗口时例外（被置顶功能钉住的，或者本来就 always-on-top 的程序）：
-        // 层末尾在它下面，挪过去书签条就压到宿主身下，搭在窗口边上的那几像素被宿主盖住。
-        // 这种情况走下面「贴在宿主正上方」那段。
+        // 层末尾在它下面，挪过去书签条就压到宿主身下，被宿主盖住。这种情况走下面「贴在宿主
+        // 正上方」那段。
         if (GetForegroundWindow() == host &&
             (GetWindowLongPtrW(host, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) {
             MoveToTopmostBandTail();
@@ -525,6 +478,19 @@ public:
     }
 
 private:
+    // 主标签切换时同时存在的几层：最新的在最后，淡入；其余淡出，淡完就删。
+    struct Layer {
+        int index{};
+        float opacity{};
+    };
+
+    [[nodiscard]] static int ActiveIndexOf(const std::vector<BookmarkItemModel>& items) {
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            if (items[i].isActive) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
     [[nodiscard]] bool ItemsDiffer(const std::vector<BookmarkItemModel>& items) const {
         if (items.size() != model_.items.size()) return true;
         for (std::size_t i = 0; i < items.size(); ++i) {
@@ -537,6 +503,37 @@ private:
             }
         }
         return false;
+    }
+
+    [[nodiscard]] bool Side() const {
+        return model_.placement == Placement::Left || model_.placement == Placement::Right;
+    }
+
+    [[nodiscard]] float WindowWidth() const {
+        return static_cast<float>(std::max(1, model_.screenBounds.width()));
+    }
+    [[nodiscard]] float WindowHeight() const {
+        return static_cast<float>(std::max(1, model_.screenBounds.height()));
+    }
+
+    // 鼠标在栏上（含离开后的宽限），或者磁场还没退干净。
+    [[nodiscard]] bool Engaged() const { return hovering_ || strength_ > 0.0F; }
+
+    // base 排布。只在方向、个数、激活标签或窗口里的起点变了时重算；鼠标怎么动都不碰它。
+    void RebuildDock(bool snap) {
+        spec_ = LayoutEngine::DockSpecFor(model_.placement, model_.items.size(),
+                                          ActiveIndexOf(model_.items), owner_.settings_.drawer);
+        baseStarts_ = DockBaseStarts(spec_.items, spec_.params.gap, model_.dockOrigin);
+        const std::size_t n = spec_.items.size();
+        if (snap || visual_.size() != n) {
+            visual_.assign(n, DockItemVisual{});
+            for (std::size_t i = 0; i < n; ++i) {
+                visual_[i].main = spec_.items[i].main;
+                visual_[i].cross = spec_.items[i].cross;
+                visual_[i].start = baseStarts_[i];
+            }
+        }
+        target_.resize(n);
     }
 
     [[nodiscard]] float MeasureWidth(const std::wstring& text, IDWriteTextFormat* format) const {
@@ -568,30 +565,33 @@ private:
         return candidate;
     }
 
+    // 标签里只画短名。完整名字只出现在浮动标题里——标签放大时文字跟着等比放大，不换内容。
     void RebuildLabels() {
-        labelsFull_.clear();
         labelsShort_.clear();
-        labelsFull_.reserve(model_.items.size());
         labelsShort_.reserve(model_.items.size());
 
         // Measuring needs the text format, which is normally created on first draw; ask
         // for it now so the very first layout is trimmed correctly too.
         owner_.EnsureDrawingResources();
 
+        // 按一个普通标签静止时的大小来裁：横排是 宽 × 平时高度，侧边是 伸进去的深度 × 厚度。
         const auto metrics = LayoutEngine::MetricsFor(model_.placement, owner_.settings_.drawer);
-        const float extent = static_cast<float>(metrics.collapsedExtent);
-        const float pad = std::clamp(extent * 0.1F, 2.0F, 6.0F);
-        const float available = std::max(1.0F, extent - pad * 2.0F);
-        // Trim against the same size the collapsed tab will actually be drawn with.
-        IDWriteTextFormat* format = owner_.FormatFor(
-            WinOverlayBackend::FontSizeFor(static_cast<float>(metrics.restThickness)), true);
+        labelWidth_ = static_cast<float>(metrics.collapsedExtent);
+        labelHeight_ = static_cast<float>(metrics.restThickness);
+        const float pad = LabelPad();
+        const float available = std::max(1.0F, labelWidth_ - pad * 2.0F);
+        labelFormat_ = owner_.FormatFor(WinOverlayBackend::FontSizeFor(labelHeight_), true);
 
         for (const auto& item : model_.items) {
-            labelsFull_.push_back(Utf8ToWide(item.label));
             labelsShort_.push_back(FitToWidth(
-                labelsFull_.back(), owner_.settings_.drawer.shortNameChars, available, format));
+                Utf8ToWide(item.label), owner_.settings_.drawer.shortNameChars, available,
+                labelFormat_));
         }
     }
+
+    // A collapsed tab can be as narrow as 30px, so the padding has to scale down with it
+    // or the label is clipped away entirely.
+    [[nodiscard]] float LabelPad() const { return std::clamp(labelWidth_ * 0.1F, 2.0F, 6.0F); }
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         auto* self = reinterpret_cast<OverlayWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -621,8 +621,7 @@ private:
             OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
             return 0;
         case WM_MOUSELEAVE:
-            mouseTracking_ = false;
-            SetHovered(-1);
+            OnMouseLeave();
             return 0;
         case WM_LBUTTONUP:
             OnClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
@@ -638,12 +637,19 @@ private:
             break;
         case WM_TIMER:
             if (wParam == kAnimationTimerId) {
-                OnAnimationTick();
+                Frame();
                 return 0;
             }
             if (wParam == kPreviewTimerId) {
                 KillTimer(hwnd_, kPreviewTimerId);
-                ShowPreviewForHovered();
+                if (hovering_) {
+                    thumbnailArmed_ = true;
+                    Frame();
+                }
+                return 0;
+            }
+            if (wParam == kGraceTimerId) {
+                EndHover();
                 return 0;
             }
             break;
@@ -702,101 +708,39 @@ private:
         if (shouldShow != appliedVisible_) {
             ShowWindow(hwnd_, shouldShow ? SW_SHOWNOACTIVATE : SW_HIDE);
             appliedVisible_ = shouldShow;
+            // 书签条藏起来了，磁场和预览栈没有理由还留着。
+            if (!shouldShow) {
+                ResetInteraction();
+                RebuildDock(true);
+            }
         }
     }
 
-    // Returns a reference into a reused buffer: this runs on every animation frame and
-    // every mouse move, so it must not allocate once the capacity has settled.
-    const std::vector<LocalRect>& ItemRects() const {
-        std::vector<LocalRect>& rects = rectCache_;
-        rects.clear();
-        rects.reserve(model_.items.size());
-        const float width = static_cast<float>(std::max(1, model_.screenBounds.width()));
-        const float height = static_cast<float>(std::max(1, model_.screenBounds.height()));
-        const float thickness = static_cast<float>(owner_.settings_.drawer.thickness);
-        const float gap = static_cast<float>(owner_.settings_.drawer.gap);
-
-        const auto& extents = drawer_.Extents();
-        const float overlap = static_cast<float>(owner_.settings_.drawer.attachOverlap);
-        const bool activeOnTop = model_.items.size() == extents.size();
-
-        const auto isActive = [&](std::size_t i) {
-            return activeOnTop && model_.items[i].isActive;
-        };
-        const auto extentAt = [&](std::size_t i) {
-            // The bookmark for the window currently in front reaches further out.
-            return extents[i] + (isActive(i)
-                ? static_cast<float>(owner_.settings_.drawer.activeExtraExtent)
-                : 0.0F);
-        };
-
-        if (model_.placement == Placement::Left || model_.placement == Placement::Right) {
-            float y = 0.0F;
-            for (std::size_t i = 0; i < extents.size(); ++i) {
-                const float extent = extentAt(i);
-                LocalRect r;
-                r.top = y;
-                r.bottom = std::min(height, y + thickness);
-                // The overlay window overhangs the host by attachOverlap. Only the active
-                // tab uses that overhang, reaching over the window edge; the others stop
-                // at it.
-                const float inset = isActive(i) ? 0.0F : overlap;
-                if (model_.placement == Placement::Left) {
-                    r.right = std::max(1.0F, width - inset);
-                    r.left = std::max(0.0F, r.right - extent);
-                } else {
-                    r.left = std::min(width - 1.0F, inset);
-                    r.right = std::min(width, r.left + extent);
-                }
-                rects.push_back(r);
-                y += thickness + gap;
-            }
-            return rects;
-        }
-
-        // Row placements rest at part of their thickness against the window edge and
-        // grow toward the host on hover. Both the active tab and the ceiling a hovered
-        // tab grows to are the active thickness, so nothing ever stands taller than the
-        // bookmark for the window you are actually looking at.
-        const auto metrics = LayoutEngine::MetricsFor(model_.placement, owner_.settings_.drawer);
-        const float rest = static_cast<float>(metrics.restThickness);
-        const float active = static_cast<float>(metrics.activeThickness);
-        const float span = std::max(1.0F, static_cast<float>(metrics.expandedExtent - metrics.collapsedExtent));
-        const auto thicknessAt = [&](std::size_t i) {
-            if (isActive(i)) return active;
-            const float progress = std::clamp(
-                (extents[i] - static_cast<float>(metrics.collapsedExtent)) / span, 0.0F, 1.0F);
-            return rest + (active - rest) * progress;
-        };
-
-        float total = 0.0F;
-        for (std::size_t i = 0; i < extents.size(); ++i) total += extentAt(i);
-        if (!extents.empty()) total += gap * static_cast<float>(extents.size() - 1);
-
-        float x = std::max(0.0F, (width - total) * 0.5F);
-        for (std::size_t i = 0; i < extents.size(); ++i) {
-            const float extent = extentAt(i);
-            const float depth = std::min(height, thicknessAt(i));
-            LocalRect r;
-            r.left = x;
-            r.right = std::min(width, x + extent);
-            if (model_.placement == Placement::Top) {
-                r.top = 0.0F;
-                r.bottom = depth;
-            } else {
-                r.bottom = height;
-                r.top = std::max(0.0F, height - depth);
-            }
-            rects.push_back(r);
-            x += extent + gap;
-        }
-        return rects;
+    // 这一帧第 i 个标签画在哪，窗口内坐标。标签的根贴着宿主的那条边（Bottom 是窗口下沿、
+    // Left 是窗口左沿……），从根往窗口内容方向长 cross 那么深。
+    [[nodiscard]] LocalRect TabRect(std::size_t i) const {
+        const DockItemVisual& v = visual_[i];
+        return SpanRect(v.start, v.start + v.main, v.cross);
     }
 
-    int HitTest(int x, int y) const {
-        const auto& rects = ItemRects();
-        for (std::size_t i = 0; i < rects.size(); ++i) {
-            if (Contains(rects[i], static_cast<float>(x), static_cast<float>(y))) {
+    // 主轴区间 [from, to]、从根边起深 depth 的矩形。
+    [[nodiscard]] LocalRect SpanRect(float from, float to, float depth) const {
+        const float w = WindowWidth();
+        const float h = WindowHeight();
+        switch (model_.placement) {
+        case Placement::Top: return LocalRect{from, 0.0F, to, depth};
+        case Placement::Left: return LocalRect{0.0F, from, depth, to};
+        case Placement::Right: return LocalRect{w - depth, from, w, to};
+        default: return LocalRect{from, h - depth, to, h};
+        }
+    }
+
+    // 点中的是画出来的那个标签：visual 以鼠标为不动点排开，平时和 base 命中一样，但只有
+    // 按画面判定，才在任何情况下都和眼睛看到的一致。
+    [[nodiscard]] int HitTest(int x, int y) const {
+        const std::size_t n = std::min(visual_.size(), model_.items.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            if (Contains(TabRect(i), static_cast<float>(x), static_cast<float>(y))) {
                 return static_cast<int>(i);
             }
         }
@@ -812,45 +756,241 @@ private:
             TrackMouseEvent(&tme);
             mouseTracking_ = true;
         }
-        SetHovered(HitTest(x, y));
-    }
-
-    void SetHovered(int index) {
-        if (index == hoveredIndex_) return;
-        hoveredIndex_ = index;
-        if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
-        KillTimer(hwnd_, kPreviewTimerId);
-
-        drawer_.SetHovered(index, GetTickCount64());
-        if (drawer_.IsAnimating()) {
-            SetTimer(hwnd_, kAnimationTimerId, kAnimationTickMs, nullptr);
-        } else {
-            KillTimer(hwnd_, kAnimationTimerId);
-            Redraw();
+        // 宽限期里回来了：就当没离开过。
+        if (graceRunning_) {
+            KillTimer(hwnd_, kGraceTimerId);
+            graceRunning_ = false;
         }
-
-        if (hoveredIndex_ >= 0 && owner_.settings_.preview.enabled) {
-            const auto& item = model_.items[static_cast<std::size_t>(hoveredIndex_)];
-            if (!item.isSelf) {
-                const UINT delay = static_cast<UINT>(std::max(1, owner_.settings_.preview.delayMs));
-                SetTimer(hwnd_, kPreviewTimerId, delay, nullptr);
+        // 鼠标只换算成主轴坐标，只和 base 比距离。
+        pointer_ = static_cast<float>(Side() ? y : x);
+        if (!hovering_) {
+            hovering_ = true;
+            if (!thumbnailArmed_) {
+                const int delay = owner_.settings_.preview.delayMs;
+                if (delay <= 0) {
+                    thumbnailArmed_ = true;
+                } else {
+                    SetTimer(hwnd_, kPreviewTimerId, static_cast<UINT>(delay), nullptr);
+                }
             }
         }
+        // 不等定时器：鼠标一动就算一帧，磁场即时跟上鼠标。
+        Frame();
     }
 
-    void OnAnimationTick() {
-        if (!drawer_.Tick(GetTickCount64())) {
-            KillTimer(hwnd_, kAnimationTimerId);
+    // 离开整条栏不立刻生效：先等一小段宽限。间隙里有包络带接着鼠标，标签之间不会触发这里。
+    void OnMouseLeave() {
+        mouseTracking_ = false;
+        const int grace = owner_.settings_.drawer.magnetGraceMs;
+        if (grace <= 0) {
+            EndHover();
             return;
         }
+        graceRunning_ = true;
+        SetTimer(hwnd_, kGraceTimerId, static_cast<UINT>(grace), nullptr);
+    }
+
+    void EndHover() {
+        KillTimer(hwnd_, kGraceTimerId);
+        KillTimer(hwnd_, kPreviewTimerId);
+        graceRunning_ = false;
+        hovering_ = false;
+        thumbnailArmed_ = false;
+        Frame();
+    }
+
+    // 回到静止，不带动画：个数或方向变了、书签条被藏起来了。
+    void ResetInteraction() {
+        if (hwnd_) {
+            KillTimer(hwnd_, kAnimationTimerId);
+            KillTimer(hwnd_, kPreviewTimerId);
+            KillTimer(hwnd_, kGraceTimerId);
+        }
+        timerRunning_ = false;
+        graceRunning_ = false;
+        hovering_ = false;
+        thumbnailArmed_ = false;
+        strength_ = 0.0F;
+        primary_ = -1;
+        layers_.clear();
+        HidePreview();
+    }
+
+    // 推进一帧：算、画、交给预览端，没收敛就让定时器接着跑。整条书签栏在同一帧里一起算，
+    // 没有哪个标签有自己的动画。
+    void Frame() {
+        if (!hwnd_) return;
+        const double now = NowMs();
+        float dt = static_cast<float>(now - lastFrameMs_);
+        lastFrameMs_ = now;
+        // 定时器停着的时候没有帧，下一帧的 dt 可能是几秒；不截断的话磁场一步到位，进栏
+        // 那一下就成了突然放大。
+        dt = std::clamp(dt, 0.0F, timerRunning_ ? kMaxFrameMs : static_cast<float>(kAnimationTickMs));
+        Step(dt);
         Redraw();
-        if (!drawer_.IsAnimating()) KillTimer(hwnd_, kAnimationTimerId);
+        EmitPreview();
+
+        if (Settled()) {
+            if (timerRunning_) {
+                KillTimer(hwnd_, kAnimationTimerId);
+                timerRunning_ = false;
+            }
+        } else if (!timerRunning_) {
+            SetTimer(hwnd_, kAnimationTimerId, kAnimationTickMs, nullptr);
+            timerRunning_ = true;
+        }
+    }
+
+    void Step(float dt) {
+        const DrawerSettings& drawer = owner_.settings_.drawer;
+        // 进出书签栏的唯一渐变：磁场强度。约 animation_ms 走完 95%。
+        const float strengthTau = static_cast<float>(std::max(0, drawer.animationMs)) / 3.0F;
+        strength_ = SmoothToward(strength_, hovering_ ? 1.0F : 0.0F, dt, strengthTau);
+
+        DockTargetSizes(spec_.items, baseStarts_, spec_.params, pointer_, strength_, target_);
+        for (std::size_t i = 0; i < visual_.size() && i < target_.size(); ++i) {
+            visual_[i].influence = target_[i].influence;
+            visual_[i].main = SmoothToward(visual_[i].main, target_[i].main, dt, kVisualTauMs);
+            visual_[i].cross = SmoothToward(visual_[i].cross, target_[i].cross, dt, kVisualTauMs);
+        }
+        // 位置不平滑：用平滑后的尺寸、以鼠标为不动点重新排开。所以间隙永远精确等于 gap，
+        // 鼠标下的点永远在鼠标下，标签不会被鼠标追着跑。
+        DockArrange(spec_.items, baseStarts_, spec_.params.gap, pointer_, visual_);
+        KeepInsideWindow();
+
+        primary_ = DockPrimary(target_, primary_, kPrimaryHysteresis);
+        StepLayers(dt);
+    }
+
+    // 标签多到窗口装不下整条栏时（工作区都放不下，很少见），把排布整体推回窗口里。
+    // 平常 LayoutEngine 已经留足了余量，这里什么都不做。
+    void KeepInsideWindow() {
+        if (visual_.empty()) return;
+        const float length = Side() ? WindowHeight() : WindowWidth();
+        const float lo = visual_.front().start;
+        const float hi = visual_.back().start + visual_.back().main;
+        float shift = 0.0F;
+        if (lo < 0.0F) {
+            shift = -lo;
+        } else if (hi > length) {
+            shift = length - hi;
+        }
+        if (shift == 0.0F) return;
+        for (auto& v : visual_) v.start += shift;
+    }
+
+    void StepLayers(float dt) {
+        if (primary_ >= 0 && (layers_.empty() || layers_.back().index != primary_)) {
+            // 回到一个还没淡完的标签：接着它现在的不透明度往上走，不从 0 重新开始。
+            Layer next{primary_, layers_.empty() ? 1.0F : 0.0F};
+            const auto it = std::find_if(layers_.begin(), layers_.end(),
+                                         [&](const Layer& l) { return l.index == primary_; });
+            if (it != layers_.end()) {
+                next = *it;
+                layers_.erase(it);
+            }
+            layers_.push_back(next);
+        }
+        if (layers_.empty()) return;
+
+        const float fadeMs = static_cast<float>(std::max(0, owner_.settings_.preview.crossfadeMs));
+        const float delta = fadeMs > 0.0F ? dt / fadeMs : 1.0F;
+        for (std::size_t i = 0; i + 1 < layers_.size(); ++i) {
+            layers_[i].opacity = std::max(0.0F, layers_[i].opacity - delta);
+        }
+        layers_.back().opacity = std::min(1.0F, layers_.back().opacity + delta);
+        layers_.erase(std::remove_if(layers_.begin(), layers_.end() - 1,
+                                     [](const Layer& l) { return l.opacity <= 0.0F; }),
+                      layers_.end() - 1);
+    }
+
+    [[nodiscard]] bool Settled() const {
+        if (strength_ != (hovering_ ? 1.0F : 0.0F)) return false;
+        for (std::size_t i = 0; i < visual_.size() && i < target_.size(); ++i) {
+            if (visual_[i].main != target_[i].main || visual_[i].cross != target_[i].cross) {
+                return false;
+            }
+        }
+        if (layers_.size() > 1) return false;
+        return layers_.empty() || layers_.back().opacity >= 1.0F;
+    }
+
+    // 把这一帧交给预览端：标签矩形、主标签位置、各层标题。三段怎么排由它算。
+    void EmitPreview() {
+        if (menuOpen_) return;
+        if (!hovering_ && strength_ <= 0.0F) {
+            // 磁场退干净了：预览栈收起，下次进来从头开始。
+            layers_.clear();
+            primary_ = -1;
+            HidePreview();
+            return;
+        }
+        if (layers_.empty() || !appliedVisible_ || !owner_.callbacks_.onPreview) {
+            HidePreview();
+            return;
+        }
+
+        const Rect& b = appliedBounds_;
+        const float originX = static_cast<float>(b.left);
+        const float originY = static_cast<float>(b.top);
+
+        PreviewRequest request;
+        request.hostWindowId = model_.hostWindowId;
+        request.placement = model_.placement;
+        request.workArea = model_.workArea;
+        switch (model_.placement) {
+        case Placement::Top: request.rootEdge = static_cast<float>(b.top); break;
+        case Placement::Left: request.rootEdge = static_cast<float>(b.left); break;
+        case Placement::Right: request.rootEdge = static_cast<float>(b.right); break;
+        default: request.rootEdge = static_cast<float>(b.bottom); break;
+        }
+        const std::size_t n = std::min(visual_.size(), model_.items.size());
+        request.tabs.reserve(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const LocalRect r = TabRect(i);
+            request.tabs.push_back(RectF{originX + r.left, originY + r.top,
+                                         originX + r.right, originY + r.bottom});
+        }
+
+        // 各层所属标签的中心按不透明度加权：切换时标题和缩略图从旧主标签连续滑到新主标签，
+        // 稳定时就正对主标签，跟着它一起动，没有追赶的延迟。
+        const float mainOrigin = Side() ? originY : originX;
+        float sum = 0.0F;
+        float weight = 0.0F;
+        for (const Layer& layer : layers_) {
+            if (static_cast<std::size_t>(layer.index) >= n) continue;
+            const DockItemVisual& v = visual_[static_cast<std::size_t>(layer.index)];
+            sum += (mainOrigin + v.start + v.main * 0.5F) * layer.opacity;
+            weight += layer.opacity;
+        }
+        if (weight <= 0.0F) {
+            HidePreview();
+            return;
+        }
+        request.anchorMain = sum / weight;
+        request.opacity = strength_;
+        request.thumbnailArmed = thumbnailArmed_;
+        request.layers.reserve(layers_.size());
+        for (const Layer& layer : layers_) {
+            if (static_cast<std::size_t>(layer.index) >= n) continue;
+            const BookmarkItemModel& item = model_.items[static_cast<std::size_t>(layer.index)];
+            request.layers.push_back(
+                PreviewLayer{item.targetWindowId, item.label, !item.isSelf, layer.opacity});
+        }
+        owner_.callbacks_.onPreview(request);
+        previewShown_ = true;
+    }
+
+    void HidePreview() {
+        if (!previewShown_) return;
+        previewShown_ = false;
+        if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
     }
 
     void OnClick(int x, int y) {
         const int index = HitTest(x, y);
         if (index < 0 || static_cast<std::size_t>(index) >= model_.items.size()) return;
-        if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
+        HidePreview();
         const auto& item = model_.items[static_cast<std::size_t>(index)];
         if (!item.isSelf && owner_.callbacks_.onActivate) {
             owner_.callbacks_.onActivate(item.targetWindowId);
@@ -860,11 +1000,23 @@ private:
     void OnContextMenu(int x, int y) {
         const int index = HitTest(x, y);
         if (index < 0 || static_cast<std::size_t>(index) >= model_.items.size()) return;
-        if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
+
+        // 菜单是模态的，打开以后鼠标就不在书签栏上了：磁场开始回落，预览栈先收起来，菜单
+        // 开着的这段时间也不再弹出来盖住它。
+        menuOpen_ = true;
+        KillTimer(hwnd_, kGraceTimerId);
         KillTimer(hwnd_, kPreviewTimerId);
+        graceRunning_ = false;
+        hovering_ = false;
+        thumbnailArmed_ = false;
+        HidePreview();
 
         HMENU menu = CreatePopupMenu();
-        if (!menu) return;
+        if (!menu) {
+            menuOpen_ = false;
+            Frame();
+            return;
+        }
         AppendMenuW(menu, MF_STRING, kRenameCommand, L"重命名...");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kSettingsCommand, L"设置...");
@@ -875,11 +1027,15 @@ private:
         // TrackPopupMenu would leave a menu that does not dismiss on click-away. Handing
         // foreground to the host first is the documented workaround.
         SetForegroundWindow(HwndFromId(model_.hostWindowId));
+        Frame();   // 让回落动画在菜单的模态循环里跑起来
         const int choice = static_cast<int>(TrackPopupMenu(
             menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
             screen.x, screen.y, 0, hwnd_, nullptr));
         DestroyMenu(menu);
+        menuOpen_ = false;
 
+        // 菜单期间模型可能已经换过（标签个数变了），下标要重新核对。
+        if (static_cast<std::size_t>(index) >= model_.items.size()) return;
         const WindowId target = model_.items[static_cast<std::size_t>(index)].targetWindowId;
         if (choice == static_cast<int>(kRenameCommand)) {
             if (owner_.callbacks_.onRename) owner_.callbacks_.onRename(target);
@@ -888,64 +1044,57 @@ private:
         }
     }
 
-    void ShowPreviewForHovered() {
-        if (hoveredIndex_ < 0 || static_cast<std::size_t>(hoveredIndex_) >= model_.items.size()) return;
-        const auto& item = model_.items[static_cast<std::size_t>(hoveredIndex_)];
-        if (item.isSelf || !owner_.callbacks_.onPreview) return;
-
-        const auto& rects = ItemRects();
-        const auto& local = rects[static_cast<std::size_t>(hoveredIndex_)];
-        const auto& bounds = model_.screenBounds;
-        PreviewRequest request;
-        request.hostWindowId = model_.hostWindowId;
-        request.sourceWindowId = item.targetWindowId;
-        request.placement = model_.placement;
-        request.anchorScreenRect = Rect{
-            bounds.left + static_cast<int>(std::lround(local.left)),
-            bounds.top + static_cast<int>(std::lround(local.top)),
-            bounds.left + static_cast<int>(std::lround(local.right)),
-            bounds.top + static_cast<int>(std::lround(local.bottom)),
-        };
-        request.hostFrame = model_.hostFrame;
-        request.workArea = model_.workArea;
-        owner_.callbacks_.onPreview(request);
-    }
-
     void DrawItems(ID2D1RenderTarget& target) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
         target.CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &brush);
         if (!brush) return;
 
-        const auto& rects = ItemRects();
-        for (std::size_t i = 0; i < rects.size() && i < model_.items.size(); ++i) {
+        const std::size_t n = std::min(visual_.size(), model_.items.size());
+
+        // 包络带：相邻标签之间的间隙画 alpha = 1/255，肉眼看不见，但分层窗口只有 alpha 为 0
+        // 的像素才让鼠标穿过去。没有它，鼠标滑过间隙就落到宿主窗口上，书签栏以为鼠标走了，
+        // 整条栏在两个标签之间塌下去——这就是「间隙死区」。深度取两侧较矮的那个：从间隙往上
+        // 走出这个高度，才算离开书签栏。两头各多伸 1px 压到标签底下，接缝处不留 0 像素。
+        brush->SetColor(D2D1::ColorF(0.0F, 0.0F, 0.0F, 1.0F / 255.0F));
+        for (std::size_t i = 0; i + 1 < n; ++i) {
+            const float from = visual_[i].start + visual_[i].main - 1.0F;
+            const float to = visual_[i + 1].start + 1.0F;
+            const float depth = std::min(visual_[i].cross, visual_[i + 1].cross);
+            const LocalRect band = SpanRect(from, to, depth);
+            target.FillRectangle(D2D1::RectF(band.left, band.top, band.right, band.bottom),
+                                 brush.Get());
+        }
+
+        const float opacity = 1.0F - static_cast<float>(
+            std::clamp(owner_.settings_.drawer.transparency, 0, 90)) / 100.0F;
+        const float pad = LabelPad();
+        for (std::size_t i = 0; i < n; ++i) {
             const auto& item = model_.items[i];
-            const bool hovered = static_cast<int>(i) == hoveredIndex_;
+            const LocalRect r = TabRect(i);
+            const float width = r.right - r.left;
+            const float height = r.bottom - r.top;
+            if (width <= 0.0F || height <= 0.0F) continue;
 
-            // Every tab is drawn identically. The active one is told apart purely by
-            // geometry - it is longer, and it sits over the window edge instead of
-            // stopping at it - with no shadow, outline or opacity trickery.
-            Color fill = hovered ? Adjust(item.color, 0.05F) : item.color;
-            fill.a *= 1.0F - static_cast<float>(
-                std::clamp(owner_.settings_.drawer.transparency, 0, 90)) / 100.0F;
+            // 越靠近鼠标越亮一点，跟着磁力连续变，没有「悬停 / 没悬停」两档。
+            Color fill = Adjust(item.color, 0.05F * visual_[i].influence);
+            fill.a *= opacity;
 
-            const auto& r = rects[i];
             const float radius = std::min(
                 static_cast<float>(owner_.settings_.drawer.cornerRadius),
-                std::min(r.right - r.left, r.bottom - r.top) * 0.5F);
+                std::min(width, height) * 0.5F);
 
-            // Every tab grows out of one edge - its root - and is drawn square there so
-            // it meets the window seamlessly, like a bookmark slipped between pages.
-            // Which edge that is depends on placement: side tabs reach outward from the
-            // window, so their root is the edge nearest it; row tabs grow inward from the
-            // window's own boundary, so their root is that outer edge.
+            // Every tab grows out of one edge - its root - and is drawn square there so it
+            // meets the window edge seamlessly, like a bookmark slipped between pages. The
+            // root is the host's own edge the strip sits against: the bottom edge for a
+            // bottom row, the left edge for a left strip, and so on.
             //
             // Rounding is extended past the root and then clipped away, which is cheaper
             // and steadier than building a part-rounded path geometry per frame.
-            D2D1_RECT_F body = D2D1::RectF(r.left, r.top, r.right, r.bottom);
+            const D2D1_RECT_F body = D2D1::RectF(r.left, r.top, r.right, r.bottom);
             D2D1_RECT_F extended = body;
             switch (model_.placement) {
-            case Placement::Left:   extended.right += radius; break;
-            case Placement::Right:  extended.left -= radius; break;
+            case Placement::Left:   extended.left -= radius; break;
+            case Placement::Right:  extended.right += radius; break;
             case Placement::Top:    extended.top -= radius; break;
             default:                extended.bottom += radius; break;
             }
@@ -955,31 +1104,23 @@ private:
             target.FillRoundedRectangle(D2D1::RoundedRect(extended, radius, radius), brush.Get());
             target.PopAxisAlignedClip();
 
-            // A collapsed tab can be as narrow as 30px, so the padding has to scale
-            // down with it or the label is clipped away entirely.
-            const float available = r.right - r.left;
-            const float pad = hovered ? 10.0F : std::clamp(available * 0.1F, 2.0F, 6.0F);
-
-            // Size the font to this tab's own height. Tabs differ: the active one is at
-            // full thickness while the rest rest at part of it, and a font that fits the
-            // tall one is clipped out of existence on the short one.
-            const std::wstring& text = hovered ? labelsFull_[i] : labelsShort_[i];
-            IDWriteTextFormat* format = owner_.FormatFor(
-                WinOverlayBackend::FontSizeFor(r.bottom - r.top), !hovered);
-            if (!format) continue;
-            brush->SetColor(D2D1::ColorF(0.08F, 0.09F, 0.11F, 0.92F));
-            const auto textRect = D2D1::RectF(
-                r.left + pad,
-                r.top,
-                std::max(r.left + pad, r.right - pad),
-                r.bottom);
-            target.DrawTextW(
-                text.c_str(),
-                static_cast<UINT32>(text.size()),
-                format,
-                textRect,
-                brush.Get(),
-                D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            // 短名按一个普通静止标签的大小排版，再整体等比放大到这一帧的标签大小：字号是
+            // 连续变化的，不会在整数字号之间跳。取宽高两个比例里小的那个，字永远装得下。
+            const std::wstring& text = labelsShort_[i];
+            if (!text.empty() && labelFormat_) {
+                const float scale = std::max(
+                    1.0F, std::min(width / labelWidth_, height / labelHeight_));
+                const float cx = (r.left + r.right) * 0.5F;
+                const float cy = (r.top + r.bottom) * 0.5F;
+                const D2D1_RECT_F box = D2D1::RectF(
+                    cx - labelWidth_ * 0.5F + pad, cy - labelHeight_ * 0.5F,
+                    cx + labelWidth_ * 0.5F - pad, cy + labelHeight_ * 0.5F);
+                target.SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(cx, cy)));
+                brush->SetColor(D2D1::ColorF(0.08F, 0.09F, 0.11F, 0.92F));
+                target.DrawTextW(text.c_str(), static_cast<UINT32>(text.size()), labelFormat_, box,
+                                 brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                target.SetTransform(D2D1::Matrix3x2F::Identity());
+            }
 
             // Only meaningful when drawer.active_window_only is off; with it on, the host
             // is the active window and the outline above already says so.
@@ -987,7 +1128,9 @@ private:
                 brush->SetColor(D2D1::ColorF(0.08F, 0.09F, 0.11F, 0.78F));
                 float cx = r.right - 9.0F;
                 if (model_.placement == Placement::Right) cx = r.left + 9.0F;
-                target.FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, (r.top + r.bottom) * 0.5F), 2.4F, 2.4F), brush.Get());
+                target.FillEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(cx, (r.top + r.bottom) * 0.5F), 2.4F, 2.4F),
+                    brush.Get());
             }
         }
     }
@@ -1043,12 +1186,30 @@ private:
     OverlayModel model_;
     HWND hwnd_{};
     LayeredSurface surface_;
-    DrawerState drawer_;
-    std::vector<std::wstring> labelsFull_;
+
+    // base：只由设置和模型决定
+    DockSpec spec_;
+    std::vector<float> baseStarts_;
+    // 每帧的目标（未平滑）和画出来的样子（平滑后、以鼠标为不动点排开）
+    std::vector<DockItemVisual> target_;
+    std::vector<DockItemVisual> visual_;
+    float pointer_{};          // 鼠标的主轴坐标，窗口内
+    float strength_{};         // 磁场强度 0..1
+    bool hovering_{false};     // 鼠标在栏上，含离开后的宽限
+    bool graceRunning_{false};
+    bool thumbnailArmed_{false};
+    int primary_{-1};
+    std::vector<Layer> layers_;
+    bool previewShown_{false};
+    bool menuOpen_{false};
+    bool timerRunning_{false};
+    double lastFrameMs_{};
+
     std::vector<std::wstring> labelsShort_;
-    mutable std::vector<LocalRect> rectCache_;
+    IDWriteTextFormat* labelFormat_{};
+    float labelWidth_{1.0F};
+    float labelHeight_{1.0F};
     Rect appliedBounds_{};
-    int hoveredIndex_{-1};
     bool appliedVisible_{false};
     bool mouseTracking_{false};
 

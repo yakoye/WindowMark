@@ -4,7 +4,6 @@
 #include "windowmark/core/DragGeometry.h"
 #include "windowmark/core/DragModifiers.h"
 #include "windowmark/core/Coordinator.h"
-#include "windowmark/core/DrawerState.h"
 #include "windowmark/core/Hotkey.h"
 #include "windowmark/core/LayoutEngine.h"
 #include "windowmark/core/MagneticDock.h"
@@ -1383,27 +1382,6 @@ void TestSelectionSettingsPersistence() {
     std::filesystem::remove(path, ec);
 }
 
-void TestDrawerState() {
-    DrawerState drawer(52, 180, 100);
-    drawer.Reset(3);
-    CHECK(drawer.Extents().size() == 3);
-    CHECK(drawer.Extents()[0] == 52.0F);
-
-    drawer.SetHovered(1, 1000);
-    CHECK(drawer.HoveredIndex() == 1);
-    CHECK(drawer.IsAnimating());
-    CHECK(drawer.Tick(1050));
-    CHECK(drawer.Extents()[1] > 52.0F && drawer.Extents()[1] < 180.0F);
-    CHECK(drawer.Extents()[0] == 52.0F);
-    CHECK(drawer.Tick(1100));
-    CHECK(!drawer.IsAnimating());
-    CHECK(drawer.Extents()[1] == 180.0F);
-
-    drawer.SetHovered(-1, 1200);
-    CHECK(drawer.Tick(1300));
-    CHECK(drawer.Extents()[1] == 52.0F);
-}
-
 // Row placements (maximized hosts) measure a tab's extent as width and rest at part of
 // their thickness, so they cannot reuse the side numbers.
 void TestRowPlacementMetrics() {
@@ -1412,17 +1390,15 @@ void TestRowPlacementMetrics() {
     const auto side = LayoutEngine::MetricsFor(Placement::Left, settings.drawer);
     CHECK(!LayoutEngine::IsRowPlacement(Placement::Left));
     CHECK(side.collapsedExtent == settings.drawer.collapsedExtent);
-    CHECK(side.expandedExtent == settings.drawer.expandedExtent);
     CHECK(side.restThickness == side.fullThickness);
     // Side tabs are all one height - the active one is told apart by reaching further
-    // out - so the row-only active height must not shrink them.
+    // in - so the row-only active height must not shrink them.
     CHECK(side.activeThickness == side.fullThickness);
 
     const auto row = LayoutEngine::MetricsFor(Placement::Bottom, settings.drawer);
     CHECK(LayoutEngine::IsRowPlacement(Placement::Bottom));
     CHECK(LayoutEngine::IsRowPlacement(Placement::Top));
     CHECK(row.collapsedExtent == settings.drawer.bottomCollapsedExtent);
-    CHECK(row.expandedExtent == settings.drawer.bottomExpandedExtent);
     CHECK(row.collapsedExtent != side.collapsedExtent);
     // Rest at half thickness by default, leaving room to grow upward on hover.
     CHECK(row.restThickness == settings.drawer.thickness / 2);
@@ -1455,42 +1431,192 @@ void TestRowPlacementMetrics() {
     tooBig.drawer.bottomActiveThickness = 500;
     CHECK(LayoutEngine::MetricsFor(Placement::Bottom, tooBig.drawer).activeThickness ==
           tooBig.drawer.thickness);
-
-    // The strip is sized to the active tab, not to `thickness`: nothing grows past it,
-    // so the extra would be transparent padding hanging over the window.
-    WindowInfo host = Make(1, "code.exe", "A", 0);
-    host.maximized = true;
-    host.frame = host.workArea;
-    const auto bounds = LayoutEngine::ComputeOverlayBounds(host, 3, Placement::Bottom, settings.drawer);
-    CHECK(bounds.height() == 23);
-    const auto legacyBounds =
-        LayoutEngine::ComputeOverlayBounds(host, 3, Placement::Bottom, legacy.drawer);
-    CHECK(legacyBounds.height() == legacy.drawer.thickness);
 }
 
 void TestLayout() {
     Settings settings;
 
-    // The default is a fixed bottom edge: Auto moves the strip between the left and right
-    // sides as a window is dragged, which makes it hard to find. An explicit placement is
-    // always honoured as-is.
+    // The default is a fixed bottom edge. An explicit placement is always honoured as-is.
     CHECK(settings.drawer.placement == Placement::Bottom);
     WindowInfo normal = Make(1, "code.exe", "A", 300);
     CHECK(LayoutEngine::ResolvePlacement(normal, settings.drawer) == Placement::Bottom);
 
+    // Auto 不再看窗口外有没有地方——书签条已经在窗口里面了：普通窗口左侧，最大化底部。
+    // 窗口贴着屏幕左边、左边一点地方都没有，也还是左侧，不会跳到右边去。
     Settings autoPlaced = settings;
     autoPlaced.drawer.placement = Placement::Auto;
-    auto placement = LayoutEngine::ResolvePlacement(normal, autoPlaced.drawer);
-    CHECK(placement == Placement::Left);
+    CHECK(LayoutEngine::ResolvePlacement(normal, autoPlaced.drawer) == Placement::Left);
+    WindowInfo flush = Make(2, "code.exe", "B", 0);
+    CHECK(LayoutEngine::ResolvePlacement(flush, autoPlaced.drawer) == Placement::Left);
 
     normal.maximized = true;
     normal.frame = normal.workArea;
-    placement = LayoutEngine::ResolvePlacement(normal, autoPlaced.drawer);
-    CHECK(placement == Placement::Bottom);
+    CHECK(LayoutEngine::ResolvePlacement(normal, autoPlaced.drawer) == Placement::Bottom);
+}
 
-    const auto bounds = LayoutEngine::ComputeOverlayBounds(normal, 3, placement, settings.drawer);
-    CHECK(bounds.bottom <= normal.workArea.bottom);
-    CHECK(bounds.width() > 0 && bounds.height() > 0);
+// 书签条窗口的几何：四个方向都贴在宿主内侧，厚度 = 峰值深度，主轴两侧留足挤开的余量。
+void TestDockGeometry() {
+    const Settings settings;
+    const DrawerSettings& d = settings.drawer;
+
+    // --- base 尺寸与磁场参数 ---
+    // 横排：main 是宽度，cross 是高度。激活标签宽 active_extra_extent、高到 bottom_active_thickness
+    const DockSpec row = LayoutEngine::DockSpecFor(Placement::Bottom, 3, 1, d);
+    CHECK(row.items.size() == 3);
+    CHECK(row.items[0].main == 44.0F && row.items[0].cross == 17.0F);
+    CHECK(row.items[1].main == 54.0F && row.items[1].cross == 23.0F);
+    CHECK(row.items[2].main == 44.0F && row.items[2].cross == 17.0F);
+    CHECK(row.params.gap == 6.0F && row.params.radius == 120.0F);
+    CHECK(row.params.peakMain == 72.0F && row.params.peakCross == 36.0F);
+    // Top 和 Bottom 完全同一套
+    const DockSpec top = LayoutEngine::DockSpecFor(Placement::Top, 3, 1, d);
+    CHECK(top.items[1].main == row.items[1].main && top.items[1].cross == row.items[1].cross);
+
+    // 侧边：main 是高度，cross 是伸进窗口的深度。激活标签伸得更深，高度不变
+    const DockSpec left = LayoutEngine::DockSpecFor(Placement::Left, 3, 0, d);
+    CHECK(left.items[0].main == 34.0F && left.items[0].cross == 40.0F);
+    CHECK(left.items[1].main == 34.0F && left.items[1].cross == 30.0F);
+    CHECK(left.params.peakMain == 52.0F && left.params.peakCross == 56.0F);
+    const DockSpec right = LayoutEngine::DockSpecFor(Placement::Right, 3, 0, d);
+    CHECK(right.items[0].cross == left.items[0].cross && right.params.peakCross == 56.0F);
+
+    // 没有激活标签时全部一样大
+    const DockSpec none = LayoutEngine::DockSpecFor(Placement::Bottom, 4, -1, d);
+    for (const auto& item : none.items) CHECK(item.main == 44.0F && item.cross == 17.0F);
+
+    // --- 窗口位置 ---
+    WindowInfo maxed = Make(1, "code.exe", "A", 0);
+    maxed.maximized = true;
+    maxed.frame = maxed.workArea;   // 0,0,2560,1440
+    const float rowGrowth = DockMaxGrowth(row.items, row.params);
+    CHECK(rowGrowth > 0.0F);
+    const int margin = static_cast<int>(std::ceil(rowGrowth));
+    const int rowBase = 44 + 54 + 44 + 2 * 6;
+
+    const DockBounds bottom =
+        LayoutEngine::ComputeOverlayBounds(maxed, row, rowGrowth, Placement::Bottom, d);
+    CHECK(bottom.bounds.height() == 36);                       // 峰值高度
+    CHECK(bottom.bounds.bottom == maxed.frame.bottom);         // 贴着宿主下边、在里面
+    CHECK(bottom.bounds.width() == rowBase + 2 * margin);
+    CHECK(bottom.baseOrigin == static_cast<float>(margin));
+    // base 在宿主上居中
+    CHECK(bottom.bounds.left + margin == (2560 - rowBase) / 2);
+
+    const DockBounds topBounds =
+        LayoutEngine::ComputeOverlayBounds(maxed, row, rowGrowth, Placement::Top, d);
+    CHECK(topBounds.bounds.top == maxed.frame.top);
+    CHECK(topBounds.bounds.left == bottom.bounds.left);
+
+    // 侧边贴在宿主**内侧**：Left 的左沿就是宿主左沿，Right 的右沿就是宿主右沿
+    WindowInfo normal = Make(2, "code.exe", "B", 300);   // 300,100,1000,800
+    const float sideGrowth = DockMaxGrowth(left.items, left.params);
+    const int sideMargin = static_cast<int>(std::ceil(sideGrowth));
+    const int sideBase = 3 * 34 + 2 * 6;
+    const DockBounds l =
+        LayoutEngine::ComputeOverlayBounds(normal, left, sideGrowth, Placement::Left, d);
+    CHECK(l.bounds.left == normal.frame.left);
+    CHECK(l.bounds.width() == 56);                              // 峰值深度
+    CHECK(l.bounds.height() == sideBase + 2 * sideMargin);
+    // base 从 top_offset 开始
+    CHECK(static_cast<float>(l.bounds.top) + l.baseOrigin ==
+          static_cast<float>(normal.frame.top + d.topOffset));
+    const DockBounds r =
+        LayoutEngine::ComputeOverlayBounds(normal, left, sideGrowth, Placement::Right, d);
+    CHECK(r.bounds.right == normal.frame.right);
+    CHECK(r.bounds.top == l.bounds.top && r.bounds.height() == l.bounds.height());
+
+    // 宿主贴着屏幕顶：窗口被夹进工作区，base 跟着往下挪，窗口不出屏
+    WindowInfo high = normal;
+    high.frame.top = 0;
+    high.frame.bottom = 700;
+    Settings noOffset = settings;
+    noOffset.drawer.topOffset = 0;
+    const DockBounds clamped = LayoutEngine::ComputeOverlayBounds(
+        high, left, sideGrowth, Placement::Left, noOffset.drawer);
+    CHECK(clamped.bounds.top == high.workArea.top);
+    CHECK(clamped.baseOrigin == static_cast<float>(sideMargin));
+
+    // 某个 base 比峰值还深时，窗口按那个 base 算，不会把它裁掉
+    Settings deep = settings;
+    deep.drawer.activeExtraExtent = 70;   // 30 + 70 = 100 > 峰值 56
+    const DockSpec deepSpec = LayoutEngine::DockSpecFor(Placement::Left, 3, 0, deep.drawer);
+    const DockBounds deepBounds = LayoutEngine::ComputeOverlayBounds(
+        normal, deepSpec, DockMaxGrowth(deepSpec.items, deepSpec.params), Placement::Left,
+        deep.drawer);
+    CHECK(deepBounds.bounds.width() == 100);
+
+    // 关键性质：鼠标在任何位置、磁场全开时，每个标签画出来都完整落在窗口里——不被裁掉
+    const auto fits = [](const DockSpec& spec, const DockBounds& b, bool side) {
+        const std::vector<float> starts =
+            DockBaseStarts(spec.items, spec.params.gap, b.baseOrigin);
+        const float length = static_cast<float>(side ? b.bounds.height() : b.bounds.width());
+        const float depth = static_cast<float>(side ? b.bounds.width() : b.bounds.height());
+        std::vector<DockItemVisual> visual;
+        const float from = starts.front() - spec.params.radius - 10.0F;
+        const float to = starts.back() + spec.items.back().main + spec.params.radius + 10.0F;
+        for (float p = from; p <= to; p += 0.5F) {
+            LayoutDock(spec.items, starts, spec.params, p, 1.0F, visual);
+            for (const auto& v : visual) {
+                if (v.start < -0.01F || v.start + v.main > length + 0.01F) return false;
+                if (v.cross > depth + 0.01F) return false;
+            }
+        }
+        return true;
+    };
+    CHECK(fits(row, bottom, false));
+    CHECK(fits(left, l, true));
+    CHECK(fits(deepSpec, deepBounds, true));
+    const DockSpec many = LayoutEngine::DockSpecFor(Placement::Bottom, 9, 8, d);
+    const DockBounds manyBounds = LayoutEngine::ComputeOverlayBounds(
+        maxed, many, DockMaxGrowth(many.items, many.params), Placement::Bottom, d);
+    CHECK(fits(many, manyBounds, false));
+}
+
+// 磁性书签栏和三段式预览栈新增的设置：默认值是用户定过的，写出去再读回来一个都不能变。
+// 退役的键照常读写——不再生效，但用户写过的值不能在一次保存里悄悄丢掉。
+void TestMagnetSettingsRoundTrip() {
+    const Settings fresh;
+    CHECK(fresh.drawer.magnetMaxExtent == 56);
+    CHECK(fresh.drawer.magnetMaxThickness == 52);
+    CHECK(fresh.drawer.bottomMagnetMaxExtent == 72);
+    CHECK(fresh.drawer.bottomMagnetMaxThickness == 36);
+    CHECK(fresh.drawer.magnetRadius == 120);
+    CHECK(fresh.drawer.magnetGraceMs == 60);
+    CHECK(fresh.preview.titleGap == 7);
+    CHECK(fresh.preview.thumbnailGap == 10);
+    CHECK(fresh.preview.crossfadeMs == 100);
+
+    Settings written;
+    written.drawer.magnetMaxExtent = 61;
+    written.drawer.magnetMaxThickness = 47;
+    written.drawer.bottomMagnetMaxExtent = 88;
+    written.drawer.bottomMagnetMaxThickness = 41;
+    written.drawer.magnetRadius = 150;
+    written.drawer.magnetGraceMs = 0;
+    written.preview.titleGap = 6;
+    written.preview.thumbnailGap = 12;
+    written.preview.crossfadeMs = 80;
+    written.drawer.expandedExtent = 222;
+    written.drawer.bottomExpandedExtent = 133;
+    written.drawer.attachOverlap = 9;
+
+    const auto path = std::filesystem::temp_directory_path() / "windowmark-magnet-test.conf";
+    CHECK(Settings::Save(path, written));
+    const Settings read = Settings::LoadOrCreate(path);
+    CHECK(read.drawer.magnetMaxExtent == 61);
+    CHECK(read.drawer.magnetMaxThickness == 47);
+    CHECK(read.drawer.bottomMagnetMaxExtent == 88);
+    CHECK(read.drawer.bottomMagnetMaxThickness == 41);
+    CHECK(read.drawer.magnetRadius == 150);
+    CHECK(read.drawer.magnetGraceMs == 0);
+    CHECK(read.preview.titleGap == 6);
+    CHECK(read.preview.thumbnailGap == 12);
+    CHECK(read.preview.crossfadeMs == 80);
+    CHECK(read.drawer.expandedExtent == 222);
+    CHECK(read.drawer.bottomExpandedExtent == 133);
+    CHECK(read.drawer.attachOverlap == 9);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 void TestHotkeyParsing() {
@@ -1923,7 +2049,8 @@ int main() {
     TestSelectionSettingsPersistence();
     TestRowPlacementMetrics();
     TestLayout();
-    TestDrawerState();
+    TestDockGeometry();
+    TestMagnetSettingsRoundTrip();
     TestHotkeyParsing();
     TestBorderClamping();
     TestConfigLocationPriority();

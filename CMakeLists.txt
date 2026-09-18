@@ -41,7 +41,6 @@ add_library(windowmark_core STATIC
     src/core/Coordinator.cpp
     src/core/DragGeometry.cpp
     src/core/DragModifiers.cpp
-    src/core/DrawerState.cpp
     src/core/Hotkey.cpp
     src/core/LayoutEngine.cpp
     src/core/MagneticDock.cpp
@@ -122,6 +121,7 @@ if(WIN32)
         src/platform/windows/WinOverlayBackend.cpp
         src/platform/windows/WinPinBackend.cpp
         src/platform/windows/WinPreviewBackend.cpp
+        src/platform/windows/WinPreviewTitle.cpp
         src/platform/windows/WinControlWindow.cpp
         src/platform/windows/WinConfigPathDialog.cpp
         src/platform/windows/WinRenameDialog.cpp
@@ -301,6 +301,20 @@ if(WINDOWMARK_BUILD_TESTS)
         # Overlay 方案的性能关卡工具，只在开发时手工跑，不进安装包。
         add_executable(OverlayBench tools/overlay-bench/OverlayBench.cpp)
         target_link_libraries(OverlayBench PRIVATE user32 gdi32)
+
+        # 三段式预览栈的离屏检查：四个方向画成 PNG，同时断言互不重叠。不开窗口、不动鼠标，
+        # 开发时手工跑，不进安装包。标题用的是和程序里同一份 WinPreviewTitle。
+        add_executable(StackCheck
+            tools/stack-check/StackCheck.cpp
+            src/platform/windows/WinPreviewTitle.cpp)
+        target_include_directories(StackCheck PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows)
+        target_compile_definitions(StackCheck PRIVATE
+            UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(StackCheck PRIVATE windowmark_core d2d1 dwrite windowscodecs ole32)
+        if(MSVC)
+            target_compile_options(StackCheck PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
+        endif()
     endif()
 
     if(WIN32)
