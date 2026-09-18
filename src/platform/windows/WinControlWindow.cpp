@@ -484,6 +484,8 @@ void WinControlWindow::EndGrab(bool commit) {
 }
 
 void WinControlWindow::ShowMenu() {
+    // 对勾以当前配置为准，不信缓存。见 Handlers::onMenuOpening。
+    if (handlers_.onMenuOpening) handlers_.onMenuOpening();
     POINT pt{};
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
@@ -586,9 +588,12 @@ void WinControlWindow::ShowMenu() {
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     // Master switch above the per-feature ones: one click silences the whole app without
-    // having to visit both submenus. The label names what the click will do rather than
+    // having to visit every submenu. The label names what the click will do rather than
     // what the state is - no tick to interpret, and two glyphs instead of five.
-    const bool anythingOn = enabled_ || bordersEnabled_ || pinningEnabled_;
+    //
+    // 四个功能必须和 WinMain 里 onToggleAll 真正切换的是同一组。以前这里看「书签/边框/置顶」、
+    // 那边切「书签/边框/拖动」：只开着置顶时这里显示「暂停所有」，点下去反而把另外三个全打开。
+    const bool anythingOn = enabled_ || bordersEnabled_ || pinningEnabled_ || dragEnabled_;
     AppendMenuW(menu, MF_STRING, kToggleAllCommand, anythingOn ? L"暂停所有" : L"启用所有");
     // Top level rather than inside either submenu: it switches the program, not a feature.
     // The tick is read from the registry every time the menu opens instead of being cached,

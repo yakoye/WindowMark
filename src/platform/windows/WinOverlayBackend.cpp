@@ -169,6 +169,20 @@ HWND HwndFromId(WindowId id) {
     return reinterpret_cast<HWND>(static_cast<std::uintptr_t>(id));
 }
 
+constexpr wchar_t kMenuHostClass[] = L"WindowMark.BookmarkMenuHost";
+// 菜单选中的命令，投递给菜单主人窗口执行。wParam = 命令，lParam = 书签指向的窗口。
+constexpr UINT kRunMenuCommand = WM_APP + 41;
+
+// 右键菜单为了能用，临时把前台拿到了本进程；用完还给宿主。只在前台仍是本进程的窗口（或者
+// 没有前台）时才还——这期间用户已经点去了别的程序，就不去抢。
+void ReturnForeground(WindowId hostId) {
+    const HWND host = HwndFromId(hostId);
+    if (!IsWindow(host)) return;
+    const HWND foreground = GetForegroundWindow();
+    if (foreground && !IsOwnProcessWindow(foreground)) return;
+    SetForegroundWindow(host);
+}
+
 D2D1_COLOR_F D2DColor(const Color& color, float alphaMultiplier = 1.0F) {
     return D2D1::ColorF(color.r, color.g, color.b, std::clamp(color.a * alphaMultiplier, 0.0F, 1.0F));
 }
@@ -282,6 +296,7 @@ public:
     }
 
     void Destroy() noexcept {
+        *alive_ = false;
         if (!hwnd_) return;
         KillTimer(hwnd_, kAnimationTimerId);
         KillTimer(hwnd_, kPreviewTimerId);
@@ -1000,6 +1015,14 @@ private:
     void OnContextMenu(int x, int y) {
         const int index = HitTest(x, y);
         if (index < 0 || static_cast<std::size_t>(index) >= model_.items.size()) return;
+        // 菜单开着的时候这条书签条可能被销毁（宿主关了、设置改了），菜单返回以后只用这几个
+        // 局部变量，不再碰成员。
+        WinOverlayBackend& owner = owner_;
+        const HWND menuHost = owner.menuHost_;
+        if (!menuHost) return;
+        const WindowId target = model_.items[static_cast<std::size_t>(index)].targetWindowId;
+        const WindowId hostId = model_.hostWindowId;
+        const std::shared_ptr<bool> alive = alive_;
 
         // 菜单是模态的，打开以后鼠标就不在书签栏上了：磁场开始回落，预览栈先收起来，菜单
         // 开着的这段时间也不再弹出来盖住它。
@@ -1023,25 +1046,36 @@ private:
 
         POINT screen{x, y};
         ClientToScreen(hwnd_, &screen);
-        // The overlay is WS_EX_NOACTIVATE, so it never becomes the foreground window and
-        // TrackPopupMenu would leave a menu that does not dismiss on click-away. Handing
-        // foreground to the host first is the documented workaround.
-        SetForegroundWindow(HwndFromId(model_.hostWindowId));
-        Frame();   // 让回落动画在菜单的模态循环里跑起来
-        const int choice = static_cast<int>(TrackPopupMenu(
-            menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
-            screen.x, screen.y, 0, hwnd_, nullptr));
-        DestroyMenu(menu);
-        menuOpen_ = false;
 
-        // 菜单期间模型可能已经换过（标签个数变了），下标要重新核对。
-        if (static_cast<std::size_t>(index) >= model_.items.size()) return;
-        const WindowId target = model_.items[static_cast<std::size_t>(index)].targetWindowId;
-        if (choice == static_cast<int>(kRenameCommand)) {
-            if (owner_.callbacks_.onRename) owner_.callbacks_.onRename(target);
-        } else if (choice == static_cast<int>(kSettingsCommand)) {
-            if (owner_.callbacks_.onOpenSettings) owner_.callbacks_.onOpenSettings();
+        // 菜单的主人必须是前台窗口——托盘菜单一直就是这么做的。书签条是 WS_EX_NOACTIVATE
+        // 的，当不了前台。以前是把前台交给宿主窗口，可宿主在别的进程里，菜单所属的线程于是
+        // 不是前台线程：菜单弹得出来，点上面的项却不算数（用户报告「重命名、设置点了不管用」），
+        // 点别处也关不掉。现在由本进程里一个看不见、能激活的窗口来当菜单的主人。
+        //
+        // 前台临时落到本进程的隐藏窗口上，窗口跟踪看不到这件事（事件钩子跳过本进程），宿主
+        // 仍被当作活动窗口，书签条和边框都不会因此变化。
+        SetForegroundWindow(menuHost);
+        Frame();   // 让回落动画在菜单的模态循环里跑起来
+        const UINT choice = static_cast<UINT>(TrackPopupMenu(
+            menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+            screen.x, screen.y, 0, menuHost, nullptr));
+        // 文档要求的配套动作：少了这一条，下一次点别处时菜单可能关不掉。
+        PostMessageW(menuHost, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+
+        if (choice == kRenameCommand || choice == kSettingsCommand) {
+            // 命令留到这次消息处理结束之后再执行：对话框是模态的，不该嵌在书签条自己的消息
+            // 处理里跑——对话框开着的时候这条书签条随时可能被销毁。
+            owner.menuReturnHost_ = hostId;
+            PostMessageW(menuHost, kRunMenuCommand, static_cast<WPARAM>(choice),
+                         static_cast<LPARAM>(target));
+        } else {
+            // 什么都没选：把前台还给宿主，不然它的标题栏会一直是灰的。
+            ReturnForeground(hostId);
         }
+
+        if (!*alive) return;
+        menuOpen_ = false;
     }
 
     void DrawItems(ID2D1RenderTarget& target) {
@@ -1185,6 +1219,8 @@ private:
     WinOverlayBackend& owner_;
     OverlayModel model_;
     HWND hwnd_{};
+    // 模态循环（右键菜单）返回时用来判断这个对象还在不在。
+    std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
     LayeredSurface surface_;
 
     // base：只由设置和模型决定
@@ -1306,6 +1342,45 @@ bool WinOverlayBackend::EnsureWindowClass() {
     return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
+bool WinOverlayBackend::EnsureMenuHost() {
+    if (menuHost_) return true;
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpfnWndProc = MenuHostProc;
+    wc.lpszClassName = kMenuHostClass;
+    if (RegisterClassExW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    // 普通的顶层弹出窗口，从不显示。不能用 HWND_MESSAGE 的纯消息窗口：那种窗口当不了前台。
+    menuHost_ = CreateWindowExW(WS_EX_TOOLWINDOW, kMenuHostClass, L"", WS_POPUP, 0, 0, 0, 0,
+                                nullptr, nullptr, wc.hInstance, this);
+    return menuHost_ != nullptr;
+}
+
+LRESULT CALLBACK WinOverlayBackend::MenuHostProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                                 LPARAM lParam) {
+    if (msg == WM_NCCREATE) {
+        const auto* cs = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    }
+    auto* self = reinterpret_cast<WinOverlayBackend*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == kRunMenuCommand && self) {
+        self->RunMenuCommand(static_cast<UINT>(wParam), static_cast<WindowId>(lParam));
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void WinOverlayBackend::RunMenuCommand(UINT command, WindowId target) {
+    const WindowId host = menuReturnHost_;
+    if (command == kRenameCommand) {
+        if (callbacks_.onRename) callbacks_.onRename(target);
+    } else if (command == kSettingsCommand) {
+        if (callbacks_.onOpenSettings) callbacks_.onOpenSettings();
+    }
+    // 对话框关掉以后把前台还给宿主：菜单为了能用，把前台临时拿到了本进程。
+    ReturnForeground(host);
+}
+
 bool WinOverlayBackend::Start(const Settings& settings, OverlayCallbacks callbacks) {
     if (started_) return true;
     settings_ = settings;
@@ -1314,6 +1389,8 @@ bool WinOverlayBackend::Start(const Settings& settings, OverlayCallbacks callbac
         callbacks_ = {};
         return false;
     }
+    // 建不出来只影响书签的右键菜单（OnContextMenu 会直接不弹），不值得让整个书签功能起不来。
+    EnsureMenuHost();
     started_ = true;
     return true;
 }
@@ -1382,6 +1459,10 @@ void WinOverlayBackend::UpdateSettings(const Settings& settings) {
 
 void WinOverlayBackend::Stop() noexcept {
     windows_.clear();
+    if (menuHost_) {
+        DestroyWindow(menuHost_);
+        menuHost_ = nullptr;
+    }
     textFormats_.clear();
     renderTarget_.Reset();
     dwriteFactory_.Reset();
