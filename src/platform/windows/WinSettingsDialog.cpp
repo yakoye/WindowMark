@@ -466,12 +466,11 @@ constexpr unsigned kPinSwatches[] = {
 constexpr const wchar_t* kPlacementChoices[] = {L"自动", L"左侧", L"右侧", L"顶部", L"底部"};
 constexpr const wchar_t* kCornerChoices[] = {L"跟随系统", L"直角", L"圆角", L"小圆角", L"自定义"};
 
+// 各功能的开 / 关只在托盘菜单里（「启用书签」「启用窗口边框」「启用窗口置顶」「启用窗口
+// 拖动」）。设置页里曾经各有一个同样的开关，两处各自记一份状态，托盘那份又没在启动和改完
+// 设置后同步，结果是打着勾的功能实际没开。开关只留一处，就不存在两份对不上。
 const Field kFields[] = {
     // --- 书签 ---
-    // The on/off switch leads, mirroring 启用边框 on the border page.
-    {FieldKind::Bool, SettingsPage::Bookmarks, L"书签", L"启用书签", 0, 1,
-     [](const Settings& s) { return s.drawer.enabled ? 1 : 0; },
-     [](Settings& s, int v) { s.drawer.enabled = v != 0; }, nullptr},
     {FieldKind::Choice, SettingsPage::Bookmarks, L"书签", L"书签位置", 0, 4,
      [](const Settings& s) { return static_cast<int>(s.drawer.placement); },
      [](Settings& s, int v) { s.drawer.placement = static_cast<Placement>(v); }, nullptr,
@@ -575,9 +574,6 @@ const Field kFields[] = {
      [](Settings& s, int v) { s.performance.geometryThrottleMs = v; }, L"ms"},
 
     // --- 边框（独立页面）---
-    {FieldKind::Bool, SettingsPage::Borders, L"窗口边框", L"启用边框", 0, 1,
-     [](const Settings& s) { return s.border.enabled ? 1 : 0; },
-     [](Settings& s, int v) { s.border.enabled = v != 0; }, nullptr},
     {FieldKind::Int, SettingsPage::Borders, L"窗口边框", L"线宽", 1, 20,
      [](const Settings& s) { return s.border.width; },
      [](Settings& s, int v) { s.border.width = v; }, L"px"},
@@ -641,9 +637,6 @@ const Field kFields[] = {
      }},
 
     // --- 窗口置顶 ---
-    {FieldKind::Bool, SettingsPage::Pinning, L"窗口置顶", L"启用置顶", 0, 1,
-     [](const Settings& s) { return s.pin.enabled ? 1 : 0; },
-     [](Settings& s, int v) { s.pin.enabled = v != 0; }, nullptr},
     {FieldKind::Palette, SettingsPage::Pinning, L"窗口置顶", L"高亮颜色", 0, 0,
      [](const Settings& s) { return static_cast<int>(s.pin.color); },
      [](Settings& s, int v) { s.pin.color = static_cast<unsigned>(v); },
@@ -665,7 +658,7 @@ const Field kFields[] = {
 };
 
 // Column assignment is by group, chosen so the two columns end at roughly the same
-// height. Appearance alone is 11 rows, so it pairs with the 5-row behaviour block;
+// height. Appearance alone is 11 rows, so it pairs with the 4-row behaviour block;
 // everything else (row layout 5, preview 8, performance 1) stacks on the right. Getting this wrong pushes the taller column
 // down into the button row.
 bool IsLeftColumn(const Field& field) {

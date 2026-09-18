@@ -133,7 +133,8 @@ void WinPreviewBackend::Show(const PreviewRequest& request) {
     if (!EnsureWindows() || !EnsureDrawing()) return;
 
     const bool side = IsSide(request.placement);
-    title_->SetScale(ScaleFor(request.workArea));
+    scale_ = ScaleFor(request.workArea);
+    title_->SetScale(scale_);
 
     // 标题的长度：各层按不透明度加权。主标签换人时，底从旧标题的长度连续变到新标题的长度，
     // 和位置的滑动同步，不会一帧跳过去。横排不超过缩略图宽，竖排不超过缩略图高。
@@ -153,11 +154,12 @@ void WinPreviewBackend::Show(const PreviewRequest& request) {
         ? weighted / weights
         : std::min(title_->NaturalLength(layers.back().text), maxMain);
 
-    // 缩略图：preview.enabled 关掉、首次延迟还没过、或者书签指向宿主自己，都不要。
+    // 缩略图的位置：preview.enabled 关掉、或者首次延迟还没过，就不要。书签指向宿主自己时
+    // 这个位置照样占着，改放「当前窗口」字样——从别的书签滑到自己身上时版面不跳。
     bool wantsThumb = false;
     if (settings_.enabled && request.thumbnailArmed) {
         for (const PreviewLayer& layer : request.layers) {
-            if (layer.thumbnail && layer.opacity > 0.0F) wantsThumb = true;
+            if (layer.opacity > 0.0F) wantsThumb = true;
         }
     }
 
@@ -264,7 +266,12 @@ void WinPreviewBackend::PresentThumbnails(const RectF& rectF, const PreviewReque
             thumbs_.push_back(Thumb{layer.sourceWindowId, handle});
         }
     }
-    if (thumbs_.empty()) {
+    // 指向宿主自己的那几层没有缩略图，换成「当前窗口」字样，不透明度取它们里最大的。
+    float selfCard = 0.0F;
+    for (const PreviewLayer& layer : request.layers) {
+        if (!layer.thumbnail) selfCard = std::max(selfCard, layer.opacity);
+    }
+    if (thumbs_.empty() && selfCard <= 0.0F) {
         HideThumbnails();
         return;
     }
@@ -274,6 +281,10 @@ void WinPreviewBackend::PresentThumbnails(const RectF& rectF, const PreviewReque
     const int height = std::max<LONG>(1, r.bottom - r.top);
     const bool resized = width != thumbRect_.right - thumbRect_.left ||
                          height != thumbRect_.bottom - thumbRect_.top;
+    const bool appearing = !thumbShown_;
+    // 字样画在窗口自己的内容里，先定下这一帧的深浅，窗口出现时第一次绘制就是对的。
+    const bool cardChanged = std::fabs(selfCard - selfCard_) >= 0.004F;
+    selfCard_ = selfCard;
     if (!thumbShown_ || !EqualRect(&r, &thumbRect_)) {
         SetWindowPos(thumbHwnd_, HWND_TOPMOST, r.left, r.top, width, height,
                      SWP_NOACTIVATE | (thumbShown_ ? SWP_NOZORDER : SWP_SHOWWINDOW));
@@ -284,6 +295,12 @@ void WinPreviewBackend::PresentThumbnails(const RectF& rectF, const PreviewReque
         }
         thumbRect_ = r;
         thumbShown_ = true;
+    }
+    // DWM 缩略图叠在窗口内容上面，所以切换时是缩略图盖过字样、或者字样从淡出的缩略图下面
+    // 露出来——和两张缩略图之间的交叉淡入淡出是同一个效果。
+    if (cardChanged || resized || appearing) {
+        InvalidateRect(thumbHwnd_, nullptr, FALSE);
+        UpdateWindow(thumbHwnd_);
     }
 
     const int availableW = std::max(1, width - kThumbPad * 2);
@@ -327,6 +344,59 @@ void WinPreviewBackend::HideThumbnails() noexcept {
     if (thumbHwnd_ && thumbShown_) ShowWindow(thumbHwnd_, SW_HIDE);
     thumbShown_ = false;
     thumbRect_ = RECT{};
+    selfCard_ = 0.0F;
+}
+
+void WinPreviewBackend::PaintThumbWindow(HWND hwnd) {
+    PAINTSTRUCT ps{};
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int width = rc.right - rc.left;
+    const int height = rc.bottom - rc.top;
+
+    // 先画到内存里再一次贴上去：交叉淡入淡出时每帧都重画，直接画在窗口上会闪。
+    HDC memory = CreateCompatibleDC(dc);
+    HBITMAP bitmap = memory ? CreateCompatibleBitmap(dc, std::max(1, width), std::max(1, height))
+                            : nullptr;
+    HDC target = bitmap ? memory : dc;
+    HGDIOBJ previousBitmap = bitmap ? SelectObject(memory, bitmap) : nullptr;
+
+    constexpr COLORREF kBackground = RGB(246, 247, 249);
+    HBRUSH brush = CreateSolidBrush(kBackground);
+    FillRect(target, &rc, brush);
+    DeleteObject(brush);
+
+    if (selfCard_ > 0.0F) {
+        const int px = static_cast<int>(std::lround(34.0F * scale_));
+        if (!cardFont_ || cardFontPx_ != px) {
+            if (cardFont_) DeleteObject(cardFont_);
+            cardFont_ = CreateFontW(-px, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            cardFontPx_ = px;
+        }
+        // 淡入淡出：字的颜色从底色往深灰按不透明度插值。
+        const float a = std::clamp(selfCard_, 0.0F, 1.0F);
+        const auto mix = [a](int from, int to) {
+            return static_cast<BYTE>(std::lround(static_cast<float>(from) +
+                                                 (static_cast<float>(to) - from) * a));
+        };
+        SetTextColor(target, RGB(mix(246, 70), mix(247, 74), mix(249, 82)));
+        SetBkMode(target, TRANSPARENT);
+        HGDIOBJ previousFont = cardFont_ ? SelectObject(target, cardFont_) : nullptr;
+        RECT textRect = rc;
+        DrawTextW(target, L"当前窗口", -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (previousFont) SelectObject(target, previousFont);
+    }
+
+    if (bitmap) {
+        BitBlt(dc, 0, 0, width, height, memory, 0, 0, SRCCOPY);
+        SelectObject(memory, previousBitmap);
+        DeleteObject(bitmap);
+    }
+    if (memory) DeleteDC(memory);
+    EndPaint(hwnd, &ps);
 }
 
 void WinPreviewBackend::UpdateSettings(const PreviewSettings& settings) {
@@ -351,6 +421,11 @@ void WinPreviewBackend::Stop() noexcept {
     }
     titleSurface_.Reset();
     title_.reset();
+    if (cardFont_) {
+        DeleteObject(cardFont_);
+        cardFont_ = nullptr;
+        cardFontPx_ = 0;
+    }
     renderTarget_.Reset();
     dwriteFactory_.Reset();
     d2dFactory_.Reset();
@@ -374,6 +449,10 @@ LRESULT CALLBACK WinPreviewBackend::TitleProc(HWND hwnd, UINT msg, WPARAM wParam
 }
 
 LRESULT CALLBACK WinPreviewBackend::ThumbProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_NCCREATE) {
+        const auto* cs = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    }
     switch (msg) {
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
@@ -382,14 +461,14 @@ LRESULT CALLBACK WinPreviewBackend::ThumbProc(HWND hwnd, UINT msg, WPARAM wParam
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        RECT rc{};
-        GetClientRect(hwnd, &rc);
-        HBRUSH brush = CreateSolidBrush(RGB(246, 247, 249));
-        FillRect(dc, &rc, brush);
-        DeleteObject(brush);
-        EndPaint(hwnd, &ps);
+        auto* self = reinterpret_cast<WinPreviewBackend*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (self) {
+            self->PaintThumbWindow(hwnd);
+        } else {
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            EndPaint(hwnd, &ps);
+        }
         return 0;
     }
     default:

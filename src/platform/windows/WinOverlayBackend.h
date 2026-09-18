@@ -32,6 +32,12 @@ private:
 
     bool EnsureFactories();
     bool EnsureWindowClass();
+    // 书签右键菜单的主人：本进程里一个看不见、能激活的顶层窗口。书签条是
+    // WS_EX_NOACTIVATE 的，当不了前台，而菜单的主人必须是前台窗口，菜单项才点得动。
+    // 菜单选中的命令也投递给它，等书签条这次消息处理结束后再执行。
+    bool EnsureMenuHost();
+    static LRESULT CALLBACK MenuHostProc(HWND, UINT, WPARAM, LPARAM);
+    void RunMenuCommand(UINT command, WindowId target);
     // One DC render target and one text format are enough: overlays are drawn one at
     // a time on the UI thread, and the target is re-bound to each window's memory DC.
     bool EnsureDrawingResources();
@@ -53,6 +59,9 @@ private:
 
     std::map<std::pair<int, bool>, Microsoft::WRL::ComPtr<IDWriteTextFormat>> textFormats_;
     std::unordered_map<WindowId, std::unique_ptr<OverlayWindow>> windows_;
+    HWND menuHost_{};
+    // 菜单命令执行完，把前台还给这个宿主窗口。
+    WindowId menuReturnHost_{};
     bool started_{false};
 };
 

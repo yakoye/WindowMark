@@ -51,6 +51,8 @@ private:
     void PresentThumbnails(const RectF& rect, const PreviewRequest& request);
     void HideTitle() noexcept;
     void HideThumbnails() noexcept;
+    // 缩略图窗口的底色，以及书签指向宿主自己时代替缩略图的「当前窗口」字样。
+    void PaintThumbWindow(HWND hwnd);
 
     PreviewSettings settings_;
     HWND titleHwnd_{};
@@ -61,6 +63,12 @@ private:
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     std::unique_ptr<PreviewTitle> title_;
     std::vector<Thumb> thumbs_;
+    // 「当前窗口」字样的不透明度：书签指向宿主自己时没有缩略图可放，缩略图的位置上改写这
+    // 四个字。和缩略图一样跟着主标签交叉淡入淡出。
+    float selfCard_{};
+    float scale_{1.0F};
+    HFONT cardFont_{};
+    int cardFontPx_{};
     RECT thumbRect_{};
     bool titleShown_{false};
     bool thumbShown_{false};

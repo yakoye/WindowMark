@@ -17,7 +17,11 @@ public:
     ~WinControlWindow();
 
     struct Handlers {
-        // Master switch: turns both features off, or both back on.
+        // 菜单每次弹出前调用：把四个功能的开关状态从当前配置重新读一遍（调 Set*State）。
+        // 菜单上的对勾以前是各自缓存的，其中「书签」那份启动时从没读过配置、改完设置也不
+        // 更新，于是出现「打着勾却没开」。每次开菜单现读，对勾就不可能和实际不符。
+        std::function<void()> onMenuOpening;
+        // Master switch: turns every feature off, or every one back on.
         std::function<void()> onToggleAll;
         std::function<void()> onToggleBookmarks;
         std::function<void()> onSelection;

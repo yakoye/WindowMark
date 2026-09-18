@@ -120,7 +120,8 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
   跟着磁场一起动。左右两侧的标题是竖排，两侧都从上往下读。主标签换人时标题和缩略图从旧位置
   滑到新位置、内容交叉淡入淡出（`preview.crossfade_ms`）。
 - 书签里只显示短名（`drawer.short_name_chars`），完整名字看浮动标题。`Self`（这条书签栏所属的
-  窗口）只有标题、没有缩略图；`Active`（当前前台窗口）的书签平时更大一点，被吸到时和别人一样大。
+  窗口）没有缩略图可放，缩略图的位置上显示大字「当前窗口」；`Active`（当前前台窗口）的书签平时
+  更大一点，被吸到时和别人一样大。
 
 `placement=auto`：最大化的窗口用底部横排，其余用左侧。书签条在窗口里面，不再需要窗口外有地方，
 所以它不会随窗口移动在左右之间跳。
@@ -133,8 +134,8 @@ Windows 11's rounding and stays square on Windows 10.
 
 This is **independent of bookmarks**: its own switch, its own settings window, its own
 tray submenu, and it covers every top-level window — including single-window apps that
-never get a bookmark strip. Turn it on under **窗口边框 → 启用窗口边框**, or set
-`border.enabled=true`. It is off by default.
+never get a bookmark strip. Switch it under **窗口边框 → 启用窗口边框** (the only place it
+can be switched), or set `border.enabled`. It is on by default.
 
 Outlines are drawn on one transparent canvas per monitor, and WindowMark works out itself
 which parts of each outline are covered by windows in front. **A window the mouse passes
@@ -346,9 +347,12 @@ WindowMark 的主消息循环，下游任一监听器卡住时边框刷新会跟
 ## Settings, renaming and the context menu
 
 Right-click a bookmark for **重命名** / **设置**. The tray menu groups everything into
-**书签** and **窗口边框** submenus, each with its own settings window and its own
-**启用** check mark — the two features are switched and configured separately, and both
-switches are the same setting the dialog's checkbox writes, so they survive a restart.
+**书签**、**窗口边框**、**窗口置顶**、**窗口拖动** submenus, each with its own settings window
+and its own **启用** item.
+
+**功能的开关只在托盘菜单里。** 设置页里曾经各有一个「启用书签 / 启用边框 / 启用置顶」，
+两处各记一份状态，托盘那份又没在启动和改完设置后同步——配置里关着的书签，托盘照样打勾。
+现在设置页只管数值，开关只留托盘一处；托盘每次弹出都从当前配置现读对勾，不再缓存。
 
 The settings dialog exposes every configurable value — appearance, the bottom row, hover
 preview, behaviour and performance — and changes **apply immediately** and are written to
@@ -376,8 +380,10 @@ The tray menu itself carries the program-wide switches, above 关于 and 退出:
 兼作开关——这是菜单模型本身的限制，`MF_OWNERDRAW` 也绕不过去（它只让你自绘，不让你细分
 点击区域）。
 
-**暂停所有 / 启用所有** turns both features off, or both back on, without visiting either
-submenu. The label names what the click will do, so there is no tick to interpret.
+**暂停所有 / 启用所有** turns all four features off — bookmarks, borders, pinning and
+dragging — or all four back on, without visiting any submenu. The label names what the click
+will do, so there is no tick to interpret. 菜单上的文字和点下去真正切换的是同一组功能
+（以前文字看置顶、动作切拖动，只开着置顶时点「暂停所有」反而把其余三个打开了）。
 
 **开机启动** is off after a fresh install, and is *not* stored in `settings.conf`: Windows
 lets the user turn a startup entry off from Task Manager and from 设置 - 应用 - 启动, so the

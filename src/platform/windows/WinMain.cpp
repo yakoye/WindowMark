@@ -288,6 +288,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             if (!windowmark::win::WinSettingsDialog::ShowModal(control.NativeHandle(), draft, page)) {
                 return;
             }
+            // 开关只归托盘管。对话框开着的时候托盘照样能切开关，draft 里却还是打开对话框
+            // 那一刻的旧值——不在这里取回当前值，点「确定」就会把刚切的开关悄悄改回去。
+            const windowmark::Settings& now = coordinator.CurrentSettings();
+            draft.drawer.enabled = now.drawer.enabled;
+            draft.border.enabled = now.border.enabled;
+            draft.pin.enabled = now.pin.enabled;
+            draft.drag.enabled = now.drag.enabled;
             coordinator.UpdateSettings(draft);
             control.SetBorderState(coordinator.CurrentSettings().border.enabled);
             control.SetDragState(coordinator.CurrentSettings().drag.enabled);
@@ -328,18 +335,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // do nothing visible on the next click would be worse than no switch.
     handlers.onToggleAll = [&]() {
         windowmark::Settings draft = coordinator.CurrentSettings();
-        // 拖动也算在内：它和书签/边框一样是 WindowMark 自己的功能，暂停时该连钩子
-        // 一起卸掉。剪贴板守护不在其列——那是独立进程。
-        const bool anythingOn =
-            draft.drawer.enabled || draft.border.enabled || draft.drag.enabled;
+        // 四个功能都算：书签、边框、置顶、拖动，和托盘上「暂停所有 / 启用所有」判断用的是
+        // 同一组（以前那边看置顶、这边切拖动，两边对不上）。拖动暂停时连钩子一起卸掉；置顶
+        // 暂停会先把钉住的窗口放开。剪贴板守护不在其列——那是独立进程。
+        const bool anythingOn = draft.drawer.enabled || draft.border.enabled ||
+                                draft.pin.enabled || draft.drag.enabled;
         draft.drawer.enabled = !anythingOn;
         draft.border.enabled = !anythingOn;
+        draft.pin.enabled = !anythingOn;
         draft.drag.enabled = !anythingOn;
         coordinator.UpdateSettings(draft);
         control.SetEnabledState(draft.drawer.enabled);
         control.SetBorderState(draft.border.enabled);
+        control.SetPinState(draft.pin.enabled);
         control.SetDragState(draft.drag.enabled);
         persist();
+    };
+    // 托盘菜单弹出前现读一遍：对勾永远以当前配置为准。
+    handlers.onMenuOpening = [&]() {
+        const windowmark::Settings& now = coordinator.CurrentSettings();
+        control.SetEnabledState(now.drawer.enabled);
+        control.SetBorderState(now.border.enabled);
+        control.SetPinState(now.pin.enabled);
+        control.SetDragState(now.drag.enabled);
     };
     handlers.onToggleBookmarks = [&]() {
         coordinator.SetOverlayEnabled(!coordinator.OverlayEnabled());
@@ -378,10 +396,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     handlers.onDragSettings = [&]() {
         exclusive([&] {
-            windowmark::Settings draft = coordinator.CurrentSettings();
-            std::string modifiers = draft.drag.modifiers;
+            std::string modifiers = coordinator.CurrentSettings().drag.modifiers;
             if (windowmark::win::WinDragSettingsDialog::ShowModal(control.NativeHandle(),
                                                                  modifiers)) {
+                // 关掉对话框之后再取当前配置：对话框开着时托盘可能切过开关，拿打开前的
+                // 副本整份写回会把它改回去。这里只动修饰键这一项。
+                windowmark::Settings draft = coordinator.CurrentSettings();
                 draft.drag.modifiers = modifiers;
                 coordinator.UpdateSettings(draft);
                 persist();
@@ -604,6 +624,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, L"托盘控制器初始化失败，程序已安全退出。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 6;
     }
+    // 书签这一项以前漏了：托盘里它的初值写死是「开」，配置里关着也照样打勾。
+    control.SetEnabledState(coordinator.CurrentSettings().drawer.enabled);
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);
     control.SetDragState(coordinator.CurrentSettings().drag.enabled);
     control.SetPinState(coordinator.CurrentSettings().pin.enabled);
