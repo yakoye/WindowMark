@@ -1,11 +1,11 @@
-# WindowMark v0.5.3
+# WindowMark v0.5.4
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, temporary always-on-top pinning, and modifier-key window dragging**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.5.3 at a glance
+## v0.5.4 at a glance
 
 Four window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -24,6 +24,10 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
+v0.5.4 把书签的悬停重做成**磁性书签栏**：鼠标沿书签栏移动，附近的书签按距离连续放大、把
+邻居挤开，书签之间的间隙不再是死区；悬停时从窗口边缘往窗口内容依次是 书签 → 浮动标题 →
+缩略图，任何时刻互不重叠，左右两侧的标题竖排。左右两侧的书签条也改到了窗口内侧。另外修了
+书签右键菜单点不动、托盘开关打着勾功能却没开两个问题，功能开关只留在托盘菜单里。
 v0.5.3 no longer needs the Visual C++ runtime installed — every exe carries its own —,
 keeps bookmarks below right-click menus instead of drawing over them, and stops full-screen
 transparent overlays such as WGestures' gesture-trail window from hiding every border.
@@ -40,8 +44,8 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.5.3-win64.zip` from the
-   [v0.5.3 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.3).
+1. Download `WindowMark-v0.5.4-win64.zip` from the
+   [v0.5.4 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.4).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
@@ -50,7 +54,7 @@ full history.
    independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.5.3.
+scaffold and does not provide a working macOS application in v0.5.4.
 
 ## 双击没反应 / 看不到边框
 
@@ -756,7 +760,8 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.5.3** is the current release. The line includes window bookmarks, per-window borders
+**v0.5.4** is the current release. The line includes window bookmarks with a magnetic dock
+and a bookmark → title → thumbnail preview stack, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
 modifier-key window dragging, the `WindowMarkDiag.exe` diagnostic report,
 `WindowMarkInspect.exe`, executables with no Visual C++ runtime dependency,
@@ -767,7 +772,7 @@ clipboard guard, and an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.5.3 remains auditable.
+v0.5.4 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
