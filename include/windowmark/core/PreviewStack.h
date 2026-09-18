@@ -6,16 +6,6 @@
 
 namespace windowmark {
 
-struct RectF {
-    float left{};
-    float top{};
-    float right{};
-    float bottom{};
-
-    [[nodiscard]] float width() const noexcept { return right - left; }
-    [[nodiscard]] float height() const noexcept { return bottom - top; }
-};
-
 // 书签 / 浮动标题 / 缩略图，三段依次排开，任何时刻互不重叠。
 //
 // 从窗口边缘往窗口内容方向，永远是：书签 → 标题 → 缩略图。四个方向只差两件事：

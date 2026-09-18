@@ -481,17 +481,28 @@ const Field kFields[] = {
     {FieldKind::Bool, SettingsPage::Bookmarks, L"书签", L"仅当前窗口", 0, 1,
      [](const Settings& s) { return s.drawer.activeWindowOnly ? 1 : 0; },
      [](Settings& s, int v) { s.drawer.activeWindowOnly = v != 0; }, nullptr},
+    // 磁场本身的两个量，四个方向共用，所以放在这里而不是侧边或横排的外观里。
+    {FieldKind::Int, SettingsPage::Bookmarks, L"书签", L"磁场半径", 20, 800,
+     [](const Settings& s) { return s.drawer.magnetRadius; },
+     [](Settings& s, int v) { s.drawer.magnetRadius = v; }, L"px"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"书签", L"离开宽限", 0, 1000,
+     [](const Settings& s) { return s.drawer.magnetGraceMs; },
+     [](Settings& s, int v) { s.drawer.magnetGraceMs = v; }, L"ms"},
 
     // --- 书签外观 ---
+    // 「峰值」是鼠标正对标签中心时它长到的绝对尺寸，紧跟在对应的平时尺寸后面，一眼能对上。
     {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"折叠长度", 24, 160,
      [](const Settings& s) { return s.drawer.collapsedExtent; },
      [](Settings& s, int v) { s.drawer.collapsedExtent = v; }, L"px"},
-    {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"展开长度", 24, 480,
-     [](const Settings& s) { return s.drawer.expandedExtent; },
-     [](Settings& s, int v) { s.drawer.expandedExtent = v; }, L"px"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"峰值长度", 16, 320,
+     [](const Settings& s) { return s.drawer.magnetMaxExtent; },
+     [](Settings& s, int v) { s.drawer.magnetMaxExtent = v; }, L"px"},
     {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"厚度", 20, 80,
      [](const Settings& s) { return s.drawer.thickness; },
      [](Settings& s, int v) { s.drawer.thickness = v; }, L"px"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"峰值厚度", 16, 320,
+     [](const Settings& s) { return s.drawer.magnetMaxThickness; },
+     [](Settings& s, int v) { s.drawer.magnetMaxThickness = v; }, L"px"},
     {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"间距", 0, 32,
      [](const Settings& s) { return s.drawer.gap; },
      [](Settings& s, int v) { s.drawer.gap = v; }, L"px"},
@@ -510,9 +521,6 @@ const Field kFields[] = {
     {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"顶部偏移", 0, 800,
      [](const Settings& s) { return s.drawer.topOffset; },
      [](Settings& s, int v) { s.drawer.topOffset = v; }, L"px"},
-    {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"贴合重叠", 0, 24,
-     [](const Settings& s) { return s.drawer.attachOverlap; },
-     [](Settings& s, int v) { s.drawer.attachOverlap = v; }, L"px"},
     {FieldKind::Int, SettingsPage::Bookmarks, L"书签外观", L"激活额外长度", 0, 80,
      [](const Settings& s) { return s.drawer.activeExtraExtent; },
      [](Settings& s, int v) { s.drawer.activeExtraExtent = v; }, L"px"},
@@ -521,18 +529,22 @@ const Field kFields[] = {
     {FieldKind::Int, SettingsPage::Bookmarks, L"底部横排（窗口最大化时）", L"折叠宽度", 24, 240,
      [](const Settings& s) { return s.drawer.bottomCollapsedExtent; },
      [](Settings& s, int v) { s.drawer.bottomCollapsedExtent = v; }, L"px"},
-    {FieldKind::Int, SettingsPage::Bookmarks, L"底部横排（窗口最大化时）", L"展开宽度", 24, 480,
-     [](const Settings& s) { return s.drawer.bottomExpandedExtent; },
-     [](Settings& s, int v) { s.drawer.bottomExpandedExtent = v; }, L"px"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"底部横排（窗口最大化时）", L"峰值宽度", 16, 480,
+     [](const Settings& s) { return s.drawer.bottomMagnetMaxExtent; },
+     [](Settings& s, int v) { s.drawer.bottomMagnetMaxExtent = v; }, L"px"},
     {FieldKind::Int, SettingsPage::Bookmarks, L"底部横排（窗口最大化时）", L"平时高度", 0, 80,
      [](const Settings& s) { return s.drawer.bottomCollapsedThickness; },
      [](Settings& s, int v) { s.drawer.bottomCollapsedThickness = v; }, L"px  0=厚度一半"},
     {FieldKind::Int, SettingsPage::Bookmarks, L"底部横排（窗口最大化时）", L"激活高度", 0, 80,
      [](const Settings& s) { return s.drawer.bottomActiveThickness; },
      [](Settings& s, int v) { s.drawer.bottomActiveThickness = v; }, L"px  0=同厚度"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"底部横排（窗口最大化时）", L"峰值高度", 8, 240,
+     [](const Settings& s) { return s.drawer.bottomMagnetMaxThickness; },
+     [](Settings& s, int v) { s.drawer.bottomMagnetMaxThickness = v; }, L"px"},
 
     // --- 悬停预览 ---
-    {FieldKind::Bool, SettingsPage::Bookmarks, L"悬停预览", L"启用预览", 0, 1,
+    // 只管缩略图：浮动标题总是显示，标签里只放得下几个字。
+    {FieldKind::Bool, SettingsPage::Bookmarks, L"悬停预览", L"显示缩略图", 0, 1,
      [](const Settings& s) { return s.preview.enabled ? 1 : 0; },
      [](Settings& s, int v) { s.preview.enabled = v != 0; }, nullptr},
     {FieldKind::Int, SettingsPage::Bookmarks, L"悬停预览", L"延迟", 0, 5000,
@@ -547,6 +559,15 @@ const Field kFields[] = {
     {FieldKind::Int, SettingsPage::Bookmarks, L"悬停预览", L"圆角半径", 0, 32,
      [](const Settings& s) { return s.preview.cornerRadius; },
      [](Settings& s, int v) { s.preview.cornerRadius = v; }, L"px"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"悬停预览", L"标题间距", 0, 64,
+     [](const Settings& s) { return s.preview.titleGap; },
+     [](Settings& s, int v) { s.preview.titleGap = v; }, L"px  离书签"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"悬停预览", L"缩略图间距", 0, 64,
+     [](const Settings& s) { return s.preview.thumbnailGap; },
+     [](Settings& s, int v) { s.preview.thumbnailGap = v; }, L"px  离标题"},
+    {FieldKind::Int, SettingsPage::Bookmarks, L"悬停预览", L"淡入淡出", 0, 1000,
+     [](const Settings& s) { return s.preview.crossfadeMs; },
+     [](Settings& s, int v) { s.preview.crossfadeMs = v; }, L"ms  0=直接切换"},
 
     // --- 性能 ---
     {FieldKind::Int, SettingsPage::Bookmarks, L"性能", L"几何事件节流", 8, 250,
@@ -644,8 +665,8 @@ const Field kFields[] = {
 };
 
 // Column assignment is by group, chosen so the two columns end at roughly the same
-// height. Appearance alone is 11 rows, so it pairs with the 2-row behaviour block;
-// everything else stacks on the right. Getting this wrong pushes the taller column
+// height. Appearance alone is 11 rows, so it pairs with the 5-row behaviour block;
+// everything else (row layout 5, preview 8, performance 1) stacks on the right. Getting this wrong pushes the taller column
 // down into the button row.
 bool IsLeftColumn(const Field& field) {
     if (field.page != SettingsPage::Bookmarks) {
@@ -1173,12 +1194,6 @@ private:
 
         for (const auto& [apply, value] : external) apply(value);
 
-        if (draft.drawer.expandedExtent < draft.drawer.collapsedExtent) {
-            draft.drawer.expandedExtent = draft.drawer.collapsedExtent;
-        }
-        if (draft.drawer.bottomExpandedExtent < draft.drawer.bottomCollapsedExtent) {
-            draft.drawer.bottomExpandedExtent = draft.drawer.bottomCollapsedExtent;
-        }
         working_ = draft;
         return true;
     }

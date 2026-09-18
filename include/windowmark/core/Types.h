@@ -20,6 +20,17 @@ struct Rect {
     [[nodiscard]] int height() const noexcept { return bottom - top; }
 };
 
+// 动画中的几何是连续变化的，取整只在交给窗口系统的最后一步做。
+struct RectF {
+    float left{};
+    float top{};
+    float right{};
+    float bottom{};
+
+    [[nodiscard]] float width() const noexcept { return right - left; }
+    [[nodiscard]] float height() const noexcept { return bottom - top; }
+};
+
 struct Color {
     float r{};
     float g{};
@@ -81,6 +92,9 @@ struct OverlayModel {
     WindowId hostWindowId{};
     Placement placement{Placement::Left};
     Rect screenBounds;
+    // 第一个标签的 base 区间在书签条窗口里、沿书签栏方向的起点。窗口两侧留着标签被磁性
+    // 挤开时的余量，所以它不是 0。见 LayoutEngine::ComputeOverlayBounds。
+    float dockOrigin{};
     Rect hostFrame;
     Rect workArea;
     bool visible{true};
@@ -108,13 +122,33 @@ struct PinRecord {
     bool wasTopmostBefore{false};
 };
 
+// 预览栈里的一层：一个书签的标题和缩略图。主标签换人时新旧两层同时存在，一个淡出一个淡入。
+struct PreviewLayer {
+    WindowId sourceWindowId{};
+    std::string title;
+    // false：书签指向宿主窗口自己，只有标题，没有缩略图
+    bool thumbnail{true};
+    float opacity{};   // 0..1
+};
+
+// 书签条每一帧交给预览端的东西：书签 → 浮动标题 → 缩略图三段怎么排，所需的全部输入。
+// 三段的具体位置由预览端用 LayoutPreviewStack 算——它量得出标题文字有多长。
 struct PreviewRequest {
     WindowId hostWindowId{};
-    WindowId sourceWindowId{};
     Placement placement{Placement::Left};
-    Rect anchorScreenRect;
-    Rect hostFrame;
     Rect workArea;
+    // 书签条贴着的那条窗口边，在交叉轴上的屏幕坐标
+    float rootEdge{};
+    // 这一帧所有书签画出来的矩形，屏幕坐标。标题和缩略图要躲开其中每一个
+    std::vector<RectF> tabs;
+    // 标题和缩略图在主轴上以它为中心：各层所属书签中心按不透明度加权，切换时连续滑过去
+    float anchorMain{};
+    // 整个预览栈的不透明度，跟着磁场强度进出
+    float opacity{};
+    // 缩略图第一次出现要等 preview.delay_ms；之前只有标题
+    bool thumbnailArmed{false};
+    // 最新的一层在最后
+    std::vector<PreviewLayer> layers;
 };
 
 struct OverlayCallbacks {

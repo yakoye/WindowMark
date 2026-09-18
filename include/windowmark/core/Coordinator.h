@@ -7,7 +7,9 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -92,6 +94,9 @@ private:
     // with them.
     void PrunePins();
     [[nodiscard]] std::vector<OverlayModel> BuildModels();
+    // DockMaxGrowth 要把鼠标位置扫一遍，宿主每挪一下 BuildModels 都要用到它，所以按
+    // （是否侧边、标签个数、激活下标）记下来。只和设置有关，设置一变就清空。
+    [[nodiscard]] float DockGrowthFor(bool side, std::size_t count, int activeIndex);
     // Borders cover every tracked top-level window, with no grouping: a single-window app
     // gets a border even though it never gets a bookmark strip.
     [[nodiscard]] std::vector<BorderModel> BuildBorderModels() const;
@@ -117,6 +122,7 @@ private:
     // restart, so persisting one would silence whatever inherited the number.
     std::unordered_set<WindowId> borderDisabledWindowIds_;
     std::unordered_map<WindowId, std::string> customLabels_;
+    std::map<std::tuple<bool, std::size_t, int>, float> dockGrowth_;
     PinRegistry pins_;
     std::function<void(WindowId)> onRename_;
     std::function<void()> onOpenSettings_;

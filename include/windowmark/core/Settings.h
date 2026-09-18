@@ -16,9 +16,11 @@ struct DrawerSettings {
     // outside the window, so the strip jumps between left and right as the window moves
     // and you have to hunt for it. A fixed edge is easier to find.
     Placement placement{Placement::Bottom};
-    // Side placements (left/right): the extent is how far a tab reaches out
+    // Side placements (left/right): the extent is how far a tab reaches into the window
     // horizontally, the thickness is its height.
     int collapsedExtent{30};
+    // 已退役（磁性书签栏）：「悬停后把整个名字塞进标签」的展开宽度。磁性栏里标签只放大到
+    // 固定峰值、完整名字在浮动标题里，这个状态不存在了。配置文件里照常读写，不再生效。
     int expandedExtent{180};
     int thickness{34};
 
@@ -27,6 +29,7 @@ struct DrawerSettings {
     // also sits half-height against the window edge and grows upward on hover, which is
     // what bottomCollapsedThickness controls (0 means half of thickness).
     int bottomCollapsedExtent{44};
+    // 已退役，同 expandedExtent。
     int bottomExpandedExtent{120};
     int bottomCollapsedThickness{0};
     // How tall the active row tab stands, and what a hovered one grows to. Its own
@@ -36,10 +39,27 @@ struct DrawerSettings {
     int bottomActiveThickness{23};
     int gap{6};
     int cornerRadius{10};
+    // 磁场强度进出书签栏的渐变时长：约这么久走完 95%。
     int animationMs{90};
     int shortNameChars{4};
     int topOffset{72};
+    // 已退役：侧边书签条以前挂在窗口外、压进窗口这么多像素。现在四个方向都贴在窗口内侧，
+    // 没有「压进去」这回事了。配置文件里照常读写，不再生效。
     int attachOverlap{6};
+
+    // 磁性书签栏：鼠标正对一个标签中心时，它长到的**绝对**尺寸（像素，不是倍率）。
+    // 侧边和横排各一套，分工和上面的 collapsed / bottom_collapsed 一样：
+    //   侧边  extent 是伸进窗口的深度，thickness 是标签高度（沿书签栏方向）
+    //   横排  extent 是标签宽度（沿书签栏方向），thickness 是伸进窗口的高度
+    // 峰值比某个标签自己的 base 还小时按 base 算：只放大，不缩小。
+    int magnetMaxExtent{56};
+    int magnetMaxThickness{52};
+    int bottomMagnetMaxExtent{72};
+    int bottomMagnetMaxThickness{36};
+    // 磁场半径，沿书签栏方向。离鼠标这么远的标签完全不受影响。
+    int magnetRadius{120};
+    // 鼠标离开整条书签栏后，磁场再保持这么久才开始回落。回来得及时就当没离开过。
+    int magnetGraceMs{60};
 
     // Show bookmarks only on the foreground window. Overlays are owned popups of a
     // window in another process, and Windows does not keep cross-process owner/owned
@@ -152,12 +172,19 @@ struct PinSettings {
     std::string hotkey;
 };
 
+// 悬停时从书签往窗口内容方向依次排开三段：书签 → 浮动标题 → 缩略图。
 struct PreviewSettings {
+    // 只管缩略图。浮动标题总是显示：标签里只放得下几个字，完整名字只有它能给。
     bool enabled{true};
+    // 缩略图第一次出现前等这么久，鼠标一扫而过时不乱闪。出现之后跟着主标签切换，不再等。
     int delayMs{450};
     int width{480};
     int height{300};
     int cornerRadius{12};
+    int titleGap{7};        // 书签 → 标题
+    int thumbnailGap{10};   // 标题 → 缩略图
+    // 主标签换人时，标题和缩略图的交叉淡入淡出时长，位置也在这段时间里移到新主标签上。
+    int crossfadeMs{100};
 };
 
 struct PerformanceSettings {

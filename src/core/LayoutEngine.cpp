@@ -1,6 +1,7 @@
 #include "windowmark/core/LayoutEngine.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace windowmark {
 namespace {
@@ -10,6 +11,12 @@ int ClampOrigin(int desired, int extent, int minValue, int maxValue) {
         return minValue;
     }
     return std::clamp(desired, minValue, maxValue - extent);
+}
+
+// 书签栏的几何只分两种：主轴是 X（Top / Bottom）或 Y（Left / Right）。Auto 在这里不会出现
+// ——ResolvePlacement 总会给出具体方向——万一出现按 Bottom 处理，和 PreviewStack 的约定一致。
+[[nodiscard]] bool IsSide(Placement placement) {
+    return placement == Placement::Left || placement == Placement::Right;
 }
 
 } // namespace
@@ -24,21 +31,19 @@ DrawerMetrics LayoutEngine::MetricsFor(Placement placement, const DrawerSettings
 
     if (!IsRowPlacement(placement)) {
         metrics.collapsedExtent = std::max(1, settings.collapsedExtent);
-        metrics.expandedExtent = std::max(metrics.collapsedExtent, settings.expandedExtent);
         metrics.restThickness = metrics.fullThickness;
         // Side tabs are all the same height; the active one is told apart by reaching
-        // further out, so shrinking it here would only make it look broken.
+        // further in, so shrinking it here would only make it look broken.
         metrics.activeThickness = metrics.fullThickness;
         return metrics;
     }
 
     metrics.collapsedExtent = std::max(1, settings.bottomCollapsedExtent);
-    metrics.expandedExtent = std::max(metrics.collapsedExtent, settings.bottomExpandedExtent);
     metrics.restThickness = settings.bottomCollapsedThickness > 0
         ? std::min(settings.bottomCollapsedThickness, metrics.fullThickness)
         : std::max(1, metrics.fullThickness / 2);
     // Never below the resting height (the active tab would sink under its neighbours)
-    // and never above the full thickness (the strip is only that tall).
+    // and never above the full thickness.
     metrics.activeThickness = settings.bottomActiveThickness > 0
         ? std::clamp(settings.bottomActiveThickness, metrics.restThickness, metrics.fullThickness)
         : metrics.fullThickness;
@@ -49,65 +54,105 @@ Placement LayoutEngine::ResolvePlacement(const WindowInfo& host, const DrawerSet
     if (settings.placement != Placement::Auto) {
         return settings.placement;
     }
-
-    if (host.maximized) {
-        return Placement::Bottom;
-    }
-
-    const int leftSpace = host.frame.left - host.workArea.left;
-    const int rightSpace = host.workArea.right - host.frame.right;
-    const int minimumOutside = std::max(28, settings.expandedExtent - settings.attachOverlap);
-
-    if (leftSpace >= minimumOutside) {
-        return Placement::Left;
-    }
-    if (rightSpace >= minimumOutside) {
-        return Placement::Right;
-    }
-    return Placement::Bottom;
+    // 书签条以前挂在窗口外面，Auto 要看左右哪边窗口外还有地方，窗口一挪就在左右之间跳。现在
+    // 四个方向都贴在窗口内侧，不再需要窗口外的空间：最大化用底部横排，其余一律左侧。
+    return host.maximized ? Placement::Bottom : Placement::Left;
 }
 
-Rect LayoutEngine::ComputeOverlayBounds(
+DockSpec LayoutEngine::DockSpecFor(
+    Placement placement,
+    std::size_t count,
+    int activeIndex,
+    const DrawerSettings& settings) {
+
+    const bool side = IsSide(placement);
+    const DrawerMetrics metrics = MetricsFor(side ? placement : Placement::Bottom, settings);
+    const float extra = static_cast<float>(std::max(0, settings.activeExtraExtent));
+
+    DockSpec spec;
+    spec.params.gap = static_cast<float>(std::max(0, settings.gap));
+    spec.params.radius = static_cast<float>(std::max(1, settings.magnetRadius));
+    spec.params.peakMain = static_cast<float>(side ? settings.magnetMaxThickness
+                                                   : settings.bottomMagnetMaxExtent);
+    spec.params.peakCross = static_cast<float>(side ? settings.magnetMaxExtent
+                                                    : settings.bottomMagnetMaxThickness);
+
+    spec.items.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const bool active = static_cast<int>(i) == activeIndex;
+        DockItemBase item;
+        if (side) {
+            item.main = static_cast<float>(metrics.fullThickness);
+            item.cross = static_cast<float>(metrics.collapsedExtent) + (active ? extra : 0.0F);
+        } else {
+            item.main = static_cast<float>(metrics.collapsedExtent) + (active ? extra : 0.0F);
+            item.cross = static_cast<float>(active ? metrics.activeThickness
+                                                   : metrics.restThickness);
+        }
+        spec.items.push_back(item);
+    }
+    return spec;
+}
+
+DockBounds LayoutEngine::ComputeOverlayBounds(
     const WindowInfo& host,
-    std::size_t itemCount,
+    const DockSpec& spec,
+    float maxGrowth,
     Placement placement,
     const DrawerSettings& settings) {
 
-    const int count = static_cast<int>(std::max<std::size_t>(1, itemCount));
-    const DrawerMetrics metrics = MetricsFor(placement, settings);
-    const int stackExtent = count * settings.thickness + (count - 1) * settings.gap;
+    const bool side = IsSide(placement);
 
-    if (placement == Placement::Left || placement == Placement::Right) {
-        // Room for the active tab's extra reach, so it is not clipped by its own window.
-        const int width = metrics.expandedExtent + settings.activeExtraExtent;
-        const int height = std::min(stackExtent, std::max(settings.thickness, host.workArea.height()));
-        const int desiredY = host.frame.top + settings.topOffset;
-        const int y = ClampOrigin(desiredY, height, host.workArea.top, host.workArea.bottom);
-        const int x = placement == Placement::Left
-            ? host.frame.left - width + settings.attachOverlap
-            : host.frame.right - settings.attachOverlap;
-        return Rect{x, y, x + width, y + height};
+    float baseTotal = 0.0F;
+    float depth = 1.0F;
+    for (const DockItemBase& item : spec.items) {
+        baseTotal += item.main;
+        depth = std::max({depth, item.cross, spec.params.peakCross});
+    }
+    if (spec.items.size() > 1) {
+        baseTotal += spec.params.gap * static_cast<float>(spec.items.size() - 1);
     }
 
-    const int maxRowWidth = metrics.expandedExtent + settings.activeExtraExtent
-        + (count - 1) * metrics.collapsedExtent
-        + (count - 1) * settings.gap;
-    const int width = std::min(maxRowWidth, std::max(metrics.collapsedExtent, host.workArea.width()));
-    // Sized to the active tab, not to the resting height: the spare space above a
-    // resting tab is what it expands into on hover, and nothing ever grows past the
-    // active one.
-    const int height = metrics.activeThickness;
-    const int centeredX = host.frame.left + (host.frame.width() - width) / 2;
-    const int x = ClampOrigin(centeredX, width, host.workArea.left, host.workArea.right);
+    // 余量取整：base 的尺寸和间距都是整数，起点也落在整数上，静止时标签边缘才是锐利的。
+    const int margin = static_cast<int>(std::ceil(std::max(0.0F, maxGrowth)));
+    const int base = static_cast<int>(std::ceil(baseTotal));
+    const int cross = static_cast<int>(std::ceil(depth));
 
-    // A row strip sits just inside the host's own edge and its tabs grow inward from
-    // there. Anchoring it inside regardless of whether the host is maximized keeps the
-    // root edge - the one drawn square - on the same side in both cases; hanging it
-    // outside for restored windows would flip the tabs upside down.
-    const int y = placement == Placement::Top
-        ? ClampOrigin(host.frame.top, height, host.workArea.top, host.workArea.bottom)
-        : ClampOrigin(host.frame.bottom - height, height, host.workArea.top, host.workArea.bottom);
-    return Rect{x, y, x + width, y + height};
+    const int workLo = side ? host.workArea.top : host.workArea.left;
+    const int workHi = side ? host.workArea.bottom : host.workArea.right;
+    const int wanted = base + 2 * margin;
+    const int length = std::max(1, std::min(wanted, workHi - workLo));
+
+    const int desiredBase = side ? host.frame.top + settings.topOffset
+                                 : host.frame.left + (host.frame.width() - base) / 2;
+    const int mainStart = ClampOrigin(desiredBase - margin, length, workLo, workHi);
+
+    DockBounds out;
+    // 工作区放不下整条（标签多到这种程度很少见）时窗口就是整个工作区，base 在里面居中。
+    out.baseOrigin = wanted <= length ? static_cast<float>(margin)
+                                      : static_cast<float>((length - base) / 2);
+
+    int crossStart = 0;
+    switch (placement) {
+    case Placement::Top:
+        crossStart = ClampOrigin(host.frame.top, cross, host.workArea.top, host.workArea.bottom);
+        break;
+    case Placement::Left:
+        crossStart = ClampOrigin(host.frame.left, cross, host.workArea.left, host.workArea.right);
+        break;
+    case Placement::Right:
+        crossStart = ClampOrigin(host.frame.right - cross, cross,
+                                 host.workArea.left, host.workArea.right);
+        break;
+    default:
+        crossStart = ClampOrigin(host.frame.bottom - cross, cross,
+                                 host.workArea.top, host.workArea.bottom);
+        break;
+    }
+
+    out.bounds = side ? Rect{crossStart, mainStart, crossStart + cross, mainStart + length}
+                      : Rect{mainStart, crossStart, mainStart + length, crossStart + cross};
+    return out;
 }
 
 } // namespace windowmark
