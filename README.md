@@ -670,7 +670,8 @@ Double-click, or from PowerShell / CMD:
 | 双击这个 | 做什么 |
 |---|---|
 | `build.bat` | 只编译 |
-| **`rebuild_and_install.bat`** | 编译 → 单元测试 → 卸载旧版 → 装新版并启动，最后打印生效的配置。改完直接看效果就用它 |
+| **`rebuild_and_install.bat`** | 编译 → 单元测试 → 卸载旧版 → 装新版并启动 → 打印生效的配置 → **生成安装包**。改完直接看效果就用它 |
+| `make_package.bat` | 只打包：把 `build\Release` 现有的产物收成 zip，结构和发布包一样（解压后双击 `WindowMarkSetup.exe`）。测试包放 `dist\test\`，名字带构建时间和提交号，不会和发布包撞名；`-Release` 才打 `dist\WindowMark-v<版本>-win64.zip`，已存在时不覆盖 |
 | `rebuild_and_install.bat -Fresh` | 同上，**并删除 `settings.conf`**。改的是代码里的默认值时必须用这个，否则旧配置会盖掉新默认值 |
 | `rebuild_and_install.bat -NoBuild` | 跳过编译，只重装（约 5 秒）|
 | **`check_border.bat`** | 边框诊断：倒数 5 秒让你切到目标窗口，然后报边框的位置、层级、四条边逐点取色，以及每个不对的点被哪个窗口盖着 |

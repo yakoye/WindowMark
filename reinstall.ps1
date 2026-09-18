@@ -4,6 +4,8 @@
 #   .\reinstall.ps1 -Fresh    同上，但连同 settings.conf 一起删掉
 #   .\reinstall.ps1 -NoBuild  跳过编译，直接重装现有产物
 #
+# 装完总会生成一个安装包（make-package.ps1），放在 dist\test\ 下，名字里带构建时间和提交号。
+#
 # -Fresh 的用处：改代码里的**默认值**（例如 border.width、drawer.bottom_active_thickness）
 # 时，已存在的 settings.conf 会覆盖掉新默认值，看不到效果。加 -Fresh 才能验证默认值。
 param(
@@ -225,4 +227,14 @@ if (Test-Path $settings) {
 
     Write-Host '当前生效的配置：'
     Get-Content $settings | Where-Object { $_ -match '^\s*[a-z]' } | ForEach-Object { Write-Host "  $_" }
+}
+
+# ---- 4. 安装包 ----
+# 每次编译安装都留一个安装包：拿到别的机器上装、回头对比哪一版有问题，都用得上。
+# 程序已经装好了，打包失败也要大声报出来，不能悄悄跳过。
+Step '生成安装包'
+& (Join-Path $PSScriptRoot 'make-package.ps1')
+if ($LASTEXITCODE -ne 0) {
+    Write-Host '安装包没有生成（程序本身已经装好了）。' -ForegroundColor Red
+    exit 1
 }
