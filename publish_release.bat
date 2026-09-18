@@ -23,7 +23,7 @@ if errorlevel 1 (
 )
 
 if not exist "%ZIP%" (
-  echo Missing %ZIP% - run reinstall.ps1 and the packaging step first.
+  echo Missing %ZIP% - run make_package.bat -Release first.
   goto done
 )
 
