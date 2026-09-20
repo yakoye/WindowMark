@@ -471,20 +471,20 @@ constexpr const wchar_t* kCornerChoices[] = {L"跟随系统", L"直角", L"圆�
 // 设置后同步，结果是打着勾的功能实际没开。开关只留一处，就不存在两份对不上。
 const Field kFields[] = {
     // --- 书签 ---
-    {FieldKind::Choice, SettingsPage::Bookmarks, L"书签", L"书签位置", 0, 4,
+    {FieldKind::Choice, SettingsPage::Bookmarks, L"窗口书签", L"书签位置", 0, 4,
      [](const Settings& s) { return static_cast<int>(s.drawer.placement); },
      [](Settings& s, int v) { s.drawer.placement = static_cast<Placement>(v); }, nullptr,
      kPlacementChoices, static_cast<int>(std::size(kPlacementChoices))},
     // Shortened from 「仅在当前窗口显示」: at eight glyphs it was the one label forcing
     // the whole page's label column 26px wider than anything else needed.
-    {FieldKind::Bool, SettingsPage::Bookmarks, L"书签", L"仅当前窗口", 0, 1,
+    {FieldKind::Bool, SettingsPage::Bookmarks, L"窗口书签", L"仅当前窗口", 0, 1,
      [](const Settings& s) { return s.drawer.activeWindowOnly ? 1 : 0; },
      [](Settings& s, int v) { s.drawer.activeWindowOnly = v != 0; }, nullptr},
     // 磁场本身的两个量，四个方向共用，所以放在这里而不是侧边或横排的外观里。
-    {FieldKind::Int, SettingsPage::Bookmarks, L"书签", L"磁场半径", 20, 800,
+    {FieldKind::Int, SettingsPage::Bookmarks, L"窗口书签", L"磁场半径", 20, 800,
      [](const Settings& s) { return s.drawer.magnetRadius; },
      [](Settings& s, int v) { s.drawer.magnetRadius = v; }, L"px"},
-    {FieldKind::Int, SettingsPage::Bookmarks, L"书签", L"离开宽限", 0, 1000,
+    {FieldKind::Int, SettingsPage::Bookmarks, L"窗口书签", L"离开宽限", 0, 1000,
      [](const Settings& s) { return s.drawer.magnetGraceMs; },
      [](Settings& s, int v) { s.drawer.magnetGraceMs = v; }, L"ms"},
 
@@ -665,7 +665,7 @@ bool IsLeftColumn(const Field& field) {
     if (field.page != SettingsPage::Bookmarks) {
         return true;  // single column; every group stacks
     }
-    return wcscmp(field.group, L"书签") == 0 || wcscmp(field.group, L"书签外观") == 0;
+    return wcscmp(field.group, L"窗口书签") == 0 || wcscmp(field.group, L"书签外观") == 0;
 }
 
 // 0xAARRGGBB in, "#RRGGBB" or "#RRGGBBAA" out - alpha is only spelled out when it matters.
@@ -892,7 +892,7 @@ private:
             WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, kSettingsClass,
             page_ == SettingsPage::Pinning  ? L"WindowMark - 窗口置顶设置"
             : page_ == SettingsPage::Borders ? L"WindowMark - 窗口边框设置"
-                                             : L"WindowMark - 书签设置",
+                                             : L"WindowMark - 窗口书签设置",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
             x, y, outerW, outerH,
             owner_, nullptr, GetModuleHandleW(nullptr), this);

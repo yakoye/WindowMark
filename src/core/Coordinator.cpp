@@ -113,15 +113,19 @@ bool Coordinator::Start() {
     // 桌面快照，一秒 30 帧就把一个核占满了，边框反而落后十几个像素。三处都改掉之后
     // 才配得上这条不节流的路。
     //
-    // 书签条**故意**不走这里。试过也量过：每个位置事件多一次 SetWindowPos（一次 80
-    // 步的拖动里 274 次），节流那边的活一点没少，CPU 上去了而拖动的顺滑度没变化。
-    // 书签条挂在窗口外面，30fps 足够。
-    if (borderBackend_) {
-        windowsBackend_.SetGeometrySink([this](WindowId id, const Rect& frame) {
-            if (!started_ || !settings_.border.enabled) return;
-            borderBackend_->MoveBorder(id, frame);
-        });
-    }
+    // 书签条曾经**故意**不走这里：当时它挂在窗口外面，试过也量过，每个位置事件多一次
+    // SetWindowPos（一次 80 步的拖动里 274 次），节流那边的活一点没少，CPU 上去了而
+    // 拖动的顺滑度没变化，30fps 看着就够。
+    //
+    // v0.5.4 起书签条贴在窗口**内侧**，前提变了：它和窗口自己的内容并排，慢一拍是直接
+    // 错开一截，用户第一眼就看见（「拖动窗口的时候，书签跟的特别慢」）。所以它现在也走
+    // 这条路。代价仍然只是一次 SetWindowPos：纯平移不改变排布，MoveOverlay 不重建模型、
+    // 不重画，尺寸变了、跨屏了这些情况由随后节流的那遍完整刷新兜住。
+    windowsBackend_.SetGeometrySink([this](WindowId id, const Rect& frame) {
+        if (!started_) return;
+        if (borderBackend_ && settings_.border.enabled) borderBackend_->MoveBorder(id, frame);
+        if (settings_.drawer.enabled) overlaysBackend_.MoveOverlay(id, frame);
+    });
 
     started_ = true;
     RefreshAll();

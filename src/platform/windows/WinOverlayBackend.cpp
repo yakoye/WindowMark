@@ -534,11 +534,44 @@ private:
     // 鼠标在栏上（含离开后的宽限），或者磁场还没退干净。
     [[nodiscard]] bool Engaged() const { return hovering_ || strength_ > 0.0F; }
 
+public:
+    // 宿主只是挪了个位置：书签条的尺寸、base 排布都不变，重新摆一次窗口就够。拖动时每个
+    // 位置事件都会走到这里（约 120 次每秒），所以这里只有几次整数运算和一次 SetWindowPos，
+    // 不重建模型、不重画。尺寸变了交给节流的那遍完整刷新。
+    void MoveTo(const Rect& hostFrame) {
+        if (!hwnd_ || !appliedVisible_) return;
+        if (hostFrame.width() != model_.hostFrame.width() ||
+            hostFrame.height() != model_.hostFrame.height()) {
+            return;
+        }
+        DockSize size;
+        const bool side = Side();
+        size.mainLength = side ? model_.screenBounds.height() : model_.screenBounds.width();
+        size.cross = side ? model_.screenBounds.width() : model_.screenBounds.height();
+        size.baseLength = baseLength_;
+        size.baseOrigin = model_.dockOrigin;
+        const Rect moved = LayoutEngine::PlaceDock(hostFrame, model_.workArea, size,
+                                                   model_.placement, owner_.settings_.drawer);
+        model_.hostFrame = hostFrame;
+        if (moved.left == model_.screenBounds.left && moved.top == model_.screenBounds.top) return;
+        model_.screenBounds = moved;
+        UpdatePositionAndVisibility();
+        // 预览栈是按屏幕坐标排的，书签条挪了它也得跟着挪。
+        if (previewShown_) EmitPreview();
+    }
+
+private:
     // base 排布。只在方向、个数、激活标签或窗口里的起点变了时重算；鼠标怎么动都不碰它。
     void RebuildDock(bool snap) {
         spec_ = LayoutEngine::DockSpecFor(model_.placement, model_.items.size(),
                                           ActiveIndexOf(model_.items), owner_.settings_.drawer);
         baseStarts_ = DockBaseStarts(spec_.items, spec_.params.gap, model_.dockOrigin);
+        float baseTotal = 0.0F;
+        for (const DockItemBase& item : spec_.items) baseTotal += item.main;
+        if (spec_.items.size() > 1) {
+            baseTotal += spec_.params.gap * static_cast<float>(spec_.items.size() - 1);
+        }
+        baseLength_ = static_cast<int>(std::ceil(baseTotal));
         const std::size_t n = spec_.items.size();
         if (snap || visual_.size() != n) {
             visual_.assign(n, DockItemVisual{});
@@ -1225,6 +1258,8 @@ private:
 
     // base：只由设置和模型决定
     DockSpec spec_;
+    // base 区间的总长（含间距），取整。宿主平移时重新摆位置要用它，见 MoveTo。
+    int baseLength_{};
     std::vector<float> baseStarts_;
     // 每帧的目标（未平滑）和画出来的样子（平滑后、以鼠标为不动点排开）
     std::vector<DockItemVisual> target_;
@@ -1446,6 +1481,13 @@ void WinOverlayBackend::Apply(const std::vector<OverlayModel>& models) {
     DiagFlush();
 }
 
+
+void WinOverlayBackend::MoveOverlay(WindowId hostId, const Rect& hostFrame) {
+    if (!started_) return;
+    const auto it = windows_.find(hostId);
+    if (it == windows_.end()) return;
+    it->second->MoveTo(hostFrame);
+}
 
 void WinOverlayBackend::UpdateSettings(const Settings& settings) {
     settings_ = settings;

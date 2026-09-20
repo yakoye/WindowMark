@@ -104,7 +104,13 @@ public:
         callbacks_ = std::move(callbacks);
         return true;
     }
-    void Apply(const std::vector<OverlayModel>& models) override { last = models; }
+    void Apply(const std::vector<OverlayModel>& models) override {
+        last = models;
+        ++applyCount;
+    }
+    void MoveOverlay(WindowId hostId, const Rect& hostFrame) override {
+        moves.emplace_back(hostId, hostFrame);
+    }
     void UpdateSettings(const Settings& settings) override {
         settings_ = settings;
         ++settingsUpdates;
@@ -114,6 +120,9 @@ public:
     Settings settings_;
     OverlayCallbacks callbacks_;
     std::vector<OverlayModel> last;
+    // 拖动时书签条走的快路径：只挪位置，不重建模型。两者分开计数才看得出走的是哪条。
+    std::vector<std::pair<WindowId, Rect>> moves;
+    int applyCount{0};
     int settingsUpdates{0};
 };
 
@@ -378,6 +387,34 @@ void TestMoveDoesNotRequery() {
     windows.fullQueries = 0;
     windows.Emit({WindowEventKind::GeometryChanged, 999});
     CHECK(windows.fullQueries == 1);
+
+    // 拖动时的快路径：位置事件直接把书签条挪过去，不重建模型，也不回头去查窗口——
+    // 重建走的是节流的那条路。书签条贴在窗口内侧，慢一拍就和窗口内容错开。
+    overlays.moves.clear();
+    const int appliesBefore = overlays.applyCount;
+    windows.fullQueries = 0;
+    windows.frameQueries = 0;
+    Rect moved = windows.windows[1].frame;
+    for (int i = 0; i < 5; ++i) {
+        moved.left += 11;
+        moved.right += 11;
+        windows.EmitGeometry(2, moved);
+    }
+    CHECK(overlays.moves.size() == 5);
+    CHECK(overlays.moves.back().first == 2);
+    CHECK(overlays.moves.back().second.left == moved.left);
+    CHECK(overlays.applyCount == appliesBefore);
+    CHECK(windows.fullQueries == 0 && windows.frameQueries == 0);
+
+    // 书签关掉时这条路也要安静：没有书签条可挪。
+    Settings off = coordinator.CurrentSettings();
+    off.drawer.enabled = false;
+    coordinator.UpdateSettings(off);
+    overlays.moves.clear();
+    moved.left += 11;
+    moved.right += 11;
+    windows.EmitGeometry(2, moved);
+    CHECK(overlays.moves.empty());
 
     coordinator.Stop();
 }
@@ -1544,6 +1581,38 @@ void TestDockGeometry() {
         normal, deepSpec, DockMaxGrowth(deepSpec.items, deepSpec.params), Placement::Left,
         deep.drawer);
     CHECK(deepBounds.bounds.width() == 100);
+
+    // 拖动窗口时书签条走的快路径：尺寸和 base 起点都不重算，只用 PlaceDock 重新摆位置。
+    // 它必须和整份重算逐像素一致，否则松手那一下书签条会跳一下。
+    const DockSize rowSize = LayoutEngine::DockSizeFor(row, rowGrowth, maxed.workArea,
+                                                       Placement::Bottom);
+    CHECK(rowSize.mainLength == bottom.bounds.width());
+    CHECK(rowSize.cross == bottom.bounds.height());
+    CHECK(rowSize.baseLength == rowBase);
+    CHECK(rowSize.baseOrigin == bottom.baseOrigin);
+    const DockSize sideSize = LayoutEngine::DockSizeFor(left, sideGrowth, normal.workArea,
+                                                        Placement::Left);
+    for (const int dx : {-900, -37, 0, 41, 1200}) {
+        for (const int dy : {-700, -18, 0, 23, 900}) {
+            WindowInfo movedHost = normal;
+            movedHost.frame = Rect{normal.frame.left + dx, normal.frame.top + dy,
+                                   normal.frame.right + dx, normal.frame.bottom + dy};
+            for (const Placement placement : {Placement::Bottom, Placement::Top, Placement::Left,
+                                              Placement::Right}) {
+                const bool sidePlacement =
+                    placement == Placement::Left || placement == Placement::Right;
+                const DockSpec& spec = sidePlacement ? left : row;
+                const DockSize& size = sidePlacement ? sideSize : rowSize;
+                const float growth = sidePlacement ? sideGrowth : rowGrowth;
+                const Rect fast =
+                    LayoutEngine::PlaceDock(movedHost.frame, movedHost.workArea, size, placement, d);
+                const DockBounds full =
+                    LayoutEngine::ComputeOverlayBounds(movedHost, spec, growth, placement, d);
+                CHECK(fast.left == full.bounds.left && fast.top == full.bounds.top);
+                CHECK(fast.right == full.bounds.right && fast.bottom == full.bounds.bottom);
+            }
+        }
+    }
 
     // 关键性质：鼠标在任何位置、磁场全开时，每个标签画出来都完整落在窗口里——不被裁掉
     const auto fits = [](const DockSpec& spec, const DockBounds& b, bool side) {

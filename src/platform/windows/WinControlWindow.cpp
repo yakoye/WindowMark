@@ -186,7 +186,7 @@ void WinControlWindow::ShowAlreadyRunningHint() {
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
     wcscpy_s(data.szInfoTitle, L"WindowMark 已在运行");
-    wcscpy_s(data.szInfo, L"书签层已经启用。右键此图标可以隐藏书签或选择参与的应用。");
+    wcscpy_s(data.szInfo, L"窗口书签已经启用。右键此图标可以隐藏窗口书签或选择参与的应用。");
     // NIM_MODIFY 往一个不存在的图标上发会失败，而且是静默失败。图标没了的时候用户
     // 恰恰最可能双击 exe——那正是这条路唯一被走到的时候，不能在这里哑掉。
     if (Shell_NotifyIconW(NIM_MODIFY, &data) == FALSE) {
@@ -503,7 +503,7 @@ void WinControlWindow::ShowMenu() {
     HMENU bookmarks = CreatePopupMenu();
     if (bookmarks) {
         AppendMenuW(bookmarks, MF_STRING | (enabled_ ? MF_CHECKED : MF_UNCHECKED),
-                    kToggleCommand, L"启用书签");
+                    kToggleCommand, L"启用窗口书签");
         // Shortened from 「选择参与的应用/窗口...」: at twelve glyphs it was the widest item
         // anywhere in the menu, and a submenu is right-aligned to the parent's left edge,
         // so it alone decided how far left the 书签 panel reached - visibly further than
@@ -512,7 +512,7 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(bookmarks, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(bookmarks, MF_STRING, kSettingsCommand, L"书签设置...");
         AppendMenuW(menu, MF_POPUP | (enabled_ ? MF_CHECKED : MF_UNCHECKED),
-                    reinterpret_cast<UINT_PTR>(bookmarks), L"书签");
+                    reinterpret_cast<UINT_PTR>(bookmarks), L"窗口书签");
     }
 
     HMENU borders = CreatePopupMenu();

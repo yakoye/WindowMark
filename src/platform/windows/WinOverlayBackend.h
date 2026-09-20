@@ -24,6 +24,7 @@ public:
 
     bool Start(const Settings& settings, OverlayCallbacks callbacks) override;
     void Apply(const std::vector<OverlayModel>& models) override;
+    void MoveOverlay(WindowId hostId, const Rect& hostFrame) override;
     void UpdateSettings(const Settings& settings) override;
     void Stop() noexcept override;
 

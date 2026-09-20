@@ -37,6 +37,17 @@ struct DockBounds {
     float baseOrigin{};
 };
 
+// 书签条的尺寸：沿书签栏方向的长度、伸进窗口的厚度，以及 base 在窗口里占的那一段。
+//
+// 宿主窗口只是平移时这些全都不变，只要重新摆一次位置（PlaceDock）。拖动窗口时每秒上百次的
+// 位置事件走的就是这条路：不重建排布、不重画，和边框一样跟手。
+struct DockSize {
+    int mainLength{};
+    int baseLength{};
+    int cross{};
+    float baseOrigin{};
+};
+
 class LayoutEngine {
 public:
     [[nodiscard]] static bool IsRowPlacement(Placement placement) noexcept;
@@ -73,6 +84,20 @@ public:
         const WindowInfo& host,
         const DockSpec& spec,
         float maxGrowth,
+        Placement placement,
+        const DrawerSettings& settings);
+
+    // ComputeOverlayBounds 的两个半边，拆开是为了让「宿主只是挪了一下」不必重算尺寸。
+    [[nodiscard]] static DockSize DockSizeFor(
+        const DockSpec& spec,
+        float maxGrowth,
+        const Rect& workArea,
+        Placement placement);
+
+    [[nodiscard]] static Rect PlaceDock(
+        const Rect& hostFrame,
+        const Rect& workArea,
+        const DockSize& size,
         Placement placement,
         const DrawerSettings& settings);
 };
