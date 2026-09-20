@@ -50,7 +50,7 @@ full history.
 3. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
    `WindowMark.exe` directly from the extracted directory.
 4. Open at least two normal windows from the same application to see bookmarks.
-5. Use the tray menu to configure **书签**, **窗口边框**, **窗口置顶** and **窗口拖动**
+5. Use the tray menu to configure **窗口书签**, **窗口边框**, **窗口置顶** and **窗口拖动**
    independently.
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
@@ -351,7 +351,7 @@ WindowMark 的主消息循环，下游任一监听器卡住时边框刷新会跟
 ## Settings, renaming and the context menu
 
 Right-click a bookmark for **重命名** / **设置**. The tray menu groups everything into
-**书签**、**窗口边框**、**窗口置顶**、**窗口拖动** submenus, each with its own settings window
+**窗口书签**、**窗口边框**、**窗口置顶**、**窗口拖动** submenus, each with its own settings window
 and its own **启用** item.
 
 **功能的开关只在托盘菜单里。** 设置页里曾经各有一个「启用书签 / 启用边框 / 启用置顶」，
@@ -366,7 +366,7 @@ than silently clamped.
 The tray menu itself carries the program-wide switches, above 关于 and 退出:
 
 ```text
-✓ 书签             >   顶层的对勾镜像各功能的启用状态，右击一次就看得到
+✓ 窗口书签          >   顶层的对勾镜像各功能的启用状态，右击一次就看得到
 ✓ 窗口边框          >
   窗口置顶          >
 ✓ 剪贴板守护            开关 ClipKeeper 的面板，见「剪贴板守护」一节
@@ -379,7 +379,7 @@ The tray menu itself carries the program-wide switches, above 关于 and 退出:
   退出
 ```
 
-顶层那三个对勾是**状态显示**，切换仍在各自子菜单的第一项（「启用书签」/「启用窗口边框」/
+顶层那三个对勾是**状态显示**，切换仍在各自子菜单的第一项（「启用窗口书签」/「启用窗口边框」/
 「启用窗口置顶」）。Win32 里带子菜单的项点击即展开子菜单，系统不给它命令 ID，因此没办法
 兼作开关——这是菜单模型本身的限制，`MF_OWNERDRAW` 也绕不过去（它只让你自绘，不让你细分
 点击区域）。

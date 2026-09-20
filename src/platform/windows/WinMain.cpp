@@ -556,7 +556,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         // so the about box was showing the generic blue "i" instead of the app's own.
         const std::wstring content =
             std::wstring(L"两个独立的窗口增强功能，合在一个托盘程序里：\n"
-                         L"  • 书签 — 同一应用的每个窗口共享一组书签，点击即可切换\n"
+                         L"  • 窗口书签 — 同一应用的每个窗口共享一组书签，点击即可切换\n"
                          L"  • 窗口边框 — 为每个窗口描边，区分当前活动窗口\n\n"
                          L"作者：yekoye\n"
                          L"邮箱：yuxiang_163com@163.com\n\n"

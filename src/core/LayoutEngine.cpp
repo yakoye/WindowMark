@@ -94,12 +94,11 @@ DockSpec LayoutEngine::DockSpecFor(
     return spec;
 }
 
-DockBounds LayoutEngine::ComputeOverlayBounds(
-    const WindowInfo& host,
+DockSize LayoutEngine::DockSizeFor(
     const DockSpec& spec,
     float maxGrowth,
-    Placement placement,
-    const DrawerSettings& settings) {
+    const Rect& workArea,
+    Placement placement) {
 
     const bool side = IsSide(placement);
 
@@ -115,43 +114,72 @@ DockBounds LayoutEngine::ComputeOverlayBounds(
 
     // 余量取整：base 的尺寸和间距都是整数，起点也落在整数上，静止时标签边缘才是锐利的。
     const int margin = static_cast<int>(std::ceil(std::max(0.0F, maxGrowth)));
-    const int base = static_cast<int>(std::ceil(baseTotal));
-    const int cross = static_cast<int>(std::ceil(depth));
 
-    const int workLo = side ? host.workArea.top : host.workArea.left;
-    const int workHi = side ? host.workArea.bottom : host.workArea.right;
-    const int wanted = base + 2 * margin;
-    const int length = std::max(1, std::min(wanted, workHi - workLo));
+    DockSize out;
+    out.baseLength = static_cast<int>(std::ceil(baseTotal));
+    out.cross = static_cast<int>(std::ceil(depth));
 
-    const int desiredBase = side ? host.frame.top + settings.topOffset
-                                 : host.frame.left + (host.frame.width() - base) / 2;
-    const int mainStart = ClampOrigin(desiredBase - margin, length, workLo, workHi);
-
-    DockBounds out;
+    const int workLo = side ? workArea.top : workArea.left;
+    const int workHi = side ? workArea.bottom : workArea.right;
+    const int wanted = out.baseLength + 2 * margin;
+    out.mainLength = std::max(1, std::min(wanted, workHi - workLo));
     // 工作区放不下整条（标签多到这种程度很少见）时窗口就是整个工作区，base 在里面居中。
-    out.baseOrigin = wanted <= length ? static_cast<float>(margin)
-                                      : static_cast<float>((length - base) / 2);
+    out.baseOrigin = wanted <= out.mainLength
+        ? static_cast<float>(margin)
+        : static_cast<float>((out.mainLength - out.baseLength) / 2);
+    return out;
+}
+
+Rect LayoutEngine::PlaceDock(
+    const Rect& hostFrame,
+    const Rect& workArea,
+    const DockSize& size,
+    Placement placement,
+    const DrawerSettings& settings) {
+
+    const bool side = IsSide(placement);
+    const int workLo = side ? workArea.top : workArea.left;
+    const int workHi = side ? workArea.bottom : workArea.right;
+
+    const int desiredBase = side ? hostFrame.top + settings.topOffset
+                                 : hostFrame.left + (hostFrame.width() - size.baseLength) / 2;
+    const int margin = static_cast<int>(std::lround(size.baseOrigin));
+    const int mainStart = ClampOrigin(desiredBase - margin, size.mainLength, workLo, workHi);
 
     int crossStart = 0;
     switch (placement) {
     case Placement::Top:
-        crossStart = ClampOrigin(host.frame.top, cross, host.workArea.top, host.workArea.bottom);
+        crossStart = ClampOrigin(hostFrame.top, size.cross, workArea.top, workArea.bottom);
         break;
     case Placement::Left:
-        crossStart = ClampOrigin(host.frame.left, cross, host.workArea.left, host.workArea.right);
+        crossStart = ClampOrigin(hostFrame.left, size.cross, workArea.left, workArea.right);
         break;
     case Placement::Right:
-        crossStart = ClampOrigin(host.frame.right - cross, cross,
-                                 host.workArea.left, host.workArea.right);
+        crossStart = ClampOrigin(hostFrame.right - size.cross, size.cross,
+                                 workArea.left, workArea.right);
         break;
     default:
-        crossStart = ClampOrigin(host.frame.bottom - cross, cross,
-                                 host.workArea.top, host.workArea.bottom);
+        crossStart = ClampOrigin(hostFrame.bottom - size.cross, size.cross,
+                                 workArea.top, workArea.bottom);
         break;
     }
 
-    out.bounds = side ? Rect{crossStart, mainStart, crossStart + cross, mainStart + length}
-                      : Rect{mainStart, crossStart, mainStart + length, crossStart + cross};
+    return side
+        ? Rect{crossStart, mainStart, crossStart + size.cross, mainStart + size.mainLength}
+        : Rect{mainStart, crossStart, mainStart + size.mainLength, crossStart + size.cross};
+}
+
+DockBounds LayoutEngine::ComputeOverlayBounds(
+    const WindowInfo& host,
+    const DockSpec& spec,
+    float maxGrowth,
+    Placement placement,
+    const DrawerSettings& settings) {
+
+    const DockSize size = DockSizeFor(spec, maxGrowth, host.workArea, placement);
+    DockBounds out;
+    out.baseOrigin = size.baseOrigin;
+    out.bounds = PlaceDock(host.frame, host.workArea, size, placement, settings);
     return out;
 }
 

@@ -58,6 +58,9 @@ public:
     virtual ~IOverlayBackend() = default;
     virtual bool Start(const Settings& settings, OverlayCallbacks callbacks) = 0;
     virtual void Apply(const std::vector<OverlayModel>& models) = 0;
+    // Cheap path for a host window that only moved: reposition the strip without rebuilding
+    // anything. 书签条贴在窗口内侧，慢一拍非常显眼——拖动时它和边框走同一条不节流的路。
+    virtual void MoveOverlay(WindowId hostId, const Rect& hostFrame) = 0;
     // Applied while running, so edits in the settings UI take effect without a restart.
     virtual void UpdateSettings(const Settings& settings) = 0;
     virtual void Stop() noexcept = 0;
