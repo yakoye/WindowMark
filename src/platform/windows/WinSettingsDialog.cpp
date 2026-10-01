@@ -453,8 +453,17 @@ constexpr unsigned kSwatchPurple = 0xFF8E4EC6u;
 constexpr unsigned kBorderActiveSwatches[] = {
     0xFF6274E7u, kSwatchRed, kSwatchOrange, kSwatchYellow, kSwatchGreen, kSwatchPurple,
 };
+// 非活动那一排是上面六个的**减弱版**，不是同一组颜色。
+//
+// 两排原先给的是一模一样的六个预设，于是「活动」和「非活动」这两行在设置页里长得完全一样，
+// 挑同一格就得到一模一样的边框——两个状态根本分不出来，而这整个功能的意义就是一眼看出哪个
+// 窗口是活动的。现在同一格在两排里是同一个色相的「亮 / 暗」一对：亮度压到约一半、饱和度稍降，
+// 挑哪一格都保证活动的那条更显眼。
+//
+// 第一格仍是各自原来的默认值，升级上来的配置在色卡里找得到自己。以前在非活动那排挑过亮色
+// （比如正红）的配置不会被改动，只是那个值从此落在「自定义」格里。
 constexpr unsigned kBorderInactiveSwatches[] = {
-    0xFF7080AAu, kSwatchRed, kSwatchOrange, kSwatchYellow, kSwatchGreen, kSwatchPurple,
+    0xFF7080AAu, 0xFF8C2F38u, 0xFF8C5520u, 0xFF8C7320u, 0xFF2F7A34u, 0xFF5C4280u,
 };
 // The first cell here is 跟随系统强调色, stored as 0. It is painted with whatever the
 // accent is right now, which is also what the caption spells out.
