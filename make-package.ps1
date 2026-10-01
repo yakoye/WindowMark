@@ -146,5 +146,6 @@ if (Test-Path $installed) {
         Write-Host '  注意：包里的 WindowMark.exe 和这台机器上已安装的不是同一个文件' -ForegroundColor Yellow
     }
 }
-Write-Host '  用法：解压后双击 WindowMarkSetup.exe 安装，或者直接运行 WindowMark.exe'
+Write-Host '  用法：解压后双击 WindowMark.exe 就能用（绿色版，设置存在 exe 旁边）；'
+Write-Host '        想装进系统的话运行 WindowMarkSetup.exe'
 exit 0
