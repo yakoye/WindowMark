@@ -757,11 +757,37 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // 线程的消息泵驱动，装早了没人处理。
     applyDrag();
 
+    // 看门狗：每 5 秒让 Coordinator 对一次账（系统上真实存在的窗口 vs 自己记着的那份），
+    // 顺带让边框检查自己有没有卡在挂起里。防的是那类从外面看一模一样的故障——窗口变了、
+    // 程序毫无反应、重启才好。
+    //
+    // 定时器挂在 nullptr 上而不是某个窗口：这件事不属于任何一个窗口，WM_TIMER 直接回到
+    // 这个循环里，分发前就处理掉（hwnd 为空的 WM_TIMER 不会被 DispatchMessage 送给谁）。
+    //
+    // WM_TIMER 是最低优先级的消息，只在队列空下来时才生成——所以拖动窗口那种每秒上百条
+    // 事件的时候它会被推后（实测 95 秒里巡了 12 次而不是 19 次）。对看门狗来说这正合适：
+    // 它永远不会和真正要干的活抢时间，而「程序忙」本身就说明事件流是通的。
+    constexpr UINT_PTR kWatchdogTimer = 0x57415443;   // 'WATC'
+    constexpr UINT kWatchdogIntervalMs = 5000;
+    const UINT_PTR watchdog = SetTimer(nullptr, kWatchdogTimer, kWatchdogIntervalMs, nullptr);
+
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_TIMER && msg.hwnd == nullptr && msg.wParam == watchdog) {
+            coordinator.WatchdogTick();
+            // 每分钟一条心跳（只在诊断打开时写）。没有它就分不清「看门狗跑着而且一切正常」
+            // 和「看门狗自己也停了」——而后者恰恰是要防的那类故障的一种。
+            static unsigned ticks = 0;
+            if (++ticks % 12 == 0) {
+                windowmark::win::PinDiag(L"看门狗：已巡 %u 次，恢复过 %u 次", ticks,
+                                         coordinator.WatchdogRecoveries());
+            }
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (watchdog) KillTimer(nullptr, watchdog);
 
     // Explicit shutdown order: UI first, then overlay/preview/hooks.
     // Even if the process is force-terminated, all owned HWNDs disappear with the process.

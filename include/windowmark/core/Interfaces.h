@@ -31,6 +31,11 @@ public:
         (void)classes;
     }
     virtual void Stop() noexcept = 0;
+    // 重新订阅系统的窗口事件。看门狗发现「事件流已经不说话了」时调用——Windows 会在钩子
+    // 回调被判为太慢时把它摘掉，explorer 重启、会话切换之后也可能收不到东西，而从外面看
+    // 这些都长一个样：窗口变了，程序毫无反应，重启才好。重装一遍钩子比重启整个程序便宜。
+    // 不是纯虚：没有事件订阅概念的后端（测试里的假后端）不需要有意见。
+    virtual void Resync() {}
     [[nodiscard]] virtual std::vector<WindowInfo> EnumerateWindows() = 0;
     [[nodiscard]] virtual std::optional<WindowInfo> QueryWindow(WindowId id) = 0;
     // Just the frame, for a window already known to be tracked. A drag fires hundreds of
@@ -50,6 +55,10 @@ public:
     // Cheap path for a window that only moved: reposition without re-rendering.
     virtual void MoveBorder(WindowId id, const Rect& frame) = 0;
     virtual void UpdateSettings(const Settings& settings) = 0;
+    // 看门狗的定期一问：自己检查一下有没有卡在「画不出来」的状态里，卡住了就自己恢复。
+    // 会话锁定时边框会挂起，靠之后任意一条会话事件解除；那条事件一旦没收到，边框就永久
+    // 挂着——症状正是用户报过的「边框不刷新了，重启才好」。
+    virtual void HealthTick() {}
     virtual void Stop() noexcept = 0;
 };
 

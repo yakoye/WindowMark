@@ -25,6 +25,8 @@ public:
     void SetShadowInsets(const std::vector<std::string>& entries) override;
     void SetForceIncludeClasses(const std::vector<std::string>& classes) override;
     void Stop() noexcept override;
+    // 看门狗发现事件流不说话了：摘掉钩子重新装一遍，顺手清掉按 HWND 的缓存。
+    void Resync() override;
     [[nodiscard]] std::vector<WindowInfo> EnumerateWindows() override;
     [[nodiscard]] std::optional<WindowInfo> QueryWindow(WindowId id) override;
     [[nodiscard]] std::optional<Rect> QueryFrame(WindowId id) override;

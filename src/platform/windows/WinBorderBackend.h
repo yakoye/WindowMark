@@ -34,6 +34,8 @@ public:
     void Apply(const std::vector<BorderModel>& models) override;
     void MoveBorder(WindowId id, const Rect& frame) override;
     void UpdateSettings(const Settings& settings) override;
+    // 看门狗的定期一问：卡在「挂起」里出不来就自己恢复。见实现处的注释。
+    void HealthTick() override;
     void Stop() noexcept override;
 
 private:
