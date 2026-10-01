@@ -3,7 +3,7 @@
 namespace windowmark {
 
 ConfigLocation ResolveConfigLocation(const ConfigLocationInputs& inputs) {
-    if (inputs.portableExists && !inputs.portable.empty()) {
+    if ((inputs.portableExists || inputs.portableRequested) && !inputs.portable.empty()) {
         return ConfigLocation{inputs.portable, ConfigSource::Portable, false};
     }
     if (inputs.configuredUsable && !inputs.configured.empty()) {
