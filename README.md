@@ -1,11 +1,11 @@
-# WindowMark v0.5.4
+# WindowMark v0.5.5
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, temporary always-on-top pinning, and modifier-key window dragging**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.5.4 at a glance
+## v0.5.5 at a glance
 
 Four window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -24,6 +24,11 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
+v0.5.5 把发布包收成**一个 exe**：解压后顶层只有 `WindowMark.exe`，双击就能用——设置写在它
+旁边（绿色版），整个文件夹拷到哪儿设置都跟着走，删掉文件夹就卸干净；附属工具都在 `tools\` 里，
+不用猜该打开哪个。安装和卸载也是这个 exe 自己的两个模式（托盘菜单的「安装到系统...」和
+「卸载 WindowMark...」），没有单独的安装程序 exe 了。第一次运行会问一次要不要顺手设好开机
+自动启动和桌面图标，答过就不再问。
 v0.5.4 把书签的悬停重做成**磁性书签栏**：鼠标沿书签栏移动，附近的书签按距离连续放大、把
 邻居挤开，书签之间的间隙不再是死区；悬停时从窗口边缘往窗口内容依次是 书签 → 浮动标题 →
 缩略图，任何时刻互不重叠，左右两侧的标题竖排。左右两侧的书签条也改到了窗口内侧。另外修了
@@ -44,8 +49,8 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.5.4-win64.zip` from the
-   [v0.5.4 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.4).
+1. Download `WindowMark-v0.5.5-win64.zip` from the
+   [v0.5.5 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.5).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
    包里顶层只有这一个 exe，不用猜该打开哪个；`tools\` 里是诊断工具和剪贴板守护，由程序
@@ -75,7 +80,7 @@ full history.
 「设置 - 应用」里的卸载入口也在。
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.5.4.
+scaffold and does not provide a working macOS application in v0.5.5.
 
 ## 双击没反应 / 看不到边框
 
@@ -209,10 +214,17 @@ PowerToys 也进不去。这类窗口请用准星或快捷键。
 | 位置 | 内容 |
 |---|---|
 | 第 1 格 | 该项原来的默认值——边框活动 `#6274E7`、边框非活动 `#7080AA`、置顶「跟随系统强调色」 |
-| 第 2–6 格 | 红 `#E81123`、橙 `#F7630C`、黄 `#FFB900`、绿 `#16C60C`、紫 `#8E4EC6` |
+| 第 2–6 格（活动、置顶）| 红 `#E81123`、橙 `#F7630C`、黄 `#FFB900`、绿 `#16C60C`、紫 `#8E4EC6` |
+| 第 2–6 格（**非活动**）| 同样五个色相的**减弱版**：`#8C2F38`、`#8C5520`、`#8C7320`、`#2F7A34`、`#5C4280` |
 | 第 7 格「⋯」 | 打开系统取色器，任意颜色 |
 
 白色不在预设里：白边框在浅色桌面上等于没画。
+
+**非活动那一排给的不是同一组颜色。** 两排原先一模一样，在设置页里长得没有区别，挑同一格
+得到的是一模一样的边框——而这个功能的全部意义就是一眼看出哪个窗口是活动的。现在同一格在
+两排里是同一色相的「亮 / 暗」一对（亮度约一半、饱和度稍降），挑哪一格活动的那条都更显眼。
+自己用取色器挑的时候也按这个来：**别让两个状态同色相同亮度**，`#178BFF` 配 `#0060BF` 这种
+「同一个蓝的深浅」在 3px 线宽上就是看不出差别。
 
 色卡右边写着当前色值。置顶那一项写的是「跟随系统 #0078D4」——**后面那个值是实时从注册表读的
 真实强调色**，不是占位符。换了系统主题，这里和边框一起跟着变。
@@ -782,11 +794,12 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.5.4** is the current release. The line includes window bookmarks with a magnetic dock
+**v0.5.5** is the current release. 它发的是**一个 exe**：解压双击即用，安装和卸载是它自己的
+两个模式，附属工具在 `tools\` 里。The line includes window bookmarks with a magnetic dock
 and a bookmark → title → thumbnail preview stack, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
-modifier-key window dragging, the `WindowMarkDiag.exe` diagnostic report,
-`WindowMarkInspect.exe`, executables with no Visual C++ runtime dependency,
+modifier-key window dragging, the `tools\WindowMarkDiag.exe` diagnostic report,
+`tools\WindowMarkInspect.exe`, executables with no Visual C++ runtime dependency,
 reliable start-with-Windows state
 handling with a login-attempt audit log, borders clamped to the window's own monitor and kept
 off the taskbar, a configurable config-file location (portable or custom path), the ClipKeeper
@@ -794,7 +807,7 @@ clipboard guard, and an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.5.4 remains auditable.
+v0.5.5 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
