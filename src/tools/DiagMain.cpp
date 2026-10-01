@@ -529,7 +529,8 @@ void CollectFileMarks() {
     return L"?";
 }
 
-Settings CollectConfig(const std::vector<RunningCopy>& running) {
+Settings CollectConfig(const std::vector<RunningCopy>& running,
+                       std::filesystem::path& configDirOut) {
     Section(L"配置");
 
     // 「exe 同目录」指的是**正在运行的那个 WindowMark.exe** 的目录，不是诊断工具自己的。
@@ -561,6 +562,8 @@ Settings CollectConfig(const std::vector<RunningCopy>& running) {
         Finding(L"注册表里指定的配置位置用不了（目录不存在或不可写），已回落到默认位置——改过"
                 L"的设置可能不在你以为的那份文件里。");
     }
+
+    configDirOut = location.path.parent_path();
 
     Settings settings;
     // LoadOrCreate 在文件不存在时会创建它，诊断工具不能写用户的配置——只在存在时读。
@@ -839,14 +842,20 @@ void CollectBorders(const Settings& settings, const std::vector<RunningCopy>& ru
     }
 }
 
-void CollectLogs() {
+// 两个日志不在同一个地方，这是故意的：
+//   startup.log 是开机自启的审计记录，必须在任何配置解析之前就能写，所以永远在
+//               %LOCALAPPDATA%\\WindowMark；
+//   diag.log    跟着配置文件走，绿色版就在 exe 旁边，整个文件夹自带一切。
+void CollectLogs(const std::filesystem::path& configDir) {
     Section(L"WindowMark 自己的日志");
-    const std::filesystem::path root = win::LocalDataRoot();
+    const std::filesystem::path startupRoot = win::LocalDataRoot();
+    const std::filesystem::path diagRoot = configDir.empty() ? startupRoot : configDir;
     for (const wchar_t* name : {L"startup.log", L"diag.log"}) {
-        const std::filesystem::path path = root / name;
+        const bool isDiag = name == std::wstring(L"diag.log");
+        const std::filesystem::path path = (isDiag ? diagRoot : startupRoot) / name;
         std::ifstream input(path, std::ios::binary);
         if (!input) {
-            Line(L"%ls：没有", name);
+            Line(L"%ls：没有（找的是 %ls）", name, Redact(path.wstring()).c_str());
             continue;
         }
         // 只读末尾一截：diag.log 开着诊断时一秒一条，可能很大。
@@ -872,8 +881,9 @@ void CollectLogs() {
             Line(L"  %ls", Redact(win::Utf8ToWide(lines[i])).c_str());
         }
     }
-    Line(L"想要更详细的记录：在 %%LOCALAPPDATA%%\\WindowMark 里新建一个空文件 diag.on，"
-         L"复现一次问题，再运行本工具。");
+    Line(L"想要更详细的记录：在 %ls 里新建一个空文件 diag.on（没有扩展名），复现一次问题，"
+         L"再运行本工具。开关是即时的，不用重启 WindowMark。",
+         Redact(diagRoot.wstring()).c_str());
 }
 
 [[nodiscard]] std::filesystem::path DesktopReportPath() {
@@ -946,9 +956,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const std::vector<MonitorRow> monitors = CollectMonitors();
     const std::vector<RunningCopy> running = CollectWindowMark(monitors);
     CollectFileMarks();
-    const Settings settings = CollectConfig(running);
+    std::filesystem::path configDir;
+    const Settings settings = CollectConfig(running, configDir);
     CollectBorders(settings, running);
-    CollectLogs();
+    CollectLogs(configDir);
 
     SYSTEMTIME now{};
     GetLocalTime(&now);

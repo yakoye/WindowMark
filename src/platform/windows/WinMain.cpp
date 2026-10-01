@@ -194,6 +194,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 4;
     }
     const auto settingsPath = configLocation.path;
+    // 诊断开关（diag.on）和日志（diag.log）跟着配置文件走：绿色版的配置在 exe 旁边，
+    // 排查文件也就在 exe 旁边，整个文件夹仍然自带一切。startup.log 不跟——那条审计日志
+    // 要在任何解析之前就能写，永远在 %LOCALAPPDATA%\WindowMark。
+    windowmark::win::SetPinDiagDir(settingsPath.parent_path().wstring());
 
     // 指定过位置但那里已经没了（U 盘拔了、目录被删、变成只读）。这时候用的是默认位置的
     // 配置，用户看到的会是一套「回到默认」的设置——不说清楚他会以为软件把设置弄丢了。

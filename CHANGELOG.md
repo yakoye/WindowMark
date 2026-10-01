@@ -1,5 +1,26 @@
 # Changelog
 
+## 未发布
+
+### 诊断记录：一个开关、一个文件，位置跟着配置走
+
+照文档在 `%LOCALAPPDATA%\WindowMark` 里建一个 `diag.on`，边框那部分的日志有，书签那部分
+永远没有——书签的计时日志认的是环境变量 `WINDOWMARK_DIAG=1`，而双击启动的程序、托盘菜单起
+的进程都没有自定义环境变量，等于那套日志只在开发机上存在。现在四处（边框、书签、置顶、拖动）
+都认同一个开关 `diag.on`，写同一个 `diag.log`。
+
+开关的查询缓存 1 秒：书签那边每帧都有计时器要问「开没开」，一秒几百次 `GetFileAttributesW`
+是实打实的开销；缓存太久又会变成「开诊断得重启」，而重启本身就把要查的现场冲掉了。
+
+位置改成**跟着配置文件走**：绿色版的 `settings.conf` 在 exe 旁边，`diag.on` 和 `diag.log`
+也就在 exe 旁边，整个文件夹仍然自带一切，不用去 `%LOCALAPPDATA%` 找。`startup.log` 不跟——
+那是开机自启的审计记录，必须在任何配置解析之前就能写，永远在 `%LOCALAPPDATA%\WindowMark`。
+`WindowMarkDiag.exe` 两处分开找，报告里写出它找的是哪个路径，连「去哪儿建 diag.on」那句话
+也换成实际路径。
+
+`show_border_log.bat` 不再写死 `%LOCALAPPDATA%`：它调 `tools\watch-diag-log.ps1`，由脚本
+按正在运行的那个 exe 去定位，`-Filter` 只看含某个词的行，`-Off` 关掉记录。
+
 ## v0.5.5
 
 ### 非活动边框的色卡不再和活动边框一样

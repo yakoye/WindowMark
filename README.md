@@ -126,6 +126,28 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
 
 报告只读不写，不含窗口标题，路径里的用户目录会换成 `%USERPROFILE%`。
 
+### 更详细的记录：diag.on
+
+报告只是一次快照。要看**事情发生的过程**（边框每秒重画几次、哪一段耗时、书签条的 Apply 和
+重绘花了多久、层级调整被谁拒了），在**配置文件旁边**新建一个空文件 `diag.on`（没有扩展名），
+程序立刻开始往同一个目录的 `diag.log` 追加记录——不用重启，删掉 `diag.on` 就停。
+
+配置文件在哪，诊断文件就在哪：
+
+| 用法 | `diag.on` / `diag.log` 放在 |
+|---|---|
+| 绿色版（包里带 `portable.on`）| `WindowMark.exe` 旁边 |
+| 安装版 | `%LOCALAPPDATA%\WindowMark\` |
+
+拿不准的话跑一次 `tools\WindowMarkDiag.exe`，报告最后一行写着实际路径。
+
+边框、书签、置顶、拖动四部分写的是同一个 `diag.log`，同一个开关。双击 `show_border_log.bat`
+可以一边复现一边看（它调 `tools\watch-diag-log.ps1`，自己去找正在运行的那个 exe 的日志；
+`-Filter 边框` 只看含某个词的行，`-Off` 关掉记录）。
+
+`startup.log` 是另一回事：它只记开机自启那几次的启动阶段，必须在任何配置解析之前就能写，
+所以**永远**在 `%LOCALAPPDATA%\WindowMark\`，不跟着绿色版走。
+
 ## Interaction
 
 书签条贴在宿主窗口**内侧**的一条边上（默认底边；左右两侧同样贴在窗口里、从窗口边往里长）。
