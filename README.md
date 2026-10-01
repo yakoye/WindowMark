@@ -48,6 +48,8 @@ full history.
    [v0.5.4 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.4).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
+   包里顶层只有这一个 exe，不用猜该打开哪个；`tools\` 里是诊断工具和剪贴板守护，由程序
+   自己去调。
 4. 第一次启动会问一次要不要设好**开机自动启动**和**桌面图标**，选完就不再问；以后在托盘右键
    菜单里随时能改。
 5. Open at least two normal windows from the same application to see bookmarks.
@@ -64,8 +66,13 @@ full history.
 - 删掉 `portable.on` 再启动，就改回系统默认位置 `%LOCALAPPDATA%\WindowMark\settings.conf`。
   托盘的「配置文件...」里也能随时切换，并且会把现有配置搬过去。
 
-想要传统安装（装到 `%LOCALAPPDATA%\Programs\WindowMark`、带开始菜单项和卸载程序）的，
-运行包里的 `WindowMarkSetup.exe`。安装版不会带上 `portable.on`，所以它用的是系统默认位置。
+想装进系统（`%LOCALAPPDATA%\Programs\WindowMark`、开始菜单项、「设置 - 应用」里的卸载
+入口）的，用托盘菜单里的 **「安装到系统...」**——安装就是 `WindowMark.exe` 自己的一个模式，
+没有单独的安装程序 exe。装完当前这份会退出，换成安装目录里的那份接着跑，解压出来的文件夹
+就可以删了。安装只拷 exe 和 `tools\`，不带 `portable.on`，所以安装版用系统默认位置。
+
+卸载：安装目录里那份的托盘菜单会把「安装到系统...」换成 **「卸载 WindowMark...」**，
+「设置 - 应用」里的卸载入口也在。
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
 scaffold and does not provide a working macOS application in v0.5.4.
@@ -102,7 +109,7 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
 
 ### 程序在跑，但边框没画出来
 
-双击 `WindowMarkDiag.exe`。它会把诊断报告存到桌面、复制到剪贴板，**直接粘贴发给开发者**
+双击 `tools\WindowMarkDiag.exe`。它会把诊断报告存到桌面、复制到剪贴板，**直接粘贴发给开发者**
 就行。报告开头的「发现的问题」一节通常已经说明了原因，常见的几种：
 
 | 报告里说 | 意思 |
@@ -695,7 +702,7 @@ Double-click, or from PowerShell / CMD:
 |---|---|
 | `build.bat` | 只编译 |
 | **`rebuild_and_install.bat`** | 编译 → 单元测试 → 卸载旧版 → 装新版并启动 → 打印生效的配置 → **生成安装包**。改完直接看效果就用它 |
-| `make_package.bat` | 只打包：把 `build\Release` 现有的产物收成 zip，结构和发布包一样（解压后双击 `WindowMarkSetup.exe`）。测试包放 `dist\test\`，名字带构建时间和提交号，不会和发布包撞名；`-Release` 才打 `dist\WindowMark-v<版本>-win64.zip`，已存在时不覆盖 |
+| `make_package.bat` | 只打包：把 `build\Release` 现有的产物收成 zip，结构和发布包一样（顶层一个 `WindowMark.exe`，附属 exe 在 `tools\`）。测试包放 `dist\test\`，名字带构建时间和提交号，不会和发布包撞名；`-Release` 才打 `dist\WindowMark-v<版本>-win64.zip`，已存在时不覆盖 |
 | `rebuild_and_install.bat -Fresh` | 同上，**并删除 `settings.conf`**。改的是代码里的默认值时必须用这个，否则旧配置会盖掉新默认值 |
 | `rebuild_and_install.bat -NoBuild` | 跳过编译，只重装（约 5 秒）|
 | **`check_border.bat`** | 边框诊断：倒数 5 秒让你切到目标窗口，然后报边框的位置、层级、四条边逐点取色，以及每个不对的点被哪个窗口盖着 |
@@ -705,20 +712,22 @@ Double-click, or from PowerShell / CMD:
 
 ## Install / uninstall
 
-The build produces four user-facing executables in `build\Release\`:
+发布包顶层只有一个 exe。安装和卸载是 `WindowMark.exe` 自己的两个模式，没有安装程序 exe：
 
 ```text
-WindowMark.exe             the app
-WindowMarkSetup.exe        installer
-WindowMarkUninstall.exe    uninstaller
-WindowMarkInspect.exe      diagnostic: which window has an outline, and why
+WindowMark.exe                the app（也是安装程序和卸载程序）
+tools\WindowMarkDiag.exe      出问题时双击，把报告贴回来
+tools\WindowMarkInspect.exe   哪个窗口有边框、为什么
+tools\ClipKeeper.exe          剪贴板守护，托盘菜单里开
 ```
 
-Double-click `WindowMarkSetup.exe`. It shows one dialog with the install location and an
-**开机时自动启动 WindowMark** checkbox — unchecked on a fresh install, and pre-set to
-whatever is already configured on an upgrade — then installs to
-`%LOCALAPPDATA%\Programs\WindowMark`, creates a Start menu shortcut, registers an entry
-under **设置 - 应用**, and starts the app. The same switch is available from the tray menu.
+以前这六个 exe 平铺在包的根目录里，第一眼根本不知道该双击哪个——这是用户反馈里原话。
+
+安装：托盘菜单 **「安装到系统...」**，或命令行 `WindowMark.exe --install`。一个对话框，
+写着安装位置和一个 **开机时自动启动 WindowMark** 勾选框（全新安装默认不勾，升级时按现状
+预置），然后装到 `%LOCALAPPDATA%\Programs\WindowMark`、建开始菜单快捷方式、注册
+**设置 - 应用** 里的条目、启动安装的那份并让当前这份退出。安装目录里的旧版遗留文件
+（以前那几个顶层 exe）会一并删掉。
 
 The startup switch reflects Windows' effective state, not merely the presence of a Run
 value. If Task Manager or Settings disables WindowMark, the tray item becomes unchecked.
@@ -726,21 +735,20 @@ Enabling it writes a quoted command ending in `--autostart` and clears the corre
 `StartupApproved` veto. After the next sign-in, `%LOCALAPPDATA%\WindowMark\startup.log`
 records `attempt` followed by `running`, or the startup phase that failed.
 
-Uninstall from **设置 - 应用**, from the Start menu, or by running `WindowMarkUninstall.exe`
-in the install directory. Its dialog has a **同时删除我的设置和数据** checkbox; leaving it
-unchecked keeps `%LOCALAPPDATA%\WindowMark`.
+卸载：安装目录里那份的托盘菜单 **「卸载 WindowMark...」**、**设置 - 应用**，或命令行
+`WindowMark.exe --uninstall`。对话框上有 **同时删除我的设置和缓存数据** 勾选框，不勾就保留
+`%LOCALAPPDATA%\WindowMark`。卸载程序住在它要删的那个目录里，所以它先把自己拷到 `%TEMP%`
+再从那儿开工，干完安排删掉那份临时副本。
 
-**A running WindowMark is never an error.** Both tools ask the live instance to close
-through its own message loop, wait for it, and only then continue — installing over a
-running copy just restarts it. Launching `WindowMark.exe` a second time is not an error
-either: it hands off to the instance that is already running, which shows a tray balloon,
-and exits quietly.
+**WindowMark 正在运行从来不是错误。** 两个模式都先请活着的实例从自己的消息循环里退出、
+等它走，然后才继续——覆盖安装就是重启一次。普通地第二次双击 `WindowMark.exe` 也不是错误：
+它把请求交给已经在跑的那份（弹个托盘气泡）然后安静退出。
 
-Both accept switches for scripted use:
+脚本用的开关：
 
 ```text
-WindowMarkSetup.exe      /S  /StartWithWindows  /NoStartWithWindows
-WindowMarkUninstall.exe  /S  /Purge
+WindowMark.exe --install    /S  /StartWithWindows  /NoStartWithWindows
+WindowMark.exe --uninstall  /S  /Purge
 ```
 
 `/Purge` additionally removes `%LOCALAPPDATA%\WindowMark` and the reserved roaming data

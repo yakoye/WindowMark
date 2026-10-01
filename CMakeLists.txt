@@ -128,6 +128,10 @@ if(WIN32)
         src/platform/windows/WinSelectionDialog.cpp
         src/platform/windows/WinSettingsDialog.cpp
         src/platform/windows/WinUtil.cpp
+        # 安装和卸载是 WindowMark.exe 自己的两个模式（--install / --uninstall），不再有
+        # 独立的安装程序 exe。发布包里只有一个 exe，用户不用猜该双击哪个。
+        src/installer/SelfInstall.cpp
+        src/installer/InstallerCommon.cpp
         ${WINDOWMARK_RC}
     )
 
@@ -135,6 +139,7 @@ if(WIN32)
 
     target_include_directories(WindowMark PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/installer
         ${WINDOWMARK_STAMP_DIR}
     )
 
@@ -163,6 +168,8 @@ if(WIN32)
         dwrite
         shcore
         wtsapi32
+        oleaut32
+        shlwapi
     )
 
     target_include_directories(WindowMark PRIVATE
@@ -229,52 +236,6 @@ if(WIN32)
         target_compile_options(ClipKeeper PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
     endif()
 
-    # Installer and uninstaller are standalone GUI executables. They deliberately do
-    # not link windowmark_core: they only need process control, registry and shell APIs.
-    foreach(tool_target IN ITEMS WindowMarkSetup WindowMarkUninstall)
-        if(tool_target STREQUAL "WindowMarkSetup")
-            set(tool_main src/installer/SetupMain.cpp)
-        else()
-            set(tool_main src/installer/UninstallMain.cpp)
-        endif()
-
-        # The rc goes in these too: WindowMarkSetup.exe is the file a user actually sees
-        # in Explorer, and without it the installer has neither an icon nor a version.
-        add_executable(${tool_target} WIN32
-            ${tool_main}
-            src/installer/InstallerCommon.cpp
-            ${WINDOWMARK_RC}
-        )
-
-        target_include_directories(${tool_target} PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/installer
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/shared
-        )
-
-        target_compile_definitions(${tool_target} PRIVATE
-            UNICODE
-            _UNICODE
-            WIN32_LEAN_AND_MEAN
-            NOMINMAX
-        )
-
-        if(MSVC)
-            target_compile_options(${tool_target} PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
-        endif()
-
-        target_link_libraries(${tool_target} PRIVATE
-            user32
-            shell32
-            comctl32
-            ole32
-            oleaut32
-            advapi32
-            shlwapi
-        )
-    endforeach()
-
-    # The setup executable copies the uninstaller, so it must exist first.
-    add_dependencies(WindowMarkSetup WindowMarkUninstall WindowMark)
 elseif(APPLE)
     enable_language(OBJCXX)
     add_executable(WindowMark

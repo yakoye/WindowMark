@@ -9,9 +9,9 @@ ctest --test-dir build -C Release --output-on-failure
 $outDir = Join-Path $PSScriptRoot 'build\Release'
 Write-Host ''
 Write-Host 'Build completed.'
-foreach ($name in 'WindowMark.exe', 'WindowMarkInspect.exe', 'WindowMarkSetup.exe', 'WindowMarkUninstall.exe') {
+foreach ($name in 'WindowMark.exe', 'WindowMarkInspect.exe', 'WindowMarkDiag.exe') {
     $path = Join-Path $outDir $name
     if (Test-Path $path) { Write-Host "  $path" }
 }
 Write-Host ''
-Write-Host 'Run WindowMarkSetup.exe to install. Installing over a running copy is fine.'
+Write-Host '直接双击 WindowMark.exe 就能用；想装进系统跑 WindowMark.exe --install。'

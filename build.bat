@@ -26,8 +26,6 @@ echo.
 echo Build completed.
 echo   App:       %CD%\build\Release\WindowMark.exe
 echo   Inspect:   %CD%\build\Release\WindowMarkInspect.exe
-echo   Installer: %CD%\build\Release\WindowMarkSetup.exe
-echo   Uninstall: %CD%\build\Release\WindowMarkUninstall.exe
 echo.
-echo Run WindowMarkSetup.exe to install. Installing over a running copy is fine.
+echo Run WindowMark.exe directly, or WindowMark.exe --install to install it.
 endlocal

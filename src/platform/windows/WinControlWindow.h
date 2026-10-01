@@ -63,12 +63,19 @@ public:
         std::function<void()> onConfigPath;
         // 在桌面上建一个快捷方式。绿色版用得上：解压到哪儿都能在桌面开。
         std::function<void()> onDesktopShortcut;
+        // 安装到系统 / 卸载。菜单里同时只出现一个，看当前这份跑在哪儿
+        // （SetRunningFromInstallDir）。
+        std::function<void()> onInstall;
+        std::function<void()> onUninstall;
         std::function<void()> onAbout;
         std::function<void()> onExit;
     };
 
     bool Start(Handlers handlers);
     void Stop() noexcept;
+    // 决定菜单里出现「安装到系统...」还是「卸载 WindowMark...」。绿色版（解压目录里跑的）
+    // 是前者，安装目录里跑的是后者。
+    void SetRunningFromInstallDir(bool installed) noexcept { runningInstalled_ = installed; }
     void SetEnabledState(bool enabled);
     void SetBorderState(bool enabled);
     void SetDragState(bool enabled);
@@ -108,6 +115,8 @@ private:
     static constexpr UINT kToggleDragCommand = 1018;
     static constexpr UINT kDragSettingsCommand = 1019;
     static constexpr UINT kDesktopShortcutCommand = 1021;
+    static constexpr UINT kInstallCommand = 1022;
+    static constexpr UINT kUninstallCommand = 1023;
     static constexpr UINT kDragExcludeCommand = 1020;
     // Dynamic block: one command per currently pinned window, allocated when the menu is
     // built. Kept well clear of the fixed ids above so adding a fixed item never collides.
@@ -167,6 +176,7 @@ private:
     UINT taskbarCreatedMessage_{};
     Handlers handlers_;
     bool enabled_{true};
+    bool runningInstalled_{false};
     bool bordersEnabled_{false};
     bool dragEnabled_{false};
     bool pinningEnabled_{true};

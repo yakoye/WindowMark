@@ -239,7 +239,9 @@ bool WriteUninstallEntry(const std::filesystem::path& installDir, unsigned long 
     }
 
     const std::wstring mainExe = (installDir / app::kMainExeName).wstring();
-    const std::wstring uninstallExe = (installDir / app::kUninstallExeName).wstring();
+    // 卸载入口就是主程序自己带 --uninstall。以前这里指向一个独立的 WindowMarkUninstall.exe，
+    // 那是发布包里六个 exe 的来源之一。
+    const std::wstring uninstallCommand = L"\"" + mainExe + L"\" --uninstall";
 
     bool ok = true;
     ok &= SetRegString(key, L"DisplayName", app::kProductName);
@@ -247,8 +249,8 @@ bool WriteUninstallEntry(const std::filesystem::path& installDir, unsigned long 
     ok &= SetRegString(key, L"Publisher", app::kPublisher);
     ok &= SetRegString(key, L"DisplayIcon", mainExe);
     ok &= SetRegString(key, L"InstallLocation", installDir.wstring());
-    ok &= SetRegString(key, L"UninstallString", L"\"" + uninstallExe + L"\"");
-    ok &= SetRegString(key, L"QuietUninstallString", L"\"" + uninstallExe + L"\" /S");
+    ok &= SetRegString(key, L"UninstallString", uninstallCommand);
+    ok &= SetRegString(key, L"QuietUninstallString", uninstallCommand + L" /S");
     ok &= SetRegDword(key, L"NoModify", 1);
     ok &= SetRegDword(key, L"NoRepair", 1);
     ok &= SetRegDword(key, L"EstimatedSize", sizeKb);

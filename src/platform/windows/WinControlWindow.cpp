@@ -608,6 +608,13 @@ void WinControlWindow::ShowMenu() {
     // 比「开机启动」宽了三个点——顶层菜单的宽度由最宽的标签决定，这里是有意付的。
     AppendMenuW(menu, MF_STRING, kDesktopShortcutCommand, L"创建桌面快捷方式");
     AppendMenuW(menu, MF_STRING, kConfigPathCommand, L"配置文件...");
+    // 安装 / 卸载是同一个 exe 的两个模式，所以入口在这里而不是另一个 exe 里。同时只出现
+    // 一个：解压目录里跑着的那份能「安装到系统」，安装目录里跑着的那份能「卸载」。
+    if (runningInstalled_) {
+        AppendMenuW(menu, MF_STRING, kUninstallCommand, L"卸载 WindowMark...");
+    } else {
+        AppendMenuW(menu, MF_STRING, kInstallCommand, L"安装到系统...");
+    }
     AppendMenuW(menu, MF_STRING, kAboutCommand, L"关于");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kExitCommand, L"退出");
@@ -759,6 +766,8 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kClipKeeperCommand:     handler = &handlers_.onClipKeeper; break;
         case kConfigPathCommand:     handler = &handlers_.onConfigPath; break;
         case kDesktopShortcutCommand: handler = &handlers_.onDesktopShortcut; break;
+        case kInstallCommand:        handler = &handlers_.onInstall; break;
+        case kUninstallCommand:      handler = &handlers_.onUninstall; break;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;
         default: break;
