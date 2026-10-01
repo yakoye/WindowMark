@@ -32,6 +32,13 @@ namespace {
 // 1 秒（见 PinDiagOn），所以热路径上不会真的去碰文件系统。
 struct DiagState {
     long long apply{}, update{}, content{}, setpos{}, redraw{}, rebuild{};
+    // z 序维护单独一项：它每次 Apply 都要走一遍系统的窗口链，而那条链上有几百个窗口，
+    // 每一步都是跨进程调用。Apply 的总耗时里到底有多少是它，光看代码猜不出来。
+    //
+    // 结论按种类计数而不是每次写一行：稳态下每 2 秒要走五六十次，每次一行既淹掉日志，又让
+    // 诊断本身变成耗时的主要来源（每行都要两次 depth() 走完整条 z 序链）。
+    long long zsync{}, zsteps{}, zAlready{}, zMoved{}, zRefused{}, zOther{};
+    double zsyncUs{};
     double applyUs{}, rebuildUs{}, drawUs{}, ulwUs{};
     double setposUs{}, setposMaxUs{};
     long long setposOver1ms{}, setposOver5ms{};
@@ -88,7 +95,8 @@ void DiagFlush() {
 
     PinDiag(L"书签 %.1fs  窗口 %lld 个(可见 %lld)  Apply %lld (%.0fus/次)  Update %lld  内容变了 %lld"
             L"  | SetWindowPos %lld 次 均值%.0fus 最长%.0fus 超1ms %lld 超5ms %lld"
-            L"  | 重排 %lld (%.0fus)  重绘 %lld (%.0fus, ULW %.0fus)",
+            L"  | 重排 %lld (%.0fus)  重绘 %lld (%.0fus, ULW %.0fus)"
+            L"  | z序 %lld 次 (%.0fus/次, 共走 %lld 步): 已在位 %lld 挪动 %lld 被拒 %lld 其他 %lld",
             span, g_diag.overlays, g_diag.overlaysVisible,
             g_diag.apply, g_diag.apply ? g_diag.applyUs / g_diag.apply : 0.0,
             g_diag.update, g_diag.content,
@@ -96,7 +104,9 @@ void DiagFlush() {
             g_diag.setposMaxUs, g_diag.setposOver1ms, g_diag.setposOver5ms,
             g_diag.rebuild, g_diag.rebuild ? g_diag.rebuildUs / g_diag.rebuild : 0.0,
             g_diag.redraw, g_diag.redraw ? g_diag.drawUs / g_diag.redraw : 0.0,
-            g_diag.redraw ? g_diag.ulwUs / g_diag.redraw : 0.0);
+            g_diag.redraw ? g_diag.ulwUs / g_diag.redraw : 0.0,
+            g_diag.zsync, g_diag.zsync ? g_diag.zsyncUs / g_diag.zsync : 0.0, g_diag.zsteps,
+            g_diag.zAlready, g_diag.zMoved, g_diag.zRefused, g_diag.zOther);
     const long long keepOverlays = g_diag.overlays;
     const long long keepVisible = g_diag.overlaysVisible;
     g_diag = DiagState{};
@@ -345,10 +355,12 @@ public:
     // Placing the strip by hand costs one GetWindow call in the steady state, because the
     // walk below stops as soon as it finds us and issues no SetWindowPos at all.
     void SyncZOrder() {
+        ++g_diag.zsync;
+        DiagTimer zt(g_diag.zsyncUs);
         if (!hwnd_) return;
-        if (!appliedVisible_) { DiagZ(L"跳过: 未显示", nullptr, 0); return; }
+        if (!appliedVisible_) { ++g_diag.zOther; return; }
         HWND host = HwndFromId(model_.hostWindowId);
-        if (!IsWindow(host)) { DiagZ(L"跳过: 宿主已失效", nullptr, 0); return; }
+        if (!IsWindow(host)) { ++g_diag.zOther; return; }
 
         // 常见情形：宿主就是前台窗口。书签条挪到 topmost 层的末尾——见 MoveToTopmostBandTail。
         //
@@ -373,7 +385,7 @@ public:
         for (int step = 0; step < kZOrderStepLimit; ++step) {
             above = GetWindow(above, GW_HWNDPREV);
             if (!above) break;                  // host is already at the top of its band
-            if (above == hwnd_) { DiagZ(L"已在位", nullptr, 0); return; }
+            if (above == hwnd_) { ++g_diag.zAlready; return; }
             // Step over hidden helper windows - the per-thread Default IME window and the
             // like. Windows refuses to slot anything between an owner and a window it
             // owns, and that refusal is silent, so a hidden helper above the host would
@@ -391,15 +403,17 @@ public:
                 SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0, kOverlayZFlags);
             }
             if (SetWindowPos(hwnd_, above, 0, 0, 0, 0, kOverlayZFlags)) {
-                DiagZ(L"插到下方成功", above, 0);
+                ++g_diag.zMoved;
                 return;
             }
+            ++g_diag.zRefused;
             DiagZ(L"插到下方被拒", above, GetLastError());
             if (++attempts >= kZOrderAttemptLimit) break;
         }
 
         // Found nothing to anchor to. Staying topmost is the safe outcome: visible but
         // possibly in front of something it should be behind, rather than invisible.
+        ++g_diag.zRefused;
         DiagZ(L"没找到锚点, 维持原状", nullptr, 0);
     }
 
@@ -420,6 +434,7 @@ public:
         HWND anchor = nullptr;   // 最靠后的一个「别人家的、可见的」topmost 窗口
         HWND hwnd = GetTopWindow(nullptr);
         for (int step = 0; step < kZOrderStepLimit && hwnd != nullptr; ++step) {
+            ++g_diag.zsteps;
             if (hwnd != hwnd_ && IsWindowVisible(hwnd) != FALSE) {
                 if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) break;
                 if (!IsOwnDecoration(hwnd)) anchor = hwnd;
@@ -428,7 +443,7 @@ public:
         }
         if (anchor == nullptr) {
             // topmost 层里只有自家的窗口：已经在别人的 topmost 窗口下面了，没有要让的。
-            DiagZ(L"层里没有别人家的置顶窗口", nullptr, 0);
+            ++g_diag.zOther;
             return;
         }
 
@@ -437,8 +452,9 @@ public:
         HWND below = GetWindow(anchor, GW_HWNDNEXT);
         for (int step = 0; step < kZOrderStepLimit && below != nullptr;
              ++step, below = GetWindow(below, GW_HWNDNEXT)) {
+            ++g_diag.zsteps;
             if (below == hwnd_) {
-                DiagZ(L"已在置顶层末尾", anchor, 0);
+                ++g_diag.zAlready;
                 return;
             }
             if (IsWindowVisible(below) == FALSE || IsBookmarkStrip(below)) continue;
@@ -446,13 +462,16 @@ public:
         }
 
         if (SetWindowPos(hwnd_, anchor, 0, 0, 0, 0, kOverlayZFlags)) {
-            DiagZ(L"挪到置顶层末尾", anchor, 0);
+            ++g_diag.zMoved;
         } else {
+            ++g_diag.zRefused;
             DiagZ(L"挪到置顶层末尾被拒", anchor, GetLastError());
         }
     }
 
-    // 层级这条路径出问题时从外面完全看不见发生了什么。开关同 diag.on。
+    // 只给异常情况用：被拒、找不到锚点。稳态的结论在上面按种类计数，不走这里——这个函数
+    // 每次调用都要两次 depth() 把 z 序链走到头（上限 4096 步）再写一次文件，稳态下每 2 秒
+    // 五六十次的话，它自己就是耗时的大头，报出来的数字也就不是真的了。开关同 diag.on。
     void DiagZ(const wchar_t* what, HWND other, DWORD err) const {
         if (!DiagOn()) return;
         wchar_t cls[64]{};
