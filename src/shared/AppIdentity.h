@@ -1,6 +1,7 @@
 #pragma once
 
-// Identity shared by WindowMark.exe, WindowMarkSetup.exe and WindowMarkUninstall.exe.
+// Identity shared by WindowMark.exe and the tools that ship next to it.
+// 安装和卸载是 WindowMark.exe 自己的两个模式，所以这里不再有安装/卸载程序的 exe 名。
 // Keeping the mutex name, registry paths and broadcast message names in one place is
 // what lets the installers talk to a running instance instead of failing on it.
 
@@ -46,7 +47,6 @@ inline constexpr wchar_t kConfigPathValue[] = L"ConfigPath";
 inline constexpr wchar_t kInstallSubdir[] = L"Programs\\WindowMark";
 inline constexpr wchar_t kDataSubdir[] = L"WindowMark";
 inline constexpr wchar_t kMainExeName[] = L"WindowMark.exe";
-inline constexpr wchar_t kUninstallExeName[] = L"WindowMarkUninstall.exe";
 inline constexpr wchar_t kShortcutName[] = L"WindowMark.lnk";
 
 } // namespace windowmark::app

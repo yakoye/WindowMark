@@ -17,8 +17,11 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
 $release = Join-Path $PSScriptRoot 'build\Release'
-$setup = Join-Path $release 'WindowMarkSetup.exe'
-$installedUninstaller = Join-Path $env:LOCALAPPDATA 'Programs\WindowMark\WindowMarkUninstall.exe'
+# 安装和卸载都是 WindowMark.exe 自己的模式（--install / --uninstall），没有单独的
+# 安装程序 exe 了：发布包顶层只有一个 exe。
+$setup = Join-Path $release 'WindowMark.exe'
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\WindowMark'
+$installedExe = Join-Path $installDir 'WindowMark.exe'
 $settings = Join-Path $env:LOCALAPPDATA 'WindowMark\settings.conf'
 
 function Step($text) {
@@ -131,10 +134,10 @@ try {
 } catch {}
 if ($autoStartWasOn) { Write-Host '开机自启动当前是开的，装完会恢复' }
 
-if (Test-Path $installedUninstaller) {
+if (Test-Path $installedExe) {
     # /Purge 连用户数据一起删；不加则保留 settings.conf
-    $args = if ($Fresh) { @('/S', '/Purge') } else { @('/S') }
-    $p = Start-Process -FilePath $installedUninstaller -ArgumentList $args -PassThru
+    $args = if ($Fresh) { @('--uninstall', '/S', '/Purge') } else { @('--uninstall', '/S') }
+    $p = Start-Process -FilePath $installedExe -ArgumentList $args -PassThru
     if (-not $p.WaitForExit(60000)) {
         Write-Host '卸载超时。' -ForegroundColor Red
         exit 1
@@ -156,18 +159,23 @@ if (Test-Path $installedUninstaller) {
     }
 }
 
-# 等进程真正消失。卸载返回后进程可能还在退出中，而它退干净之前单例互斥量没释放，
-# 新装的实例会以为「已经在跑了」直接退出，安装器就报启动失败（退出码 7）。
+# 卸载是异步的：它把自己拷到 %TEMP% 再从那儿干活，所以上面那个进程早就退了，真正在删
+# 目录的是临时副本。等安装目录真的消失，再等进程和互斥量——互斥量释放比进程消失还晚一点，
+# 没等够的话新装的实例会以为「已经在跑了」直接退出，安装就报启动失败（退出码 7）。
+for ($i = 0; $i -lt 60; $i++) {
+    if (-not (Test-Path $installDir)) { break }
+    Start-Sleep -Milliseconds 250
+}
 for ($i = 0; $i -lt 40; $i++) {
     if (-not (Get-Process -Name WindowMark -ErrorAction SilentlyContinue)) { break }
     Start-Sleep -Milliseconds 250
 }
-Start-Sleep -Milliseconds 1200   # 互斥量释放比进程消失还要晚一点
+Start-Sleep -Milliseconds 1200
 
 # ---- 3. 安装新版 ----
 Step '安装新版'
 # 把卸载前的自启动状态显式传回去，别让安装器去读那个刚被卸载器清空的状态。
-$setupArgs = @('/S')
+$setupArgs = @('--install', '/S')
 $setupArgs += $(if ($autoStartWasOn) { '/StartWithWindows' } else { '/NoStartWithWindows' })
 $p = Start-Process -FilePath $setup -ArgumentList $setupArgs -PassThru
 if (-not $p.WaitForExit(60000)) {
@@ -177,7 +185,7 @@ if (-not $p.WaitForExit(60000)) {
 if ($p.ExitCode -eq 7) {
     # 7 = 文件都装好了，只是没能拉起进程。自己拉一次就行。
     Write-Host '文件已安装，进程未自动启动，正在手动拉起...' -ForegroundColor Yellow
-    Start-Process (Join-Path $env:LOCALAPPDATA 'Programs\WindowMark\WindowMark.exe')
+    Start-Process $installedExe
 } elseif ($p.ExitCode -ne 0) {
     Write-Host "安装失败，退出码 $($p.ExitCode)" -ForegroundColor Red
     exit 1

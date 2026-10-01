@@ -21,6 +21,8 @@
 #include "AppIdentity.h"
 #include "AutoStart.h"
 #include "BuildStamp.h"
+#include "InstallerCommon.h"
+#include "SelfInstall.h"
 #include "Resource.h"
 
 #include <commctrl.h>
@@ -139,7 +141,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 2;
     }
 
+    // 安装和卸载是同一个 exe 的两个模式（发布包里只有 WindowMark.exe 一个 exe）。必须在
+    // 抢单实例互斥体之前处理：两边都要先停掉正在运行的那份，自己不能先把互斥体占上。
+    if (int selfInstallExit = 0; windowmark::setup::HandleCommandLine(selfInstallExit)) {
+        return selfInstallExit;
+    }
+
     const bool purgeRequested = HasArgument(L"--purge");
+    // --replace：刚被「安装到系统」启动起来的那份。发起安装的实例还活着（它要等我们起来
+    // 才退），所以这里要等互斥体放开，而不是一看有人在跑就默默退出。
+    if (HasArgument(L"--replace")) windowmark::setup::WaitForSingletonRelease(8000);
     ScopedHandle singleInstance(CreateMutexW(nullptr, FALSE, windowmark::app::kSingletonMutex));
     if (!singleInstance.get()) {
         LogAutoStartPhase(autoStartLaunch, L"mutex_failed", 3);
@@ -169,7 +180,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         windowmark::win::PurgeAllUserData();
         MessageBoxW(nullptr,
                     L"WindowMark 的配置、缓存和开机自启项已清理。\n"
-                    L"如果程序本体已安装，请再运行安装目录下的 WindowMarkUninstall.exe 删除程序文件。",
+                    L"如果程序本体已安装，再运行一次 WindowMark.exe --uninstall 删除程序文件。",
                     L"WindowMark - 完全清理",
                     MB_OK | MB_ICONINFORMATION);
         return 0;
@@ -466,15 +477,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         const HWND panel = FindWindowW(ck::kWindowClass, nullptr);
 
         if (!panel) {
-            // 没在跑：启动它，它自带面板。exe 与 WindowMark.exe 同目录。
-            const auto exe = windowmark::win::InstalledExePath().parent_path() / ck::kExeName;
+            // 没在跑：启动它，它自带面板。附属 exe 都在 WindowMark.exe 旁边的 tools\ 里——
+            // 顶层只留一个 exe，用户打开文件夹不用猜该双击哪个。
+            const auto exe = windowmark::win::InstalledExePath().parent_path() / L"tools" /
+                             ck::kExeName;
             std::error_code ec;
             if (!std::filesystem::exists(exe, ec)) {
-                MessageBoxW(control.NativeHandle(),
-                            L"找不到 ClipKeeper.exe。\n\n"
-                            L"它应当与 WindowMark.exe 在同一个目录，"
-                            L"重新运行一次安装程序即可补上。",
-                            L"WindowMark", MB_OK | MB_ICONWARNING);
+                MessageBoxW(nullptr,
+                            (L"找不到 ClipKeeper.exe。\n\n它应当在这里：\n" + exe.wstring() +
+                             L"\n\n解压发布包时如果只取了 WindowMark.exe，把 tools 文件夹一起"
+                             L"解压出来即可。")
+                                .c_str(),
+                            L"WindowMark", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
                 return;
             }
             STARTUPINFOW si{};
@@ -515,6 +529,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             MessageBoxW(nullptr, L"创建桌面快捷方式失败。桌面目录可能不可写。", L"WindowMark",
                         MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         }
+    };
+    // 安装 / 卸载：同一个 exe 的两个模式。两个处理函数返回 true 表示「这份该退场了」——
+    // 安装完要把位置让给安装目录里的那份，卸载则已经在临时副本里开工，它马上会来停我们。
+    handlers.onInstall = [&]() {
+        exclusive([&] {
+            if (windowmark::setup::InstallFromTray()) PostQuitMessage(0);
+        });
+    };
+    handlers.onUninstall = [&]() {
+        exclusive([&] {
+            if (windowmark::setup::UninstallFromTray()) PostQuitMessage(0);
+        });
     };
     handlers.onConfigPath = [&]() {
         exclusive([&] {
@@ -678,6 +704,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
         }
     }
+    // 决定菜单里是「安装到系统...」还是「卸载 WindowMark...」。
+    control.SetRunningFromInstallDir(windowmark::setup::RunningFromInstallDir());
     // 书签这一项以前漏了：托盘里它的初值写死是「开」，配置里关着也照样打勾。
     control.SetEnabledState(coordinator.CurrentSettings().drawer.enabled);
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);

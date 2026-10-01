@@ -1,5 +1,5 @@
 ﻿# 生成安装包：把 build\Release 里的产物和文档收进一个 zip，结构和发布包完全一样——
-# 解压后双击 WindowMarkSetup.exe 安装，或者直接运行 WindowMark.exe。
+# 顶层只有一个 WindowMark.exe，解压双击就能用；附属 exe 都在 tools\ 里。
 #
 #   .\make-package.ps1            测试包 -> dist\test\WindowMark-v<版本>-test-<构建时间>-<提交>-win64.zip
 #   .\make-package.ps1 -Release   发布包 -> dist\WindowMark-v<版本>-win64.zip（发布前才用）
@@ -20,10 +20,12 @@ Set-Location $PSScriptRoot
 $build = Join-Path $PSScriptRoot 'build\Release'
 
 # 和发布包同样的内容。要加文件就加在这里。
-$binaries = @(
-    'WindowMark.exe', 'WindowMarkSetup.exe', 'WindowMarkUninstall.exe',
-    'WindowMarkDiag.exe', 'WindowMarkInspect.exe', 'ClipKeeper.exe'
-)
+#
+# 顶层只放主程序一个 exe：以前六个 exe 平铺在根上，用户第一眼不知道该双击哪个。安装和
+# 卸载现在是 WindowMark.exe 自己的两个模式（托盘菜单里的「安装到系统」「卸载」），剩下的
+# 附属 exe 一律进 tools\——程序自己按这个路径去找它们。
+$binaries = @('WindowMark.exe')
+$toolBinaries = @('ClipKeeper.exe', 'WindowMarkDiag.exe', 'WindowMarkInspect.exe')
 # portable.on 让解压出来的这份把设置写在自己目录里（绿色版）。安装程序按文件清单拷贝，
 # 不会把它带进安装目录，所以安装版仍然用 %LOCALAPPDATA%。
 $docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'portable.on',
@@ -47,6 +49,9 @@ $version = $m.Groups[1].Value
 # ---- 要打进去的文件，一个都不能少 ----
 $entries = New-Object System.Collections.Generic.List[object]
 foreach ($name in $binaries) { $entries.Add(@{ Source = (Join-Path $build $name); Entry = $name }) }
+foreach ($name in $toolBinaries) {
+    $entries.Add(@{ Source = (Join-Path $build $name); Entry = "tools/$name" })
+}
 foreach ($name in $docs) { $entries.Add(@{ Source = (Join-Path $PSScriptRoot $name); Entry = $name }) }
 foreach ($name in $tools) {
     $entries.Add(@{ Source = (Join-Path (Join-Path $PSScriptRoot 'tools') $name); Entry = "tools/$name" })

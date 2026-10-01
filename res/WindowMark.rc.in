@@ -35,8 +35,8 @@ BEGIN
             VALUE "CompanyName",      "yekoye"
             VALUE "FileDescription",  "WindowMark - 窗口书签 / 边框 / 置顶"
             VALUE "FileVersion",      "@WINDOWMARK_VERSION_STRING@"
-            // No OriginalFilename: WindowMark.exe, WindowMarkSetup.exe and
-            // WindowMarkUninstall.exe share this one resource, so any value here would be
+            // No OriginalFilename: WindowMark.exe, WindowMarkDiag.exe and
+            // WindowMarkInspect.exe share this one resource, so any value here would be
             // false for two of them.
             VALUE "InternalName",     "WindowMark"
             VALUE "LegalCopyright",   "yekoye"

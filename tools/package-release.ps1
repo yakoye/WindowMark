@@ -22,16 +22,17 @@ $zip = Join-Path $root "dist\$name.zip"
 
 Write-Host "打包 v$version"
 
-$binaries = @(
-    'WindowMark.exe',
+# 顶层只有主程序一个 exe：解压双击就能用，不用猜。安装和卸载是它自己的两个模式
+# （托盘菜单里的「安装到系统」「卸载」），所以没有安装程序 exe。
+$binaries = @('WindowMark.exe')
+# 附属 exe 都放 tools\，程序按这个路径找它们。
+$toolBinaries = @(
     'WindowMarkDiag.exe',        # 出问题时双击运行，把报告贴回来
     'WindowMarkInspect.exe',
-    'WindowMarkSetup.exe',
-    'WindowMarkUninstall.exe',
-    'ClipKeeper.exe'
+    'ClipKeeper.exe'             # 剪贴板守护，托盘菜单里开
 )
 $release = Join-Path $root 'build\Release'
-foreach ($exe in $binaries) {
+foreach ($exe in ($binaries + $toolBinaries)) {
     $path = Join-Path $release $exe
     if (-not (Test-Path $path)) {
         throw "缺 $exe —— 先跑一次 reinstall.ps1 把 Release 构建出来"
@@ -54,7 +55,8 @@ $batches = @(
     'measure_shadow_auto.bat',
     'measure_shadow_inset.bat'
 )
-$docs = @('README.md', 'CHANGELOG.md', 'LICENSE')
+# portable.on：有它在，设置就写在 exe 旁边（绿色版）。安装只拷 exe，不带这个标记。
+$docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'portable.on')
 
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
@@ -62,6 +64,9 @@ New-Item -ItemType Directory -Path (Join-Path $stage 'tools') | Out-Null
 
 foreach ($exe in $binaries) {
     Copy-Item (Join-Path $release $exe) $stage
+}
+foreach ($exe in $toolBinaries) {
+    Copy-Item (Join-Path $release $exe) (Join-Path $stage 'tools')
 }
 foreach ($doc in $docs) {
     Copy-Item (Join-Path $root $doc) $stage
