@@ -61,6 +61,8 @@ public:
         std::function<void()> onClipKeeper;
         // 配置文件位置。跟开机启动一样是程序级设置，所以放顶层而不是某个功能的设置页里。
         std::function<void()> onConfigPath;
+        // 托盘图标左键单击。右键是菜单，左键以前什么都不做。
+        std::function<void()> onTrayLeftClick;
         // 在桌面上建一个快捷方式。绿色版用得上：解压到哪儿都能在桌面开。
         std::function<void()> onDesktopShortcut;
         // 安装到系统 / 卸载。菜单里同时只出现一个，看当前这份跑在哪儿
@@ -73,6 +75,9 @@ public:
 
     bool Start(Handlers handlers);
     void Stop() noexcept;
+    // 托盘气泡。标题和正文各有长度上限（szInfoTitle 64、szInfo 256），所以这里统一截断，
+    // 不让每个调用点自己小心。
+    void ShowBalloon(const wchar_t* title, const std::wstring& text);
     // 决定菜单里出现「安装到系统...」还是「卸载 WindowMark...」。绿色版（解压目录里跑的）
     // 是前者，安装目录里跑的是后者。
     void SetRunningFromInstallDir(bool installed) noexcept { runningInstalled_ = installed; }
