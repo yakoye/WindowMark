@@ -63,6 +63,7 @@ public:
         activated = id;
         return true;
     }
+    void Resync() override { ++resyncs; }
     void Emit(WindowEvent e) { if (sink_) sink_(e); }
     void EmitGeometry(WindowId id, const Rect& frame) {
         if (geometrySink_) geometrySink_(id, frame);
@@ -74,6 +75,7 @@ public:
     // because the whole point is how often each is called.
     int fullQueries{0};
     int frameQueries{0};
+    int resyncs{0};
     EventSink sink_;
     GeometrySink geometrySink_;
 };
@@ -88,12 +90,14 @@ public:
     void Apply(const std::vector<BorderModel>& models) override { last = models; ++applyCount; }
     void MoveBorder(WindowId id, const Rect& frame) override { moves.emplace_back(id, frame); }
     void UpdateSettings(const Settings& settings) override { settings_ = settings; }
+    void HealthTick() override { ++healthTicks; }
     void Stop() noexcept override { started = false; last.clear(); }
 
     Settings settings_{};
     std::vector<BorderModel> last;
     std::vector<std::pair<WindowId, Rect>> moves;
     int applyCount{0};
+    int healthTicks{0};
     bool started{false};
 };
 
@@ -2115,6 +2119,79 @@ void TestBorderOcclusion() {
     std::cout << "BorderOcclusion tests passed.\n";
 }
 
+// 看门狗：事件流断掉之后，程序自己发现并恢复。
+//
+// 考的是三件事，每一件单独坏过都会让用户看到同一个症状（窗口变了、程序没反应、重启才好）：
+//   1. 没有不一致的时候绝不动手——误触发等于每 5 秒把整份模型重算一遍；
+//   2. 一次不一致不算，连续两次才算（事件可能只是还在队列里）；
+//   3. 动手时先重新订阅事件、再重新播种，而且播种之后记着的那份要和系统对上。
+void TestWatchdog() {
+    Settings settings;
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    windows.windows = {
+        Make(1, "code.exe", "Grace", 100, true),
+        Make(2, "code.exe", "PCIe", 850),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    CHECK(coordinator.WatchdogRecoveries() == 0);
+
+    // 一切正常：对得上，什么都不做。边框的自查每次都要调——「挂起出不来」只有它自己知道。
+    coordinator.WatchdogTick();
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == 0);
+    CHECK(coordinator.WatchdogRecoveries() == 0);
+    CHECK(borders.healthTicks == 2);
+
+    // 来了个新窗口，但事件一条都没发出来（钩子已经被摘了）。
+    windows.windows.push_back(Make(3, "notes.exe", "Ghost", 1200));
+
+    // 第一次只记嫌疑，不动手：真有可能是事件还在路上。
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == 0);
+    CHECK(coordinator.WatchdogRecoveries() == 0);
+    CHECK(!coordinator.IsTracked(3));
+
+    // 第二次还是对不上（两次之间隔着好几秒），这就不是时序问题了。
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == 1);
+    CHECK(coordinator.WatchdogRecoveries() == 1);
+    CHECK(coordinator.IsTracked(3));
+
+    // 恢复之后又对上了，不会每次都重来一遍。
+    coordinator.WatchdogTick();
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == 1);
+    CHECK(coordinator.WatchdogRecoveries() == 1);
+
+    // 反方向：窗口关掉了而 DESTROY 没收到。同样是两次才动手。
+    windows.windows.erase(windows.windows.begin() + 2);
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == 1);
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == 2);
+    CHECK(!coordinator.IsTracked(3));
+
+    // 只挪了一两个像素不算：几何走的是另一条路，取整差异不该惊动看门狗。
+    const int before = windows.resyncs;
+    windows.windows[0].frame.left += 2;
+    windows.windows[0].frame.right += 2;
+    coordinator.WatchdogTick();
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == before);
+
+    // 挪得多就算：窗口早就不在记着的位置上了。
+    windows.windows[0].frame.left += 60;
+    windows.windows[0].frame.right += 60;
+    coordinator.WatchdogTick();
+    coordinator.WatchdogTick();
+    CHECK(windows.resyncs == before + 1);
+}
+
 int main() {
     TestGroupingAndSelfState();
     TestActiveWindowOnlyVisibility();
@@ -2143,6 +2220,7 @@ int main() {
     TestMagneticDock();
     TestPreviewStack();
     TestDragSettingsRoundTrip();
+    TestWatchdog();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }

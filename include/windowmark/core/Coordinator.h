@@ -81,6 +81,20 @@ public:
     // and settings UI; set these before Start().
     void SetMenuHandlers(std::function<void(WindowId)> onRename, std::function<void()> onOpenSettings);
 
+    // 看门狗。平台层每隔几秒调一次。
+    //
+    // 要防的是一类从外面看一模一样的故障：窗口变了，程序毫无反应，重启才好（用户 9/17 和
+    // 9/21 各报过一次）。原因可能是 Windows 把太慢的钩子摘了、explorer 重启、会话切换之后
+    // 事件流断了，也可能是边框挂起之后再没收到解除挂起的那条会话事件。共同点是**程序自己
+    // 以为一切正常**——它的状态不会变，所以没有任何一处会发现不对。
+    //
+    // 判据不看钩子（WinEvent 钩子没有「还活着吗」这种查法），而是对账：现在系统上真实存在
+    // 的窗口和自己记着的那份对不上，就说明漏事件了。连续两次都对不上才算——一次可能只是
+    // 事件还在队列里，而两次之间隔着好几秒，那就不是时序问题了。
+    void WatchdogTick();
+    // 看门狗一共恢复过几次。诊断用，也是测试能看的唯一结果。
+    [[nodiscard]] unsigned WatchdogRecoveries() const noexcept { return watchdogRecoveries_; }
+
 private:
     void OnWindowEvent(const WindowEvent& event);
     void RefreshAll();
@@ -128,6 +142,9 @@ private:
     std::function<void()> onOpenSettings_;
     std::size_t nextStableOrder_{0};
     std::size_t nextColorSlot_{0};
+    // 上一次看门狗对账时发现对不上的窗口。两次都在里面才算真漏了。
+    std::unordered_set<WindowId> watchdogSuspects_;
+    unsigned watchdogRecoveries_{0};
     WindowId activeWindow_{0};
     WindowId pinPreview_{0};
     bool started_{false};

@@ -3,6 +3,7 @@
 #include "windowmark/core/LayoutEngine.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <cctype>
 #include <unordered_map>
@@ -464,6 +465,69 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         ApplyModels();
         break;
     }
+}
+
+void Coordinator::WatchdogTick() {
+    if (!started_) return;
+
+    // 边框那边先自查：「挂起」是只有它知道的状态（会话锁定时挂起，靠之后任意一条会话事件
+    // 解除；那条事件没收到就永久挂着）。
+    if (borderBackend_) borderBackend_->HealthTick();
+
+    // 对账：系统上此刻真实存在、该我们管的窗口，和自己记着的那份。
+    //
+    // 不查钩子是否还活着——WinEvent 钩子没有这种查法。漏事件的后果一定会体现在这份差异上：
+    // 新窗口没进来、关掉的还在、显示/最小化状态不对、位置早就不是记着的那个。
+    const std::vector<WindowInfo> live = windowsBackend_.EnumerateWindows();
+    std::unordered_set<WindowId> liveIds;
+    std::unordered_set<WindowId> mismatched;
+    liveIds.reserve(live.size());
+    for (const auto& window : live) {
+        liveIds.insert(window.id);
+        const auto known = windows_.find(window.id);
+        if (known == windows_.end()) {
+            mismatched.insert(window.id);
+            continue;
+        }
+        if (known->second.visible != window.visible ||
+            known->second.minimized != window.minimized ||
+            known->second.maximized != window.maximized) {
+            mismatched.insert(window.id);
+            continue;
+        }
+        // 位置给 2px 容差：几何走的是另一条（不节流的）路，差一两个像素是取整，不是漏事件；
+        // 而真漏了的话，两次对账之间隔着好几秒，偏差不会只有两个像素。
+        constexpr int kTolerance = 2;
+        const Rect& a = known->second.frame;
+        const Rect& b = window.frame;
+        if (std::abs(a.left - b.left) > kTolerance || std::abs(a.top - b.top) > kTolerance ||
+            std::abs(a.right - b.right) > kTolerance ||
+            std::abs(a.bottom - b.bottom) > kTolerance) {
+            mismatched.insert(window.id);
+        }
+    }
+    for (const auto& [id, window] : windows_) {
+        (void)window;
+        if (!liveIds.contains(id)) mismatched.insert(id);
+    }
+
+    // 连续两次都对不上的才算真漏。只出现一次的可能是事件还在队列里、或者刚好撞上一次动画，
+    // 留到下一次再看——两次之间隔着好几秒，时序原因不可能撑过去。
+    bool confirmed = false;
+    for (const WindowId id : mismatched) {
+        if (watchdogSuspects_.contains(id)) {
+            confirmed = true;
+            break;
+        }
+    }
+    watchdogSuspects_ = std::move(mismatched);
+    if (!confirmed) return;
+
+    ++watchdogRecoveries_;
+    // 先重新订阅，再重新播种。顺序反了的话，两步之间发生的变化又会漏掉。
+    windowsBackend_.Resync();
+    RefreshAll();
+    watchdogSuspects_.clear();
 }
 
 void Coordinator::RefreshAll() {

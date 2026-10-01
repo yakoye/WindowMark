@@ -1,5 +1,6 @@
 #include "WinWindowBackend.h"
 
+#include "PinDiag.h"
 #include "WinUtil.h"
 
 #include <algorithm>
@@ -316,6 +317,26 @@ bool WinWindowBackend::InstallHooks() {
         hooks_.push_back(hook);
     }
     return true;
+}
+
+void WinWindowBackend::Resync() {
+    // 只换钩子，别动 dispatcher_ 和队列：事件要投给的那个窗口还好着，正在排队的事件也没
+    // 理由丢。摘掉再装一遍是因为钩子可能已经不送东西了——Windows 会把回调太慢的钩子摘掉，
+    // 而被摘掉这件事不通知任何人，从外面查不出来（也没有「这个钩子还活着吗」的 API）。
+    for (HWINEVENTHOOK hook : hooks_) {
+        if (hook) UnhookWinEvent(hook);
+    }
+    hooks_.clear();
+    const bool ok = InstallHooks();
+    // 装不上也不特殊处理：下一次对账照样对不上，看门狗会再来一次，等于每两次巡检重试一回。
+    // 这里唯一要做的是把失败记下来，否则「程序彻底聋了」从外面看不出原因。
+    PinDiag(L"看门狗：重新订阅窗口事件，装上 %zu 个钩子%ls", hooks_.size(),
+            ok ? L"" : L"（有失败）");
+    // 缓存一起清：如果刚才漏的是「窗口没了」，identityCache_ / frameInsets_ 里留着的就是
+    // 死 HWND 的答案，下一个复用同一个 HWND 的窗口会拿到上一任的身份。
+    identityCache_.clear();
+    frameInsets_.clear();
+    topLevelCache_.clear();
 }
 
 std::vector<WindowInfo> WinWindowBackend::EnumerateWindows() {

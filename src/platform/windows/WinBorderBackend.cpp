@@ -212,6 +212,25 @@ LRESULT CALLBACK WinBorderBackend::SessionProc(HWND hwnd, UINT msg, WPARAM wPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+void WinBorderBackend::HealthTick() {
+    if (!started_ || !suspended_) return;
+
+    // 挂起只有一个正当理由：锁屏。锁屏时输入桌面是安全桌面（Winlogon），普通用户进程打不开
+    // 它；桌面能打开就说明人已经回到自己的桌面了，而解除挂起的那条会话事件没收到。
+    //
+    // 这就是用户报过两次的「边框不刷新了，重启才好」的形态之一：进程好好跑着、消息循环正常，
+    // 就是永远不画。等事件等不来，所以改成自己看一眼。
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!input) return;
+    CloseDesktop(input);
+
+    suspended_ = false;
+    PinDiag(L"看门狗：边框还挂着但桌面已经回来了，自己恢复");
+    // 和收到会话事件时一样走完整的 Redraw：里面的 overlays_.Sync() 会按当前显示器配置重建
+    // 画布，挂起期间的插拔和分辨率变化靠这一下补上。
+    Redraw();
+}
+
 bool WinBorderBackend::Start(const Settings& settings) {
     if (started_) return true;
     settings_ = settings;
