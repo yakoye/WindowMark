@@ -49,11 +49,13 @@ $tools = @(
     'inspect-corner.py',         # 逐像素看圆角画成什么样
     'diagnose-window.py',        # 某个窗口为什么没边框 / 被谁盖了
     'find-stray-lines.py',       # 找孤立的边框线
-    'watch-line-over.py'         # 守着抓「边框画到了上层窗口身上」
+    'watch-line-over.py',        # 守着抓「边框画到了上层窗口身上」
+    'watch-diag-log.ps1'         # 开 diag.on 并实时跟着看 diag.log
 )
 $batches = @(
     'measure_shadow_auto.bat',
-    'measure_shadow_inset.bat'
+    'measure_shadow_inset.bat',
+    'show_border_log.bat'        # 双击就开始跟着看诊断记录
 )
 # portable.on：有它在，设置就写在 exe 旁边（绿色版）。安装只拷 exe，不带这个标记。
 $docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'portable.on')

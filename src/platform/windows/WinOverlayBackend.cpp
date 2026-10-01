@@ -1,6 +1,7 @@
 #include "WinOverlayBackend.h"
 
 #include "AppIdentity.h"
+#include "PinDiag.h"
 #include "WinLayeredSurface.h"
 #include "WinUtil.h"
 #include "windowmark/core/LayoutEngine.h"
@@ -27,8 +28,8 @@ namespace {
 // presence, z-order, cross-process ownership, hit-testing - was wrong when tested. These
 // answer "which phase, how often, how long" directly.
 //
-// Off unless WINDOWMARK_DIAG=1 is in the environment, and the flag is read once, so the
-// cost when off is one predictable branch per call site.
+// 关着的时候每个调用点只多一个可预测的分支：开关是 diag.on 这个文件，但查到的结果缓存
+// 1 秒（见 PinDiagOn），所以热路径上不会真的去碰文件系统。
 struct DiagState {
     long long apply{}, update{}, content{}, setpos{}, redraw{}, rebuild{};
     double applyUs{}, rebuildUs{}, drawUs{}, ulwUs{};
@@ -39,12 +40,11 @@ struct DiagState {
 };
 DiagState g_diag;
 
+// 和边框、置顶、拖动同一个开关：配置文件旁边的 diag.on。这里原先只认环境变量
+// WINDOWMARK_DIAG=1——双击启动的程序永远没有这个变量，于是「照文档建一个 diag.on」
+// 拿不到书签这部分的日志，而书签恰恰是最吃帧的那部分。
 [[nodiscard]] bool DiagOn() {
-    static const bool on = [] {
-        wchar_t buf[8]{};
-        return GetEnvironmentVariableW(L"WINDOWMARK_DIAG", buf, 8) > 0 && buf[0] == L'1';
-    }();
-    return on;
+    return PinDiagOn();
 }
 
 [[nodiscard]] double DiagNowMs() {
@@ -86,27 +86,17 @@ void DiagFlush() {
     if (now - g_diag.lastFlushMs < 2000.0) return;
     const double span = (now - g_diag.lastFlushMs) / 1000.0;
 
-    wchar_t dir[MAX_PATH]{};
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH) > 0) {
-        std::wstring path = std::wstring(dir) + L"\\WindowMark\\diag.log";
-        FILE* f = nullptr;
-        if (_wfopen_s(&f, path.c_str(), L"a, ccs=UTF-8") == 0 && f != nullptr) {
-            std::fwprintf(
-                f,
-                L"%.1fs  书签窗口 %lld 个(可见 %lld)  Apply %lld (%.0fus/次)  Update %lld  内容变了 %lld"
-                L"  | SetWindowPos %lld 次 均值%.0fus 最长%.0fus 超1ms %lld 超5ms %lld"
-                L"  | 重排 %lld (%.0fus)  重绘 %lld (%.0fus, ULW %.0fus)\n",
-                span, g_diag.overlays, g_diag.overlaysVisible,
-                g_diag.apply, g_diag.apply ? g_diag.applyUs / g_diag.apply : 0.0,
-                g_diag.update, g_diag.content,
-                g_diag.setpos, g_diag.setpos ? g_diag.setposUs / g_diag.setpos : 0.0,
-                g_diag.setposMaxUs, g_diag.setposOver1ms, g_diag.setposOver5ms,
-                g_diag.rebuild, g_diag.rebuild ? g_diag.rebuildUs / g_diag.rebuild : 0.0,
-                g_diag.redraw, g_diag.redraw ? g_diag.drawUs / g_diag.redraw : 0.0,
-                g_diag.redraw ? g_diag.ulwUs / g_diag.redraw : 0.0);
-            std::fclose(f);
-        }
-    }
+    PinDiag(L"书签 %.1fs  窗口 %lld 个(可见 %lld)  Apply %lld (%.0fus/次)  Update %lld  内容变了 %lld"
+            L"  | SetWindowPos %lld 次 均值%.0fus 最长%.0fus 超1ms %lld 超5ms %lld"
+            L"  | 重排 %lld (%.0fus)  重绘 %lld (%.0fus, ULW %.0fus)",
+            span, g_diag.overlays, g_diag.overlaysVisible,
+            g_diag.apply, g_diag.apply ? g_diag.applyUs / g_diag.apply : 0.0,
+            g_diag.update, g_diag.content,
+            g_diag.setpos, g_diag.setpos ? g_diag.setposUs / g_diag.setpos : 0.0,
+            g_diag.setposMaxUs, g_diag.setposOver1ms, g_diag.setposOver5ms,
+            g_diag.rebuild, g_diag.rebuild ? g_diag.rebuildUs / g_diag.rebuild : 0.0,
+            g_diag.redraw, g_diag.redraw ? g_diag.drawUs / g_diag.redraw : 0.0,
+            g_diag.redraw ? g_diag.ulwUs / g_diag.redraw : 0.0);
     const long long keepOverlays = g_diag.overlays;
     const long long keepVisible = g_diag.overlaysVisible;
     g_diag = DiagState{};
@@ -462,14 +452,9 @@ public:
         }
     }
 
-    // 只在 WINDOWMARK_DIAG=1 时写；层级这条路径出问题时从外面完全看不见发生了什么。
+    // 层级这条路径出问题时从外面完全看不见发生了什么。开关同 diag.on。
     void DiagZ(const wchar_t* what, HWND other, DWORD err) const {
         if (!DiagOn()) return;
-        wchar_t dir[MAX_PATH]{};
-        if (GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH) == 0) return;
-        const std::wstring path = std::wstring(dir) + L"\\WindowMark\\diag.log";
-        FILE* f = nullptr;
-        if (_wfopen_s(&f, path.c_str(), L"a, ccs=UTF-8") != 0 || f == nullptr) return;
         wchar_t cls[64]{};
         if (other) GetClassNameW(other, cls, static_cast<int>(std::size(cls)));
         // 调用完之后的真实状态：层级里我们上面还压着几个窗口、宿主上面压着几个、
@@ -483,13 +468,10 @@ public:
         };
         const HWND host = HwndFromId(model_.hostWindowId);
         const bool topmostBit = (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-        std::fwprintf(
-            f,
-            L"[Z] %-14ls 我=%d 宿主=%d 锚点=%d 置顶位=%d 前台=%d 可见=%d 系统可见=%d 对方=%ls err=%lu\n",
-            what, depth(hwnd_), depth(host), other ? depth(other) : -1, topmostBit ? 1 : 0,
-            GetForegroundWindow() == host ? 1 : 0, appliedVisible_ ? 1 : 0,
-            IsWindowVisible(hwnd_) ? 1 : 0, other ? cls : L"-", err);
-        std::fclose(f);
+        PinDiag(L"[Z] %-14ls 我=%d 宿主=%d 锚点=%d 置顶位=%d 前台=%d 可见=%d 系统可见=%d 对方=%ls err=%lu",
+                what, depth(hwnd_), depth(host), other ? depth(other) : -1, topmostBit ? 1 : 0,
+                GetForegroundWindow() == host ? 1 : 0, appliedVisible_ ? 1 : 0,
+                IsWindowVisible(hwnd_) ? 1 : 0, other ? cls : L"-", err);
     }
 
 private:
