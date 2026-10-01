@@ -42,10 +42,20 @@ public:
     // Whether this window is one of the ones being tracked at all. Pinning refuses windows
     // that are not, so this is the first thing to check when a pin appears to do nothing.
     [[nodiscard]] bool IsTracked(WindowId id) const { return windows_.contains(id); }
-    // The window the user last worked in. Not GetForegroundWindow() at click time: opening
-    // the tray menu makes the tray window itself the foreground one.
-    // Rendered exactly like a real pin - same colour, same width - because that is the
-    // question being answered: what will this look like if I let go here. Pass 0 to clear.
+    // 用户上一次真正在用的那个**我们管得着的**窗口。
+    //
+    // 不能用 activeWindow_：实测点托盘图标那一刻，EVENT_SYSTEM_FOREGROUND 报的是任务栏
+    // （Shell_TrayWnd），activeWindow_ 就变成了它——任务栏不在跟踪列表里，但活动窗口这条
+    // 路照样会被它改写。所以单独记一份「最后一个被跟踪的活动窗口」，只有活动窗口确实在
+    // 跟踪列表里时才更新。
+    //
+    // 托盘左键「置顶当前窗口」就靠这个：菜单项做不到这件事（菜单弹出时前台已经是我们自己，
+    // 这也是准星当初存在的理由），而这份记录不受那一下影响。
+    [[nodiscard]] WindowId LastTrackedActiveWindow() const noexcept {
+        return lastTrackedActive_;
+    }
+    // 置顶预览：画得和真的置顶一模一样（同色同宽），因为要回答的正是「松手之后长什么样」。
+    // 传 0 清掉。
     void SetPinPreview(WindowId id);
     // Title for the tray submenu. Empty when the window is no longer tracked.
     [[nodiscard]] std::string PinnedTitle(WindowId id) const;
@@ -146,6 +156,8 @@ private:
     std::unordered_set<WindowId> watchdogSuspects_;
     unsigned watchdogRecoveries_{0};
     WindowId activeWindow_{0};
+    // 见 LastTrackedActiveWindow：activeWindow_ 会被任务栏这类不在跟踪列表里的窗口改写。
+    WindowId lastTrackedActive_{0};
     WindowId pinPreview_{0};
     bool started_{false};
 };

@@ -174,11 +174,11 @@ void WinControlWindow::AddTrayIcon() {
         GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     if (!data.hIcon) data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(data.szTip, L"WindowMark - 右键打开菜单");
+    wcscpy_s(data.szTip, L"WindowMark - 左键置顶当前窗口，右键打开菜单");
     Shell_NotifyIconW(NIM_ADD, &data);
 }
 
-void WinControlWindow::ShowAlreadyRunningHint() {
+void WinControlWindow::ShowBalloon(const wchar_t* title, const std::wstring& text) {
     if (!hwnd_) return;
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);
@@ -186,14 +186,19 @@ void WinControlWindow::ShowAlreadyRunningHint() {
     data.uID = kTrayId;
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
-    wcscpy_s(data.szInfoTitle, L"WindowMark 已在运行");
-    wcscpy_s(data.szInfo, L"窗口书签已经启用。右键此图标可以隐藏窗口书签或选择参与的应用。");
+    wcsncpy_s(data.szInfoTitle, title, std::size(data.szInfoTitle) - 1);
+    wcsncpy_s(data.szInfo, text.c_str(), std::size(data.szInfo) - 1);
     // NIM_MODIFY 往一个不存在的图标上发会失败，而且是静默失败。图标没了的时候用户
     // 恰恰最可能双击 exe——那正是这条路唯一被走到的时候，不能在这里哑掉。
     if (Shell_NotifyIconW(NIM_MODIFY, &data) == FALSE) {
         AddTrayIcon();
         Shell_NotifyIconW(NIM_MODIFY, &data);
     }
+}
+
+void WinControlWindow::ShowAlreadyRunningHint() {
+    ShowBalloon(L"WindowMark 已在运行",
+                L"窗口书签已经启用。右键此图标可以隐藏窗口书签或选择参与的应用。");
 }
 
 void WinControlWindow::RemoveTrayIcon() {
@@ -700,11 +705,13 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         if (grabState_ != GrabState::None) EndGrab(false);
         return 0;
     case kTrayMessage:
-        // No left-button gesture here on purpose. Dragging off the tray icon was tried and
-        // dropped: the icon is usually folded into the overflow flyout, and claiming the
-        // left button meant an ordinary click on it had to be told apart from the start of
-        // a drag. The crosshair handle in the menu does the same job without either
-        // problem.
+        // 左键**单击**有用，左键**拖动**没有。拖动试过又去掉了：图标常被折进溢出面板，
+        // 在那里起手拖动就得把「普通的一次点击」和「手势开始」区分开，而菜单里的准星
+        // 把同一件事做得更稳。单击不涉及这个问题——按下抬起就是一次点击。
+        if (lParam == WM_LBUTTONUP) {
+            if (handlers_.onTrayLeftClick) handlers_.onTrayLeftClick();
+            return 0;
+        }
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
             ShowMenu();
             return 0;

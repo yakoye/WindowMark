@@ -460,6 +460,9 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         break;
     case WindowEventKind::ActiveChanged:
         activeWindow_ = event.windowId;
+        // 任务栏、输入法候选框这类不在跟踪列表里的窗口也会走到这里（实测点托盘图标就是），
+        // 所以「最后一个被跟踪的活动窗口」只在确实跟踪得到时才跟着走。
+        if (windows_.contains(event.windowId)) lastTrackedActive_ = event.windowId;
         // 边框先画，理由同 RefreshAll 里那处。
         ApplyBorders();
         ApplyModels();
@@ -544,6 +547,7 @@ void Coordinator::RefreshAll() {
         }
         if (window.active) {
             activeWindow_ = window.id;
+            lastTrackedActive_ = window.id;   // 枚举出来的都是跟踪得到的
         }
         // Once, here, rather than every time a label is built: titles change far less
         // often than models are rebuilt.

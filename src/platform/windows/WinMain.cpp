@@ -476,6 +476,43 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (!tracked) return;
         coordinator.TogglePin(id);
     };
+    // 托盘左键单击：把刚才那个窗口置顶 / 取消置顶。
+    //
+    // 为什么是这个动作：四个功能的开关在菜单里一步就能到，而「置顶这个窗口」恰恰是菜单做不到
+    // 的那一个——菜单弹出时前台窗口已经变成了我们自己，所以才有准星和全局快捷键。左键单击
+    // 没有这个问题：点的那一刻任务栏成了前台，而任务栏不算普通窗口、事件流里不报，程序记着
+    // 的仍然是用户刚才那个窗口。
+    //
+    // 也挑过「暂停所有」：同样一步，但误点一下会悄悄把整个程序停掉，而那正是「看上去坏了」
+    // 最常见的形态。置顶误点了只是多一个高亮框，再点一下就回去，代价对称。
+    handlers.onTrayLeftClick = [&]() {
+        if (!coordinator.CurrentSettings().pin.enabled) {
+            control.ShowBalloon(L"窗口置顶是关着的",
+                                L"托盘菜单 →「窗口置顶」→「启用」打开之后，左键单击此图标就能"
+                                L"把当前窗口置顶。");
+            return;
+        }
+        const windowmark::WindowId id = coordinator.LastTrackedActiveWindow();
+        const bool tracked = id != 0 && coordinator.IsTracked(id);
+        windowmark::win::PinDiag(L"托盘左键: id=%llu 可置顶=%d",
+                                 static_cast<unsigned long long>(id), tracked ? 1 : 0);
+        if (!tracked) {
+            // 刚启动还没有过活动窗口，或者那个窗口在排除名单里、已经关掉了。说一句，
+            // 别让它看起来像点坏了。
+            control.ShowBalloon(L"没有可置顶的窗口",
+                                L"先点一下要置顶的窗口，再左键单击此图标。被排除的应用和"
+                                L"最小化的窗口不参与。");
+            return;
+        }
+        const bool wasPinned = coordinator.IsPinned(id);
+        coordinator.TogglePin(id);
+        // 成功不弹气泡：置顶高亮本身就是回执，取消时它消失也是。只有「以为点了却没反应」
+        // 才需要说话。
+        if (coordinator.IsPinned(id) == wasPinned) {
+            control.ShowBalloon(L"置顶没能生效",
+                                L"这个窗口拒绝了置顶设置。换用托盘菜单里的准星再试一次。");
+        }
+    };
     handlers.onClipKeeper = [&]() {
         namespace ck = windowmark::clipkeeper;
         const HWND panel = FindWindowW(ck::kWindowClass, nullptr);
