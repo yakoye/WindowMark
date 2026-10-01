@@ -48,8 +48,10 @@ full history.
    [v0.5.4 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.4).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
-4. Open at least two normal windows from the same application to see bookmarks.
-5. 右键托盘图标：**开机启动**、**创建桌面快捷方式**、以及 **窗口书签**、**窗口边框**、
+4. 第一次启动会问一次要不要设好**开机自动启动**和**桌面图标**，选完就不再问；以后在托盘右键
+   菜单里随时能改。
+5. Open at least two normal windows from the same application to see bookmarks.
+6. 右键托盘图标：**开机启动**、**创建桌面快捷方式**、以及 **窗口书签**、**窗口边框**、
    **窗口置顶**、**窗口拖动** 四项功能各自的开关和设置。
 
 ### 绿色版：东西都在那个文件夹里

@@ -178,26 +178,6 @@ void WinControlWindow::AddTrayIcon() {
     Shell_NotifyIconW(NIM_ADD, &data);
 }
 
-void WinControlWindow::ShowFirstRunHint() {
-    if (!hwnd_) return;
-    NOTIFYICONDATAW data{};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd_;
-    data.uID = kTrayId;
-    data.uFlags = NIF_INFO;
-    data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
-    wcscpy_s(data.szInfoTitle, L"WindowMark 已经在托盘里运行");
-    // 绿色版双击就跑，没有安装向导说过任何话——这条气泡是唯一告诉用户「东西在哪、
-    // 怎么开机自启」的机会。
-    wcscpy_s(data.szInfo,
-             L"同一个程序开两个窗口就能看到窗口书签。右键托盘图标可以设置开机启动、"
-             L"创建桌面快捷方式、调整各项功能。");
-    if (Shell_NotifyIconW(NIM_MODIFY, &data) == FALSE) {
-        AddTrayIcon();
-        Shell_NotifyIconW(NIM_MODIFY, &data);
-    }
-}
-
 void WinControlWindow::ShowAlreadyRunningHint() {
     if (!hwnd_) return;
     NOTIFYICONDATAW data{};

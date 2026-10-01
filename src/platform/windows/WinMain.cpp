@@ -19,6 +19,7 @@
 #include "windowmark/core/Settings.h"
 
 #include "AppIdentity.h"
+#include "AutoStart.h"
 #include "BuildStamp.h"
 #include "Resource.h"
 
@@ -504,15 +505,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
 
     handlers.onDesktopShortcut = [&]() {
+        // owner 传 nullptr 的理由同首次运行那个框：控制窗口是 0x0 的隐藏窗口，拿它当 owner
+        // 会把框摆到屏幕左上角。
         std::filesystem::path link;
         if (windowmark::win::CreateDesktopShortcut(link)) {
-            MessageBoxW(control.NativeHandle(),
-                        (L"已在桌面创建快捷方式：\n\n" + link.wstring()).c_str(),
-                        L"WindowMark", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(nullptr, (L"已在桌面创建快捷方式：\n\n" + link.wstring()).c_str(),
+                        L"WindowMark", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
         } else {
-            MessageBoxW(control.NativeHandle(),
-                        L"创建桌面快捷方式失败。桌面目录可能不可写。",
-                        L"WindowMark", MB_OK | MB_ICONWARNING);
+            MessageBoxW(nullptr, L"创建桌面快捷方式失败。桌面目录可能不可写。", L"WindowMark",
+                        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         }
     };
     handlers.onConfigPath = [&]() {
@@ -640,9 +641,43 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, L"托盘控制器初始化失败，程序已安全退出。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 6;
     }
-    // 第一次运行：绿色版双击就跑，没有任何安装向导说过话，用一条托盘气泡交代清楚。
-    // 开机自启动那次不弹——那时用户没在等它说话。
-    if (firstRun && !autoStartLaunch) control.ShowFirstRunHint();
+    // 第一次运行：绿色版双击就跑，没有任何安装向导说过话。这是唯一能交代「图标在托盘里」
+    // 并且顺手把开机启动和桌面图标办了的机会——那两件事安装程序会替用户做，绿色版没人做，
+    // 藏在托盘右键里等于默认没有。所以这里直接问一次，答完就再也不问。
+    //
+    // 用 MessageBox 而不是托盘气泡：气泡会被专注助手、通知设置静默吞掉，而这是双击之后用户
+    // 正等着看反应的一刻，必须保证送到。开机自启动那次不问——那时用户没在等它说话。
+    if (firstRun && !autoStartLaunch) {
+        // 不传 owner：托盘控制窗口是 0x0、钉在 (0,0) 的隐藏窗口，MessageBox 会居中到它身上，
+        // 结果整个框挤在屏幕左上角。无主的框居中在主屏，MB_SETFOREGROUND 保证它抢到前台
+        // （进程刚被用户双击起来，这时系统允许）。
+        const int answer = MessageBoxW(
+            nullptr,
+            L"WindowMark 已经在运行，图标在任务栏右下角的托盘里（可能折在「^」里面）。\n"
+            L"同一个程序开两个窗口，就能看到窗口书签。\n\n"
+            L"现在顺手设好开机自动启动，并在桌面放一个图标吗？\n"
+            L"以后随时能在托盘右键菜单里改。",
+            L"WindowMark", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND);
+        if (answer == IDYES) {
+            std::wstring failed;
+            wchar_t exe[MAX_PATH]{};
+            if (GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe))) == 0 ||
+                !windowmark::app::SetAutoStart(exe, true)) {
+                failed += L"\n·开机自动启动（注册表写不进去）";
+            }
+            std::filesystem::path link;
+            if (!windowmark::win::CreateDesktopShortcut(link)) {
+                failed += L"\n·桌面快捷方式（桌面目录写不进去）";
+            }
+            // 成功不再弹第二个框：桌面上多出来的图标就是回执。只有失败才需要说话，
+            // 否则用户会以为设好了，下次开机发现没启动，无从查起。
+            if (!failed.empty()) {
+                MessageBoxW(nullptr,
+                            (L"下面这些没设成，可以稍后在托盘右键菜单里重试：" + failed).c_str(),
+                            L"WindowMark", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+            }
+        }
+    }
     // 书签这一项以前漏了：托盘里它的初值写死是「开」，配置里关着也照样打勾。
     control.SetEnabledState(coordinator.CurrentSettings().drawer.enabled);
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);
