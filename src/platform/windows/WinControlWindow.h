@@ -69,9 +69,6 @@ public:
 
     bool Start(Handlers handlers);
     void Stop() noexcept;
-    // 第一次运行（还没有配置文件）时的引导气泡：托盘图标在哪、右键能做什么。
-    // 绿色版双击就跑，没有安装向导说过话，这是唯一的交代机会。
-    void ShowFirstRunHint();
     void SetEnabledState(bool enabled);
     void SetBorderState(bool enabled);
     void SetDragState(bool enabled);
