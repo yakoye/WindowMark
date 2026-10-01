@@ -115,6 +115,39 @@ std::filesystem::path PortableConfigPath() {
     return exe.parent_path() / L"settings.conf";
 }
 
+std::filesystem::path PortableMarkerPath() {
+    const auto exe = InstalledExePath();
+    if (exe.empty()) return {};
+    return exe.parent_path() / L"portable.on";
+}
+
+bool CreateDesktopShortcut(std::filesystem::path& outPath) {
+    const auto exe = InstalledExePath();
+    const auto desktop = KnownFolder(FOLDERID_Desktop);
+    if (exe.empty() || desktop.empty()) return false;
+    outPath = desktop / L"WindowMark.lnk";
+
+    // 和安装程序建开始菜单快捷方式用的是同一套做法（InstallerCommon.cpp）。COM 已经在
+    // WinMain 里初始化过了。
+    IShellLinkW* link = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_IShellLinkW, reinterpret_cast<void**>(&link)))) {
+        return false;
+    }
+    bool ok = false;
+    link->SetPath(exe.wstring().c_str());
+    link->SetWorkingDirectory(exe.parent_path().wstring().c_str());
+    link->SetDescription(L"WindowMark - 同应用多窗口书签层");
+    link->SetIconLocation(exe.wstring().c_str(), 0);
+    IPersistFile* file = nullptr;
+    if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&file)))) {
+        ok = SUCCEEDED(file->Save(outPath.wstring().c_str(), TRUE));
+        file->Release();
+    }
+    link->Release();
+    return ok;
+}
+
 std::filesystem::path ReadConfiguredConfigPath() {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, app::kProductKeyPath, 0, KEY_QUERY_VALUE, &key) !=
@@ -178,6 +211,11 @@ ConfigLocation CurrentConfigLocation() {
     inputs.portable = PortableConfigPath();
     inputs.portableExists =
         !inputs.portable.empty() && std::filesystem::exists(inputs.portable, ec);
+    // 绿色版标记：解压即用的包里带着 portable.on，第一次保存时设置就落在 exe 旁边。
+    // 目录写不进去（解压到 Program Files 之类）就不算，照常回落到默认位置。
+    const auto marker = PortableMarkerPath();
+    inputs.portableRequested = !marker.empty() && std::filesystem::exists(marker, ec) &&
+                               IsDirectoryWritable(marker.parent_path());
 
     inputs.configured = ReadConfiguredConfigPath();
     inputs.configuredUsable =

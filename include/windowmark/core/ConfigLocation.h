@@ -16,6 +16,9 @@ enum class ConfigSource {
 struct ConfigLocationInputs {
     std::filesystem::path portable;
     bool portableExists{false};
+    // 绿色版标记：exe 同目录有 portable.on，而且那个目录写得进去。设置文件还不存在也算数
+    // ——解压就用的包里本来就没有 settings.conf，第一次保存时才会在那儿生成。
+    bool portableRequested{false};
     std::filesystem::path configured;
     bool configuredUsable{false};
     std::filesystem::path fallback;

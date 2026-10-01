@@ -71,6 +71,7 @@ bool WinControlWindow::Start(Handlers handlers) {
         {L"onPinHotkey", static_cast<bool>(handlers_.onPinHotkey)},
         {L"onClipKeeper", static_cast<bool>(handlers_.onClipKeeper)},
         {L"onConfigPath", static_cast<bool>(handlers_.onConfigPath)},
+        {L"onDesktopShortcut", static_cast<bool>(handlers_.onDesktopShortcut)},
         {L"onAbout", static_cast<bool>(handlers_.onAbout)},
         {L"onExit", static_cast<bool>(handlers_.onExit)},
     };
@@ -175,6 +176,26 @@ void WinControlWindow::AddTrayIcon() {
     if (!data.hIcon) data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(data.szTip, L"WindowMark - 右键打开菜单");
     Shell_NotifyIconW(NIM_ADD, &data);
+}
+
+void WinControlWindow::ShowFirstRunHint() {
+    if (!hwnd_) return;
+    NOTIFYICONDATAW data{};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = kTrayId;
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+    wcscpy_s(data.szInfoTitle, L"WindowMark 已经在托盘里运行");
+    // 绿色版双击就跑，没有安装向导说过任何话——这条气泡是唯一告诉用户「东西在哪、
+    // 怎么开机自启」的机会。
+    wcscpy_s(data.szInfo,
+             L"同一个程序开两个窗口就能看到窗口书签。右键托盘图标可以设置开机启动、"
+             L"创建桌面快捷方式、调整各项功能。");
+    if (Shell_NotifyIconW(NIM_MODIFY, &data) == FALSE) {
+        AddTrayIcon();
+        Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
 }
 
 void WinControlWindow::ShowAlreadyRunningHint() {
@@ -605,6 +626,7 @@ void WinControlWindow::ShowMenu() {
                 kAutoStartCommand, L"开机启动");
     // 同样是程序级而非功能级的设置。带省略号是「点了会开对话框」的标准约定，代价是它
     // 比「开机启动」宽了三个点——顶层菜单的宽度由最宽的标签决定，这里是有意付的。
+    AppendMenuW(menu, MF_STRING, kDesktopShortcutCommand, L"创建桌面快捷方式");
     AppendMenuW(menu, MF_STRING, kConfigPathCommand, L"配置文件...");
     AppendMenuW(menu, MF_STRING, kAboutCommand, L"关于");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -756,6 +778,7 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
         case kClipKeeperCommand:     handler = &handlers_.onClipKeeper; break;
         case kConfigPathCommand:     handler = &handlers_.onConfigPath; break;
+        case kDesktopShortcutCommand: handler = &handlers_.onDesktopShortcut; break;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;
         default: break;

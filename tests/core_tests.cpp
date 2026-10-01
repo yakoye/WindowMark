@@ -1856,6 +1856,18 @@ void TestConfigLocationPriority() {
         CHECK(got.path == in.configured);
     }
 
+    // 绿色版：exe 同目录有 portable.on 标记，settings.conf 还不存在也走便携——
+    // 解压即用的包里本来就没有配置文件，第一次保存才生成在那儿。
+    {
+        in.portableExists = false;
+        in.portableRequested = true;
+        in.configuredUsable = true;
+        const ConfigLocation got = ResolveConfigLocation(in);
+        CHECK(got.source == ConfigSource::Portable);
+        CHECK(got.path == in.portable);
+        in.portableRequested = false;
+    }
+
     // 便携优先于注册表指定。注册表跟着机器走，exe 旁边的 conf 跟着程序走；
     // U 盘插到别人电脑上不该去读那台机器的本地路径。
     {

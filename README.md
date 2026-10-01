@@ -47,11 +47,23 @@ full history.
 1. Download `WindowMark-v0.5.4-win64.zip` from the
    [v0.5.4 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.4).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
-3. Extract it and run `WindowMarkSetup.exe`. To use it without installing, run
-   `WindowMark.exe` directly from the extracted directory.
+3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
 4. Open at least two normal windows from the same application to see bookmarks.
-5. Use the tray menu to configure **窗口书签**, **窗口边框**, **窗口置顶** and **窗口拖动**
-   independently.
+5. 右键托盘图标：**开机启动**、**创建桌面快捷方式**、以及 **窗口书签**、**窗口边框**、
+   **窗口置顶**、**窗口拖动** 四项功能各自的开关和设置。
+
+### 绿色版：东西都在那个文件夹里
+
+包里带着一个 `portable.on`，有它在，设置就写在 `WindowMark.exe` 旁边的 `settings.conf`：
+
+- 整个文件夹拷到 U 盘、换台电脑、挪到别的盘，设置都跟着走。
+- 不想要了，**直接删掉文件夹**就是卸干净，注册表和系统目录里不留东西（开机启动如果开过，
+  先在托盘里关掉，那一项在注册表里）。
+- 删掉 `portable.on` 再启动，就改回系统默认位置 `%LOCALAPPDATA%\WindowMark\settings.conf`。
+  托盘的「配置文件...」里也能随时切换，并且会把现有配置搬过去。
+
+想要传统安装（装到 `%LOCALAPPDATA%\Programs\WindowMark`、带开始菜单项和卸载程序）的，
+运行包里的 `WindowMarkSetup.exe`。安装版不会带上 `portable.on`，所以它用的是系统默认位置。
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
 scaffold and does not provide a working macOS application in v0.5.4.

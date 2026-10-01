@@ -24,7 +24,10 @@ $binaries = @(
     'WindowMark.exe', 'WindowMarkSetup.exe', 'WindowMarkUninstall.exe',
     'WindowMarkDiag.exe', 'WindowMarkInspect.exe', 'ClipKeeper.exe'
 )
-$docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'measure_shadow_auto.bat', 'measure_shadow_inset.bat')
+# portable.on 让解压出来的这份把设置写在自己目录里（绿色版）。安装程序按文件清单拷贝，
+# 不会把它带进安装目录，所以安装版仍然用 %LOCALAPPDATA%。
+$docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'portable.on',
+          'measure_shadow_auto.bat', 'measure_shadow_inset.bat')
 $tools = @(
     'auto-shadow-inset.py', 'diagnose-window.py', 'find-stray-lines.py', 'inspect-corner.py',
     'measure-gap.py', 'measure-shadow-inset.ps1', 'measure-stroke.py', 'watch-line-over.py'

@@ -61,12 +61,17 @@ public:
         std::function<void()> onClipKeeper;
         // 配置文件位置。跟开机启动一样是程序级设置，所以放顶层而不是某个功能的设置页里。
         std::function<void()> onConfigPath;
+        // 在桌面上建一个快捷方式。绿色版用得上：解压到哪儿都能在桌面开。
+        std::function<void()> onDesktopShortcut;
         std::function<void()> onAbout;
         std::function<void()> onExit;
     };
 
     bool Start(Handlers handlers);
     void Stop() noexcept;
+    // 第一次运行（还没有配置文件）时的引导气泡：托盘图标在哪、右键能做什么。
+    // 绿色版双击就跑，没有安装向导说过话，这是唯一的交代机会。
+    void ShowFirstRunHint();
     void SetEnabledState(bool enabled);
     void SetBorderState(bool enabled);
     void SetDragState(bool enabled);
@@ -105,6 +110,7 @@ private:
     static constexpr UINT kUnpinAllCommand = 1014;
     static constexpr UINT kToggleDragCommand = 1018;
     static constexpr UINT kDragSettingsCommand = 1019;
+    static constexpr UINT kDesktopShortcutCommand = 1021;
     static constexpr UINT kDragExcludeCommand = 1020;
     // Dynamic block: one command per currently pinned window, allocated when the menu is
     // built. Kept well clear of the fixed ids above so adding a fixed item never collides.

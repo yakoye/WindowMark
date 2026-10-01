@@ -193,6 +193,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                     L"接好之后在托盘菜单的「配置文件...」里重新指定即可。",
                     L"WindowMark", MB_OK | MB_ICONWARNING);
     }
+    // 配置文件还不存在 = 这是第一次运行（绿色版解压就是这个状态）。LoadOrCreate 会把它
+    // 建出来，所以要在那之前问。
+    std::error_code firstRunEc;
+    const bool firstRun = !std::filesystem::exists(settingsPath, firstRunEc);
     const windowmark::Settings settings = windowmark::Settings::LoadOrCreate(settingsPath);
 
     windowmark::win::WinWindowBackend windowBackend(settings.performance.geometryThrottleMs);
@@ -499,6 +503,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
     };
 
+    handlers.onDesktopShortcut = [&]() {
+        std::filesystem::path link;
+        if (windowmark::win::CreateDesktopShortcut(link)) {
+            MessageBoxW(control.NativeHandle(),
+                        (L"已在桌面创建快捷方式：\n\n" + link.wstring()).c_str(),
+                        L"WindowMark", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(control.NativeHandle(),
+                        L"创建桌面快捷方式失败。桌面目录可能不可写。",
+                        L"WindowMark", MB_OK | MB_ICONWARNING);
+        }
+    };
     handlers.onConfigPath = [&]() {
         exclusive([&] {
             const auto before = windowmark::win::CurrentConfigLocation();
@@ -624,6 +640,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, L"托盘控制器初始化失败，程序已安全退出。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 6;
     }
+    // 第一次运行：绿色版双击就跑，没有任何安装向导说过话，用一条托盘气泡交代清楚。
+    // 开机自启动那次不弹——那时用户没在等它说话。
+    if (firstRun && !autoStartLaunch) control.ShowFirstRunHint();
     // 书签这一项以前漏了：托盘里它的初值写死是「开」，配置里关着也照样打勾。
     control.SetEnabledState(coordinator.CurrentSettings().drawer.enabled);
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);

@@ -38,6 +38,11 @@ std::filesystem::path LocalDataRoot();
 // 配置文件的三个候选位置。存在性与可写性在这里判断，选哪一个交给 core 的
 // ResolveConfigLocation，那段优先级逻辑因此可以脱离文件系统被单测覆盖。
 [[nodiscard]] std::filesystem::path PortableConfigPath();
+// 绿色版标记文件：exe 同目录的 portable.on。存在就把设置写在 exe 旁边，
+// 整个文件夹拷走或删掉就是全部，不往系统里留东西。
+[[nodiscard]] std::filesystem::path PortableMarkerPath();
+// 在桌面上建一个指向当前 exe 的快捷方式。已存在就覆盖。成功时 outPath 是快捷方式的路径。
+[[nodiscard]] bool CreateDesktopShortcut(std::filesystem::path& outPath);
 [[nodiscard]] std::filesystem::path ReadConfiguredConfigPath();
 bool WriteConfiguredConfigPath(const std::filesystem::path& path);
 [[nodiscard]] bool IsDirectoryWritable(const std::filesystem::path& directory);
