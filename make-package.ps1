@@ -152,5 +152,5 @@ if (Test-Path $installed) {
     }
 }
 Write-Host '  用法：解压后双击 WindowMark.exe 就能用（绿色版，设置存在 exe 旁边）；'
-Write-Host '        想装进系统的话运行 WindowMarkSetup.exe'
+Write-Host '        想装进系统：托盘菜单「安装到系统...」，或 WindowMark.exe --install'
 exit 0
