@@ -213,7 +213,17 @@ LRESULT CALLBACK WinBorderBackend::SessionProc(HWND hwnd, UINT msg, WPARAM wPara
 }
 
 void WinBorderBackend::HealthTick() {
-    if (!started_ || !suspended_) return;
+    if (!started_) return;
+
+    // 桌面静着的时候 Redraw 不会被调用，那条 500ms 的检查也就不跑。看门狗这一问补上：
+    // 没有任何窗口事件的几分钟里画布照样可能被挤下去。
+    if (!suspended_ && overlays_.EnsureBandPositions()) {
+        PinDiag(L"看门狗：边框画布被挤到普通窗口下面了，已提回置顶层");
+        lastStrokes_.clear();
+        Redraw();
+    }
+
+    if (!suspended_) return;
 
     // 挂起只有一个正当理由：锁屏。锁屏时输入桌面是安全桌面（Winlogon），普通用户进程打不开
     // 它；桌面能打开就说明人已经回到自己的桌面了，而解除挂起的那条会话事件没收到。
@@ -299,6 +309,18 @@ void WinBorderBackend::Redraw(bool fromMove) {
     // EnumDisplayMonitors 加一次矩形比较，代价可以忽略，所以每帧确认一次就行，
     // 不用再接一套监听。
     overlays_.Sync();
+    // 画布可能被挤到普通窗口下面去（实测见 SunkBelowNormalWindows 的注释）。那时段照画、
+    // 像素被盖住，从外面看就是「很多窗口没有边框」。每 500ms 确认一次：正常情况下这一走
+    // 几步就撞到自己，代价可以忽略；真沉了就提回来。
+    const ULONGLONG nowTick = GetTickCount64();
+    if (nowTick - lastBandCheck_ >= 500) {
+        lastBandCheck_ = nowTick;
+        if (overlays_.EnsureBandPositions()) {
+            PinDiag(L"边框画布被挤到普通窗口下面了，已提回置顶层");
+            // 提回来之后画布上的像素还在，但保险起见让下一帧整幅重画。
+            lastStrokes_.clear();
+        }
+    }
     if (trace) {
         g_trace.sync += MsSince(mark);
         mark = Ticks();
