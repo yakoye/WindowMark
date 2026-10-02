@@ -61,8 +61,12 @@ public:
         std::function<void()> onClipKeeper;
         // 配置文件位置。跟开机启动一样是程序级设置，所以放顶层而不是某个功能的设置页里。
         std::function<void()> onConfigPath;
-        // 托盘图标左键单击。右键是菜单，左键以前什么都不做。
-        std::function<void()> onTrayLeftClick;
+        // 主面板：托盘左键单击，以及菜单里的「面板...」。右键以前是唯一的入口。
+        std::function<void()> onShowPanel;
+        // 置顶「刚才那个窗口」。面板上那个按钮用，没有对应的菜单项。
+        std::function<void()> onPinLastWindow;
+        // 跑一次诊断工具（tools\WindowMarkDiag.exe），它自己把报告存到桌面并复制到剪贴板。
+        std::function<void()> onDiagnose;
         // 在桌面上建一个快捷方式。绿色版用得上：解压到哪儿都能在桌面开。
         std::function<void()> onDesktopShortcut;
         // 安装到系统 / 卸载。菜单里同时只出现一个，看当前这份跑在哪儿
@@ -99,8 +103,8 @@ public:
     void SetPinnedProvider(PinnedProvider provider);
     [[nodiscard]] HWND NativeHandle() const noexcept { return hwnd_; }
 
-private:
-    static constexpr UINT kTrayMessage = WM_APP + 70;
+    // 命令 id 是常量，公开出来让主面板能把动作交回这里执行（RunCommand）：面板和菜单
+    // 因此走同一条分发路径，不可能一边对一边错。
     static constexpr UINT kToggleCommand = 1001;
     static constexpr UINT kSelectionCommand = 1002;
     static constexpr UINT kSettingsCommand = 1003;
@@ -122,7 +126,24 @@ private:
     static constexpr UINT kDesktopShortcutCommand = 1021;
     static constexpr UINT kInstallCommand = 1022;
     static constexpr UINT kUninstallCommand = 1023;
+    static constexpr UINT kPanelCommand = 1024;
+    static constexpr UINT kPinLastWindowCommand = 1025;
+    static constexpr UINT kDiagnoseCommand = 1026;
     static constexpr UINT kDragExcludeCommand = 1020;
+
+    // 交回托盘窗口执行一条命令。
+    //   RunCommand     投递，当前这层窗口（面板）关掉之后才执行——要开新窗口的动作用它，
+    //                  避免模态套模态。
+    //   RunCommandNow  同步执行，面板还开着——开关类用它，这样面板能立刻刷新自己的勾。
+    void RunCommand(UINT command) const noexcept {
+        if (hwnd_) PostMessageW(hwnd_, WM_COMMAND, command, 0);
+    }
+    void RunCommandNow(UINT command) const noexcept {
+        if (hwnd_) SendMessageW(hwnd_, WM_COMMAND, command, 0);
+    }
+
+private:
+    static constexpr UINT kTrayMessage = WM_APP + 70;
     // Dynamic block: one command per currently pinned window, allocated when the menu is
     // built. Kept well clear of the fixed ids above so adding a fixed item never collides.
     static constexpr UINT kPinnedWindowCommandBase = 1100;
