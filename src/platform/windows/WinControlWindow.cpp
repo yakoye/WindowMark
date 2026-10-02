@@ -174,7 +174,7 @@ void WinControlWindow::AddTrayIcon() {
         GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     if (!data.hIcon) data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(data.szTip, L"WindowMark - 左键置顶当前窗口，右键打开菜单");
+    wcscpy_s(data.szTip, L"WindowMark - 左键打开面板，右键打开菜单");
     Shell_NotifyIconW(NIM_ADD, &data);
 }
 
@@ -600,6 +600,9 @@ void WinControlWindow::ShowMenu() {
     // 四个功能必须和 WinMain 里 onToggleAll 真正切换的是同一组。以前这里看「书签/边框/置顶」、
     // 那边切「书签/边框/拖动」：只开着置顶时这里显示「暂停所有」，点下去反而把另外三个全打开。
     const bool anythingOn = enabled_ || bordersEnabled_ || pinningEnabled_ || dragEnabled_;
+    // 放在最上面：第一次见这个程序的人，菜单里能看懂的只有这一项。
+    AppendMenuW(menu, MF_STRING, kPanelCommand, L"面板...");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kToggleAllCommand, anythingOn ? L"暂停所有" : L"启用所有");
     // Top level rather than inside either submenu: it switches the program, not a feature.
     // The tick is read from the registry every time the menu opens instead of being cached,
@@ -709,7 +712,7 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         // 在那里起手拖动就得把「普通的一次点击」和「手势开始」区分开，而菜单里的准星
         // 把同一件事做得更稳。单击不涉及这个问题——按下抬起就是一次点击。
         if (lParam == WM_LBUTTONUP) {
-            if (handlers_.onTrayLeftClick) handlers_.onTrayLeftClick();
+            if (handlers_.onShowPanel) handlers_.onShowPanel();
             return 0;
         }
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
@@ -774,6 +777,9 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kConfigPathCommand:     handler = &handlers_.onConfigPath; break;
         case kDesktopShortcutCommand: handler = &handlers_.onDesktopShortcut; break;
         case kInstallCommand:        handler = &handlers_.onInstall; break;
+        case kPanelCommand:          handler = &handlers_.onShowPanel; break;
+        case kPinLastWindowCommand:  handler = &handlers_.onPinLastWindow; break;
+        case kDiagnoseCommand:       handler = &handlers_.onDiagnose; break;
         case kUninstallCommand:      handler = &handlers_.onUninstall; break;
         case kAboutCommand:          handler = &handlers_.onAbout; break;
         case kExitCommand:           handler = &handlers_.onExit; break;

@@ -4,6 +4,7 @@
 #include "WinControlWindow.h"
 #include "WinDragBackend.h"
 #include "WinDragSettingsDialog.h"
+#include "WinHomePanel.h"
 #include "WinOverlayBackend.h"
 #include "PinDiag.h"
 #include "WinPinBackend.h"
@@ -476,16 +477,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (!tracked) return;
         coordinator.TogglePin(id);
     };
-    // 托盘左键单击：把刚才那个窗口置顶 / 取消置顶。
-    //
-    // 为什么是这个动作：四个功能的开关在菜单里一步就能到，而「置顶这个窗口」恰恰是菜单做不到
-    // 的那一个——菜单弹出时前台窗口已经变成了我们自己，所以才有准星和全局快捷键。左键单击
-    // 没有这个问题：点的那一刻任务栏成了前台，而任务栏不算普通窗口、事件流里不报，程序记着
-    // 的仍然是用户刚才那个窗口。
-    //
-    // 也挑过「暂停所有」：同样一步，但误点一下会悄悄把整个程序停掉，而那正是「看上去坏了」
-    // 最常见的形态。置顶误点了只是多一个高亮框，再点一下就回去，代价对称。
-    handlers.onTrayLeftClick = [&]() {
+    // 「置顶刚才那个窗口」。面板上那个按钮用；没有菜单项——菜单做不到这件事（菜单弹出时
+    // 前台窗口已经变成我们自己，这正是准星和全局快捷键存在的理由），而面板是从托盘点出来的，
+    // 托盘和面板都不在跟踪列表里，所以 LastTrackedActiveWindow 正是用户打开面板之前在用的
+    // 那个窗口。
+    handlers.onPinLastWindow = [&]() {
         if (!coordinator.CurrentSettings().pin.enabled) {
             control.ShowBalloon(L"窗口置顶是关着的",
                                 L"托盘菜单 →「窗口置顶」→「启用」打开之后，左键单击此图标就能"
@@ -511,6 +507,104 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (coordinator.IsPinned(id) == wasPinned) {
             control.ShowBalloon(L"置顶没能生效",
                                 L"这个窗口拒绝了置顶设置。换用托盘菜单里的准星再试一次。");
+        }
+    };
+    // 主面板：托盘左键单击，或菜单里的「面板...」。
+    //
+    // 托盘菜单对会用的人够快，对第一次见它的人不行：四个功能叫什么、干什么、怎么用、现在开着
+    // 没开，全藏在三层子菜单里，而菜单看不下任何一句说明。面板把这些摊开，顺便做所有设置的
+    // 入口。
+    //
+    // 面板自己不干活：要开窗口的动作一律先关面板、再把对应的托盘命令投递回去执行（面板和菜单
+    // 因此走同一条分发路径）；开关类当场同步执行，面板留着并刷新自己的勾。
+    windowmark::win::HomePanelContext homeContext;
+    homeContext.settings = [&]() { return coordinator.CurrentSettings(); };
+    homeContext.toggleFeature = [&](windowmark::win::HomeFeature feature) {
+        using F = windowmark::win::HomeFeature;
+        switch (feature) {
+        case F::Bookmarks:
+            control.RunCommandNow(windowmark::win::WinControlWindow::kToggleCommand);
+            break;
+        case F::Borders:
+            control.RunCommandNow(windowmark::win::WinControlWindow::kToggleBordersCommand);
+            break;
+        case F::Pinning:
+            control.RunCommandNow(windowmark::win::WinControlWindow::kTogglePinningCommand);
+            break;
+        case F::Drag:
+            control.RunCommandNow(windowmark::win::WinControlWindow::kToggleDragCommand);
+            break;
+        }
+    };
+    homeContext.autoStartEnabled = []() { return windowmark::app::IsAutoStartEnabled(); };
+    homeContext.toggleAutoStart = [&]() {
+        control.RunCommandNow(windowmark::win::WinControlWindow::kAutoStartCommand);
+    };
+    homeContext.lastWindowTitle = [&]() {
+        const auto id = coordinator.LastTrackedActiveWindow();
+        if (id == 0) return std::wstring{};
+        return windowmark::win::Utf8ToWide(coordinator.PinnedTitle(id));
+    };
+    homeContext.lastWindowPinned = [&]() {
+        const auto id = coordinator.LastTrackedActiveWindow();
+        return id != 0 && coordinator.IsPinned(id);
+    };
+
+    handlers.onShowPanel = [&]() {
+        using Action = windowmark::win::HomeAction;
+        using Cmd = windowmark::win::WinControlWindow;
+        if (dialogOpen) return;
+        homeContext.runningFromInstallDir = windowmark::setup::RunningFromInstallDir();
+        dialogOpen = true;
+        const Action action =
+            windowmark::win::WinHomePanel::ShowModal(control.NativeHandle(), homeContext);
+        // 面板已经关了，守卫放开——接下来那个窗口自己去拿。
+        dialogOpen = false;
+
+        switch (action) {
+        case Action::None:             break;
+        case Action::BookmarkSettings: control.RunCommand(Cmd::kSettingsCommand); break;
+        case Action::BookmarkApps:     control.RunCommand(Cmd::kSelectionCommand); break;
+        case Action::BorderSettings:   control.RunCommand(Cmd::kBorderSettingsCommand); break;
+        case Action::BorderApps:       control.RunCommand(Cmd::kBorderExcludeCommand); break;
+        case Action::PinSettings:      control.RunCommand(Cmd::kPinSettingsCommand); break;
+        case Action::PinGrab:          control.RunCommand(Cmd::kGrabToPinCommand); break;
+        case Action::DragSettings:     control.RunCommand(Cmd::kDragSettingsCommand); break;
+        case Action::DragApps:         control.RunCommand(Cmd::kDragExcludeCommand); break;
+        case Action::PinLastWindow:    control.RunCommand(Cmd::kPinLastWindowCommand); break;
+        case Action::ConfigPath:       control.RunCommand(Cmd::kConfigPathCommand); break;
+        case Action::DesktopShortcut:  control.RunCommand(Cmd::kDesktopShortcutCommand); break;
+        case Action::ClipKeeper:       control.RunCommand(Cmd::kClipKeeperCommand); break;
+        case Action::Diagnose:         control.RunCommand(Cmd::kDiagnoseCommand); break;
+        case Action::Install:          control.RunCommand(Cmd::kInstallCommand); break;
+        case Action::Uninstall:        control.RunCommand(Cmd::kUninstallCommand); break;
+        case Action::About:            control.RunCommand(Cmd::kAboutCommand); break;
+        case Action::Exit:             control.RunCommand(Cmd::kExitCommand); break;
+        }
+    };
+    // 诊断报告：出问题时点这里，它把报告存到桌面并复制到剪贴板，直接粘给开发者。
+    // exe 和 ClipKeeper 一样在 tools\ 里。
+    handlers.onDiagnose = [&]() {
+        const auto exe =
+            windowmark::win::InstalledExePath().parent_path() / L"tools" / L"WindowMarkDiag.exe";
+        std::error_code ec;
+        if (!std::filesystem::exists(exe, ec)) {
+            control.ShowBalloon(L"找不到诊断工具",
+                                L"它应当在这里：" + exe.wstring() +
+                                    L"\n解压发布包时把 tools 文件夹一起解压出来即可。");
+            return;
+        }
+        SHELLEXECUTEINFOW info{};
+        info.cbSize = sizeof(info);
+        info.fMask = SEE_MASK_FLAG_NO_UI;
+        info.lpVerb = L"open";
+        const std::wstring file = exe.wstring();
+        const std::wstring dir = exe.parent_path().wstring();
+        info.lpFile = file.c_str();
+        info.lpDirectory = dir.c_str();
+        info.nShow = SW_SHOWNORMAL;
+        if (!ShellExecuteExW(&info)) {
+            control.ShowBalloon(L"诊断工具没能启动", L"可以手动双击 " + file);
         }
     };
     handlers.onClipKeeper = [&]() {
