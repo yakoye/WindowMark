@@ -14,6 +14,8 @@ alongside it:
   multiple windows of the same application.
 - **Window borders** for outlining every eligible top-level window with separate active
   and inactive colors. Enabled by default; maximized windows are not outlined.
+  「活动」指的是**用户最后在用的那个窗口**，不是此刻的前台窗口：点任务栏、点托盘图标、打开
+  WindowMark 自己的面板或设置窗口时，前台确实变了，但那个窗口的活动边框留着不动。
 - **Window pinning** through the target window's system menu, a crosshair picker, or an
   optional global hotkey. Pinned windows always receive a visible highlight.
 - **窗口拖动** for moving or resizing any window by holding a modifier key and dragging

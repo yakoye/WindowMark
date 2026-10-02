@@ -2192,6 +2192,64 @@ void TestWatchdog() {
     CHECK(windows.resyncs == before + 1);
 }
 
+// 点任务栏 / 托盘 / 打开 WindowMark 自己的面板之后，活动边框还在不在。
+//
+// 2026-10-02 用户截图实测：那一刻屏幕上 7609 个非活动色像素、活动色 0 个——前台一落到
+// Shell_TrayWnd 身上，activeWindow_ 就跟着变成了它，而它不在跟踪列表里，于是没有任何一个
+// 窗口匹配得上「活动」。书签条也一起消失（drawer.active_window_only 看的是同一个值）。
+void TestActiveSurvivesUntrackedForeground() {
+    Settings settings;
+    settings.border.enabled = true;
+    settings.drawer.activeWindowOnly = true;
+
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    windows.windows = {
+        Make(1, "code.exe", "Grace", 100, true),
+        Make(2, "code.exe", "PCIe", 850),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    CHECK(coordinator.ActiveWindow() == 1);
+
+    const auto activeCount = [&borders]() {
+        int n = 0;
+        for (const auto& m : borders.last) {
+            if (m.active) ++n;
+        }
+        return n;
+    };
+    CHECK(activeCount() == 1);
+
+    // 换到另一个真窗口：跟着走。
+    windows.Emit({WindowEventKind::ActiveChanged, 2});
+    CHECK(coordinator.ActiveWindow() == 2);
+    CHECK(activeCount() == 1);
+
+    // 前台落到一个根本没被跟踪的窗口上（任务栏就是这样进来的）：活动窗口不动。
+    windows.Emit({WindowEventKind::ActiveChanged, 999});
+    CHECK(coordinator.ActiveWindow() == 2);
+    CHECK(activeCount() == 1);
+    for (const auto& m : borders.last) {
+        CHECK(m.active == (m.windowId == 2));
+    }
+
+    // 这期间来一次整份重取（看门狗、或者任何结构事件）：快照里没人是 active，也不能把它清掉。
+    for (auto& w : windows.windows) w.active = false;
+    windows.Emit({WindowEventKind::StructureChanged, 0});
+    CHECK(coordinator.ActiveWindow() == 2);
+    CHECK(activeCount() == 1);
+
+    // 那个窗口真的没了，才允许没有活动窗口。
+    windows.windows.erase(windows.windows.begin() + 1);
+    windows.Emit({WindowEventKind::StructureChanged, 0});
+    CHECK(coordinator.ActiveWindow() == 0);
+    CHECK(activeCount() == 0);
+}
+
 int main() {
     TestGroupingAndSelfState();
     TestActiveWindowOnlyVisibility();
@@ -2221,6 +2279,7 @@ int main() {
     TestPreviewStack();
     TestDragSettingsRoundTrip();
     TestWatchdog();
+    TestActiveSurvivesUntrackedForeground();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }
