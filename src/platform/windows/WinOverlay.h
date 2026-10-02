@@ -44,6 +44,8 @@ public:
     void Destroy() noexcept;
 
     [[nodiscard]] const RECT& Bounds() const noexcept { return bounds_; }
+    // 确认画布还在「所有普通窗口之上」。沉下去了就提回来并返回 true（调用方记一笔日志）。
+    bool EnsureBandPosition();
 
 private:
     void MoveToBandTail();
@@ -63,6 +65,8 @@ private:
 class OverlaySet {
 public:
     void Sync();
+    // 每块屏各确认一次层级；有任何一块是被提回来的就返回 true。
+    bool EnsureBandPositions();
     void Render(const std::vector<BorderStroke>& strokes);
     void Destroy() noexcept;
 

@@ -63,6 +63,8 @@ private:
     std::vector<std::wstring> treatAsTopmostClasses_;
     HWND sessionWindow_{};
     bool suspended_{false};
+    // 上一次确认画布层级的时刻。见 Redraw 里那段注释。
+    unsigned long long lastBandCheck_{0};
     // 上一帧画了什么。一样就不必再提交一次——这不是兜底，只是省掉重复工作。
     std::vector<BorderStroke> lastStrokes_;
     bool started_{false};

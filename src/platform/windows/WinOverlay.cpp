@@ -63,6 +63,28 @@ bool EnsureClass() {
 // Windows 只有普通层和 topmost 层两档，没有可以插空的数值层级，而这个交界处正是
 // 「比谁都高，但比系统 UI 低」唯一能表达的位置——右键菜单、输入法候选框、任务栏、
 // 悬浮的会议小窗因而都能压在边框上面。
+// 画布是不是已经沉到普通窗口下面去了。
+//
+// 判据：从 z 序顶上往下走，先遇到自己 = 位置对；先遇到一个可见的普通（非 topmost）窗口 =
+// 自己在它下面，画出来的段会被它盖掉。
+//
+// 这件事本不该发生——画布创建时就带 WS_EX_TOPMOST，Windows 保证 topmost 的一组排在普通
+// 窗口之上。但 2026-10-02 在用户机器上实测到了：画布 z=32、TOPMOST 位还在，而 Claude
+// (z=18) 和两个资源管理器 (z=28/30) 都是普通窗口却排在它上面。远程桌面会话、全屏应用、
+// 以及别的进程对 z 序的操作都可能把这个不变量打破。发生过就得能自己爬回来。
+[[nodiscard]] bool SunkBelowNormalWindows(HWND self) {
+    HWND hwnd = GetTopWindow(nullptr);
+    for (int step = 0; step < kZOrderLimit && hwnd != nullptr; ++step) {
+        if (hwnd == self) return false;
+        if (IsWindowVisible(hwnd) != FALSE &&
+            (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) {
+            return true;
+        }
+        hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+    }
+    return false;
+}
+
 [[nodiscard]] HWND LastTopmostWindow(HWND self) {
     HWND last = nullptr;
     HWND hwnd = GetTopWindow(nullptr);
@@ -189,6 +211,23 @@ void MonitorOverlay::MoveToBandTail() {
         SetWindowPos(hwnd_, lastTop, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
+}
+
+bool MonitorOverlay::EnsureBandPosition() {
+    if (hwnd_ == nullptr) return false;
+    if (!SunkBelowNormalWindows(hwnd_)) {
+        // 位置对，顺手在层内挪到末尾（别人家新冒出来的 topmost 窗口应当压在边框上面）。
+        MoveToBandTail();
+        return false;
+    }
+
+    // 真沉下去了。先把自己提回 topmost 组——注意**不能带 SWP_NOSENDCHANGING**：带着它
+    // 改 z 序会「假成功」（返回 TRUE、位置立刻变、两百毫秒后退回原处），v0.4.9 那一轮的
+    // 第一个根因就是它。这里提的是自己的窗口，不指定别人家的锚点，所以踩不到当年那个
+    // 「跨进程锚定被 UIPI 拒绝 / 卡死」的坑。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    MoveToBandTail();
+    return true;
 }
 
 void MonitorOverlay::Render(const std::vector<BorderStroke>& strokes) {
@@ -445,6 +484,14 @@ void OverlaySet::Sync() {
         auto overlay = std::make_unique<MonitorOverlay>();
         if (overlay->Create(m)) overlays_.push_back(std::move(overlay));
     }
+}
+
+bool OverlaySet::EnsureBandPositions() {
+    bool recovered = false;
+    for (auto& overlay : overlays_) {
+        if (overlay->EnsureBandPosition()) recovered = true;
+    }
+    return recovered;
 }
 
 void OverlaySet::Render(const std::vector<BorderStroke>& strokes) {
