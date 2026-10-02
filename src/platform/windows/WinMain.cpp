@@ -488,7 +488,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                                 L"把当前窗口置顶。");
             return;
         }
-        const windowmark::WindowId id = coordinator.LastTrackedActiveWindow();
+        const windowmark::WindowId id = coordinator.ActiveWindow();
         const bool tracked = id != 0 && coordinator.IsTracked(id);
         windowmark::win::PinDiag(L"托盘左键: id=%llu 可置顶=%d",
                                  static_cast<unsigned long long>(id), tracked ? 1 : 0);
@@ -541,12 +541,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         control.RunCommandNow(windowmark::win::WinControlWindow::kAutoStartCommand);
     };
     homeContext.lastWindowTitle = [&]() {
-        const auto id = coordinator.LastTrackedActiveWindow();
+        const auto id = coordinator.ActiveWindow();
         if (id == 0) return std::wstring{};
         return windowmark::win::Utf8ToWide(coordinator.PinnedTitle(id));
     };
     homeContext.lastWindowPinned = [&]() {
-        const auto id = coordinator.LastTrackedActiveWindow();
+        const auto id = coordinator.ActiveWindow();
         return id != 0 && coordinator.IsPinned(id);
     };
 

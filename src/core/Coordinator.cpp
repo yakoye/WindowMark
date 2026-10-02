@@ -459,10 +459,12 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         RefreshOne(event.windowId);
         break;
     case WindowEventKind::ActiveChanged:
+        // 任务栏、托盘、开始菜单、还有 WindowMark 自己的面板和设置窗口拿到前台时都会走到
+        // 这里（实测点托盘图标报的就是 Shell_TrayWnd）。前台确实变了，但「用户在用的那个
+        // 窗口」没变——跟着改的话，这些时候没有任何窗口匹配得上活动，屏幕上一个活动边框
+        // 都没有，书签条也一起消失。所以不认，连重画都省了。
+        if (!windows_.contains(event.windowId)) break;
         activeWindow_ = event.windowId;
-        // 任务栏、输入法候选框这类不在跟踪列表里的窗口也会走到这里（实测点托盘图标就是），
-        // 所以「最后一个被跟踪的活动窗口」只在确实跟踪得到时才跟着走。
-        if (windows_.contains(event.windowId)) lastTrackedActive_ = event.windowId;
         // 边框先画，理由同 RefreshAll 里那处。
         ApplyBorders();
         ApplyModels();
@@ -535,6 +537,9 @@ void Coordinator::WatchdogTick() {
 
 void Coordinator::RefreshAll() {
     auto snapshot = windowsBackend_.EnumerateWindows();
+    // 整份重取时前台可能正落在任务栏或我们自己的窗口上，那时快照里没有任何一个窗口是
+    // active。那不代表用户换了窗口，所以先记下来，下面谁都没认领的话还给它。
+    const WindowId previousActive = activeWindow_;
     windows_.clear();
     activeWindow_ = 0;
 
@@ -547,13 +552,15 @@ void Coordinator::RefreshAll() {
         }
         if (window.active) {
             activeWindow_ = window.id;
-            lastTrackedActive_ = window.id;   // 枚举出来的都是跟踪得到的
         }
         // Once, here, rather than every time a label is built: titles change far less
         // often than models are rebuilt.
         window.title = SanitizeTitle(window.title);
         windows_.emplace(window.id, std::move(window));
     }
+
+    // 快照里没人是活动的（前台在任务栏 / 托盘 / 我们自己的窗口上），上一个还在就还给它。
+    if (activeWindow_ == 0 && windows_.contains(previousActive)) activeWindow_ = previousActive;
 
     PruneTransientState();
     ApplyPins();

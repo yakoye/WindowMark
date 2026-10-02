@@ -42,18 +42,16 @@ public:
     // Whether this window is one of the ones being tracked at all. Pinning refuses windows
     // that are not, so this is the first thing to check when a pin appears to do nothing.
     [[nodiscard]] bool IsTracked(WindowId id) const { return windows_.contains(id); }
-    // 用户上一次真正在用的那个**我们管得着的**窗口。
+    // 用户最后在用的那个窗口——**只认跟踪得到的窗口**。
     //
-    // 不能用 activeWindow_：实测点托盘图标那一刻，EVENT_SYSTEM_FOREGROUND 报的是任务栏
-    // （Shell_TrayWnd），activeWindow_ 就变成了它——任务栏不在跟踪列表里，但活动窗口这条
-    // 路照样会被它改写。所以单独记一份「最后一个被跟踪的活动窗口」，只有活动窗口确实在
-    // 跟踪列表里时才更新。
+    // 不是 GetForegroundWindow，也不是「最后一条前台事件」：点任务栏、点托盘图标、打开
+    // WindowMark 自己的面板或设置窗口，前台确实都变了，但用户在用的那个窗口没变。照着前台
+    // 走的话，这些时候没有任何一个窗口匹配得上「活动」，屏幕上一个活动边框都没有，书签条
+    // 也跟着消失（drawer.active_window_only）——用户 2026-10-02 报的正是这个。
     //
-    // 托盘左键「置顶当前窗口」就靠这个：菜单项做不到这件事（菜单弹出时前台已经是我们自己，
-    // 这也是准星当初存在的理由），而这份记录不受那一下影响。
-    [[nodiscard]] WindowId LastTrackedActiveWindow() const noexcept {
-        return lastTrackedActive_;
-    }
+    // 面板上的「置顶刚才那个窗口」也是靠它：菜单项做不到这件事（菜单弹出时前台已经是我们
+    // 自己，这正是准星当初存在的理由）。
+    [[nodiscard]] WindowId ActiveWindow() const noexcept { return activeWindow_; }
     // 置顶预览：画得和真的置顶一模一样（同色同宽），因为要回答的正是「松手之后长什么样」。
     // 传 0 清掉。
     void SetPinPreview(WindowId id);
@@ -155,9 +153,8 @@ private:
     // 上一次看门狗对账时发现对不上的窗口。两次都在里面才算真漏了。
     std::unordered_set<WindowId> watchdogSuspects_;
     unsigned watchdogRecoveries_{0};
+    // 见 ActiveWindow：只在确实跟踪得到的窗口上更新。
     WindowId activeWindow_{0};
-    // 见 LastTrackedActiveWindow：activeWindow_ 会被任务栏这类不在跟踪列表里的窗口改写。
-    WindowId lastTrackedActive_{0};
     WindowId pinPreview_{0};
     bool started_{false};
 };
