@@ -19,4 +19,10 @@ namespace windowmark::win {
 // 弹出收款码窗口。模态，owner 可以是 nullptr。
 void ShowDonateWindow(HWND owner);
 
+// 关于框脚注左边那颗红心。调用方负责 DestroyIcon。
+//
+// 为什么要自己画：脚注那行是 SysLink，它只认「非链接=系统文字色、链接=系统链接色」两档，
+// 没法把一个字单独染红。把心放进图标那一格，文字整条做成链接，就同时得到红心和蓝字。
+[[nodiscard]] HICON CreateHeartIcon(int size);
+
 } // namespace windowmark::win
