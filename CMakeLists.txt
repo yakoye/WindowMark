@@ -106,6 +106,20 @@ if(WIN32)
            WINDOWMARK_VERSION_PARTS "${WINDOWMARK_VERSION_STRING}")
     set(WINDOWMARK_VERSION_COMMA "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},0")
 
+    # 收款码：放了就编进 exe，没放就当没这回事（关于框里那行脚注也不出现）。
+    # 不用外挂图片，因为发出去的那份是单独一个 exe 的绿色版。
+    set(WINDOWMARK_DONATE_RC "")
+    foreach(donate_pair "100;donate.png" "101;donate-wechat.png" "102;donate-alipay.png")
+        list(GET donate_pair 0 donate_id)
+        list(GET donate_pair 1 donate_file)
+        set(donate_path "${CMAKE_CURRENT_SOURCE_DIR}/res/${donate_file}")
+        if(EXISTS "${donate_path}")
+            string(APPEND WINDOWMARK_DONATE_RC
+                   "${donate_id} RCDATA \"${donate_path}\"\n")
+            message(STATUS "收款码已编入: ${donate_file}")
+        endif()
+    endforeach()
+
     configure_file(res/WindowMark.rc.in "${CMAKE_CURRENT_BINARY_DIR}/WindowMark.rc" @ONLY)
     set(WINDOWMARK_RC "${CMAKE_CURRENT_BINARY_DIR}/WindowMark.rc")
 
@@ -124,6 +138,7 @@ if(WIN32)
         src/platform/windows/WinPreviewTitle.cpp
         src/platform/windows/WinControlWindow.cpp
         src/platform/windows/WinHomePanel.cpp
+        src/platform/windows/WinDonate.cpp
         src/platform/windows/WinConfigPathDialog.cpp
         src/platform/windows/WinRenameDialog.cpp
         src/platform/windows/WinSelectionDialog.cpp
@@ -171,6 +186,7 @@ if(WIN32)
         wtsapi32
         oleaut32
         shlwapi
+        windowscodecs
     )
 
     target_include_directories(WindowMark PRIVATE
