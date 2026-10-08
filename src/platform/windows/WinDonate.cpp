@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -137,6 +138,33 @@ constexpr UINT kDecodeLongSide = 600;
     if (stream) stream->Release();
     factory->Release();
     return out;
+}
+
+// 画一颗心：两个圆加一个尖。先按 4 倍大小画成「白底黑字」那样的覆盖图，再 4x4 取平均当
+// alpha——GDI 的填充没有抗锯齿，16px 直接画出来是锯齿块，降采样这一步就是在补抗锯齿。
+void FillHeart(HDC dc, int side) {
+    const int w = side;
+    const int h = side;
+    HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+
+    // 两个圆：左右各一个，圆心在上三分之一处。
+    const int r = w * 28 / 100;
+    const int cy = h * 34 / 100;
+    Ellipse(dc, w / 2 - 2 * r, cy - r, w / 2, cy + r);
+    Ellipse(dc, w / 2, cy - r, w / 2 + 2 * r, cy + r);
+    // 下面的尖：从两圆外侧收到底部中点。
+    const POINT tip[] = {
+        {w / 2 - 2 * r, cy},
+        {w / 2 + 2 * r, cy},
+        {w / 2, h * 94 / 100},
+    };
+    Polygon(dc, tip, static_cast<int>(std::size(tip)));
+
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
 }
 
 class Donate {
@@ -272,7 +300,7 @@ private:
                        std::max<int>(static_cast<int>(work.top),
                                      static_cast<int>(work.bottom) - outerH));
 
-        if (!CreateWindowExW(WS_EX_DLGMODALFRAME, kDonateClass, L"请我喝杯咖啡",
+        if (!CreateWindowExW(WS_EX_DLGMODALFRAME, kDonateClass, L"赞赏作者",
                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, x, y, outerW, outerH,
                              nullptr, nullptr, GetModuleHandleW(nullptr), this)) {
             return false;
@@ -297,7 +325,7 @@ private:
 
         HGDIOBJ old = SelectObject(dc, titleFont_ ? titleFont_ : font_);
         RECT line{Scale(kPad), Scale(kPad), client.right - Scale(kPad), Scale(kPad + kTitle)};
-        DrawTextW(dc, L"WindowMark 是免费的。觉得顺手的话，请我喝杯咖啡 ☕", -1, &line,
+        DrawTextW(dc, L"WindowMark 是免费的。觉得不错的话，赞赏一下作者 ☕", -1, &line,
                   DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         SelectObject(dc, font_);
 
@@ -368,6 +396,80 @@ bool HasDonateCodes() {
 void ShowDonateWindow(HWND owner) {
     Donate donate;
     donate.Run(owner);
+}
+
+HICON CreateHeartIcon(int size) {
+    if (size <= 0) return nullptr;
+    constexpr int kSuper = 4;             // 超采样倍数
+    const int big = size * kSuper;
+
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+    if (!dc) return nullptr;
+
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = big;
+    bi.bmiHeader.biHeight = -big;          // 自上而下
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bigBits = nullptr;
+    HBITMAP bigBmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bigBits, nullptr, 0);
+    if (!bigBmp) {
+        DeleteDC(dc);
+        return nullptr;
+    }
+    HGDIOBJ oldBmp = SelectObject(dc, bigBmp);
+    std::memset(bigBits, 0, static_cast<size_t>(big) * big * 4);   // 黑底
+    FillHeart(dc, big);
+    GdiFlush();
+
+    // 降采样：白的地方就是心，取平均当 alpha；颜色固定成红。
+    bi.bmiHeader.biWidth = size;
+    bi.bmiHeader.biHeight = -size;
+    void* smallBits = nullptr;
+    HBITMAP colour = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &smallBits, nullptr, 0);
+    if (!colour) {
+        SelectObject(dc, oldBmp);
+        DeleteObject(bigBmp);
+        DeleteDC(dc);
+        return nullptr;
+    }
+    const auto* src = static_cast<const unsigned char*>(bigBits);
+    auto* dst = static_cast<unsigned*>(smallBits);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            unsigned sum = 0;
+            for (int sy = 0; sy < kSuper; ++sy) {
+                for (int sx = 0; sx < kSuper; ++sx) {
+                    const size_t o =
+                        (static_cast<size_t>(y * kSuper + sy) * big + (x * kSuper + sx)) * 4;
+                    sum += src[o];   // 蓝通道就够：画的是纯白
+                }
+            }
+            const unsigned alpha = sum / (kSuper * kSuper);
+            // 图标用的是直通 alpha（非预乘）。颜色挑得比正红深一点，小尺寸下更稳。
+            dst[static_cast<size_t>(y) * size + x] =
+                (alpha << 24) | (0xD4u << 16) | (0x27u << 8) | 0x3Du;
+        }
+    }
+
+    SelectObject(dc, oldBmp);
+    DeleteObject(bigBmp);
+    DeleteDC(dc);
+
+    // 32 位图标也必须带掩码位图，哪怕内容被 alpha 完全覆盖。
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    ICONINFO info{};
+    info.fIcon = TRUE;
+    info.hbmColor = colour;
+    info.hbmMask = mask;
+    HICON icon = CreateIconIndirect(&info);
+    DeleteObject(colour);
+    DeleteObject(mask);
+    return icon;
 }
 
 } // namespace windowmark::win

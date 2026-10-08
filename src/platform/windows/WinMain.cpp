@@ -795,11 +795,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
         // 赞赏入口。放在脚注里而不是正文：一行小字，不打断关于框本来要说的事。
         // 收款码没编进 exe（res\donate-*.png 不在）时整行不出现。
+        // 心要红、字要蓝。SysLink 只有「非链接=文字色、链接=链接色」两档，没法把一个字
+        // 单独染红，所以心走图标那一格（自己画的红心），文字整条做成链接。
         const bool hasDonate = windowmark::win::HasDonateCodes();
+        HICON heart = nullptr;
         if (hasDonate) {
+            heart = windowmark::win::CreateHeartIcon(GetSystemMetrics(SM_CXSMICON));
             config.dwFlags |= TDF_ENABLE_HYPERLINKS;
-            config.pszFooterIcon = TD_INFORMATION_ICON;
-            config.pszFooter = L"这东西是免费的。顺手的话 <a href=\"donate\">请我喝杯咖啡</a> ☕";
+            if (heart) {
+                config.dwFlags |= TDF_USE_HICON_FOOTER;
+                config.hFooterIcon = heart;
+            }
+            config.pszFooter = L"<a href=\"donate\">觉得不错？赞赏一下作者~</a>";
         }
         config.dwCommonButtons = TDCBF_OK_BUTTON;
         config.pszWindowTitle = L"关于 WindowMark";
@@ -841,6 +848,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         aboutDialog = nullptr;
         dialogOpen = false;
         if (icon) DestroyIcon(icon);
+        if (heart) DestroyIcon(heart);
     };
     handlers.onExit = []() { PostQuitMessage(0); };
 
