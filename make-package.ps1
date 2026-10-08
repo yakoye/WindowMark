@@ -152,6 +152,17 @@ if (Test-Path $installed) {
         Write-Host '  注意：包里的 WindowMark.exe 和这台机器上已安装的不是同一个文件' -ForegroundColor Yellow
     }
 }
+# 单文件绿色版：文件名里带 Portable，程序据此把设置写在 exe 旁边，所以这一个文件
+# 自己就是完整的绿色版——双击就用，删掉就干净。zip 照常给，里面是带 tools\ 的完整包。
+$singleName = if ($Release) { "WindowMark-v$version-portable.exe" }
+              else { "WindowMarkPortable-$when-$commit.exe" }
+$single = Join-Path $outDir $singleName
+Copy-Item (Join-Path $build 'WindowMark.exe') $single -Force
+Write-Host ''
+Write-Host '单文件绿色版：'
+Write-Host "  $single"
+Write-Host ("  {0:N0} 字节，双击即用（设置写在它旁边，删掉它就干净）" -f (Get-Item $single).Length)
+Write-Host ''
 Write-Host '  用法：解压后双击 WindowMark.exe 就能用（绿色版，设置存在 exe 旁边）；'
 Write-Host '        想装进系统：托盘菜单「安装到系统...」，或 WindowMark.exe --install'
 exit 0

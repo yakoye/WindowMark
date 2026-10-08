@@ -191,6 +191,9 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
         // 桌面当了前台（用户点了一下桌面空白处）时这条规则不适用：它铺满整个
         // 虚拟桌面却永远在 z 序最底，谁都不挡。拿它的矩形去裁就是一次裁光所有边框。
         if (entry.desktop) break;
+        // 置顶窗口也不当矩形遮挡物，理由同下面 occluders 那一处：它在画布上面，
+        // 系统合成会按它实际画出来的像素盖住边框，不需要也不应该再按矩形裁一遍。
+        if (entry.topmost) break;
         foregroundRect = AsOccluder(entry.frame);
         hasForeground = true;
         break;
@@ -280,21 +283,26 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
                     }
                     std::vector<Rect> visible;
                     if (entry.hwnd == snapshot.foreground) {
-                        // 前台窗口：只有 topmost 窗口、用户点名「视为置顶」的窗口，
-                        // 以及它**自己的** owned 对话框能盖住它。普通窗口排在它前面是
-                        // 不可能的——它是前台，这是定义。
+                        // 前台窗口：只有用户点名「视为置顶」的窗口，以及它**自己的**
+                        // owned 对话框能盖住它。普通窗口排在它前面是不可能的——它是
+                        // 前台，这是定义。
                         //
                         // 不能照 occluders 来算：快照里的 z 序可能还没跟上（Windows
                         // 先发 FOREGROUND 事件、再调整 z 序），那样会把前台自己的边框
                         // 裁掉一块。实测 MobaXterm 激活后，它和 Terminal 交界处的那段
                         // 激活边框整条消失，就是这么来的。
+                        //
+                        // 真·置顶窗口（WS_EX_TOPMOST）不在这个名单里，理由同下面
+                        // occluders 那一处：它在边框画布上面，系统合成会按它实际画出的
+                        // 像素盖住边框。输入法候选框就是这种窗口，而「在前台窗口里打字」
+                        // 恰恰走的是这一条——用户 2026-10-08 报的右下角边框消失即此。
                         std::vector<Rect> fgOccluders;
                         for (const auto& other : snapshot.windows) {
                             if (other.hwnd == entry.hwnd) break;   // 只看排在它前面的
                             if (other.cloaked || other.minimized) continue;
                             if (other.passThrough) continue;
-                            if (other.topmost || other.treatAsTopmost ||
-                                other.owner == entry.hwnd) {
+                            if (other.topmost) continue;
+                            if (other.treatAsTopmost || other.owner == entry.hwnd) {
                                 fgOccluders.push_back(AsOccluder(other.frame));
                             }
                         }
@@ -317,10 +325,26 @@ std::vector<BorderStroke> PlanBorders(const DesktopSnapshot& snapshot,
 
         // 不管这个窗口有没有边框，它都会挡住排在它下面的窗口。
         //
-        // 鼠标能穿过去的例外。WGestures 那种铺满全屏、置顶、完全透明的窗口，当成遮挡物
-        // 就是一次裁光屏幕上所有边框（v0.4.8 每个窗口一个边框窗口、遮挡交给系统合成，
-        // 所以没这个问题；v0.4.9 起遮挡由这里用矩形算，才冒出来）。
-        if (paintable && !entry.passThrough) occluders.push_back(AsOccluder(entry.frame));
+        // 两个例外，道理是同一个：**矩形不等于画出来的像素**。
+        //
+        // 一、鼠标能穿过去的窗口。WGestures 那种铺满全屏、置顶、完全透明的窗口，当成
+        //     遮挡物就是一次裁光屏幕上所有边框（v0.4.8 每个窗口一个边框窗口、遮挡交给
+        //     系统合成，所以没这个问题；v0.4.9 起遮挡由这里用矩形算，才冒出来）。
+        //
+        // 二、置顶窗口。边框画布挂在置顶层的**末尾**，别人家的置顶窗口统统在它上面，
+        //     系统合成本来就会按那个窗口实际画出的像素盖住边框——该挡的一个不少，没画
+        //     的地方一个不多。这里再按矩形裁一遍，等于把它没画的地方也抹掉。
+        //
+        //     输入法候选框正是这种窗口（PiInputTsfCandidateWindow：TOPMOST | TOOLWINDOW
+        //     | NOACTIVATE，矩形不小而真正画出来的只有一条）。实测：压一个 alpha=20、
+        //     几乎看不见的置顶窗上去，那一段边框从 22/22 掉到 0/22——不是被盖住，是被
+        //     裁掉了。用户 2026-10-08 报的「打字候选框的时候右下角的边框没了」就是它。
+        //
+        //     treat_as_topmost_classes 里点名的窗口**不在**这条例外里：那些是用户手动
+        //     标出来的普通窗口，它们真的在画布下面，仍然要按矩形裁。
+        if (paintable && !entry.passThrough && !entry.topmost) {
+            occluders.push_back(AsOccluder(entry.frame));
+        }
     }
     return strokes;
 }

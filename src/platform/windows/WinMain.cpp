@@ -172,9 +172,41 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             windowmark::win::PurgeAllUserData();
             return 0;
         }
-        NotifyExistingInstance(windowmark::app::kSecondInstanceMessage);
-        LogAutoStartPhase(autoStartLaunch, L"already_running");
-        return 0;
+
+        // 双击的是**另一个文件**（刚拿到的新版、解压出来的绿色版），而不是正在运行的那
+        // 份：问一句要不要换过来。没有这一下，拿到新 exe 双击只会弹「已在运行」然后退出，
+        // 新版根本用不上——「每次给我一个 exe，双击就能用」要成立就得有这一步。
+        //
+        // 同一个文件再双击一次不问：点两下快捷方式、开机自启之后又手动点一次，都是常事，
+        // 那种情况照旧安静交接。开机自启动那次也不问。
+        bool takeOver = false;
+        if (!autoStartLaunch) {
+            const auto self = windowmark::setup::SelfPath();
+            const auto running = windowmark::setup::FindRunningInstances();
+            if (!running.empty() && !self.empty() && !running.front().imagePath.empty()) {
+                std::error_code sameEc;
+                const bool sameFile =
+                    std::filesystem::equivalent(self, running.front().imagePath, sameEc);
+                if (!sameFile && !sameEc) {
+                    const std::wstring text =
+                        L"WindowMark 已经在运行，但跑的是另一个文件：\n\n" +
+                        running.front().imagePath.wstring() +
+                        L"\n\n要换成你刚双击的这一份吗？\n\n" + self.wstring();
+                    takeOver = MessageBoxW(nullptr, text.c_str(), L"WindowMark",
+                                           MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) ==
+                               IDYES;
+                }
+            }
+        }
+        if (takeOver) {
+            // 停掉那一份，然后正常往下启动。互斥体的句柄我们已经拿着了，它退出之后名字
+            // 仍然被我们占着，再来第三份照样会被挡住。
+            windowmark::setup::StopRunningInstances(4000);
+        } else {
+            NotifyExistingInstance(windowmark::app::kSecondInstanceMessage);
+            LogAutoStartPhase(autoStartLaunch, L"already_running");
+            return 0;
+        }
     }
 
     if (purgeRequested) {
