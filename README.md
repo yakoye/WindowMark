@@ -1,11 +1,11 @@
-# WindowMark v0.5.5
+# WindowMark v0.6.0
 
 WindowMark is a lightweight Windows utility for **multi-window bookmarks, per-window
 borders, temporary always-on-top pinning, and modifier-key window dragging**.
 
 If three independent VS Code windows are open, all three windows receive the same three bookmarks. Clicking any bookmark immediately activates the corresponding VS Code window. Chrome, Explorer, SiYuan, terminals, and other ordinary top-level applications use the same mechanism without app-specific plugins.
 
-## v0.5.5 at a glance
+## v0.6.0 at a glance
 
 Four window tools in one ordinary user process, plus a separate clipboard guard that ships
 alongside it:
@@ -26,6 +26,12 @@ alongside it:
   screenshot in ToDesk and other remote sessions. Installed together, started from the tray
   menu, deliberately **not** launched at logon. See 「剪贴板守护」 below for why.
 
+v0.6.0 给了它一个**主面板**：左键单击托盘图标打开，四个功能各是什么、怎么用、现在开着没开
+都摊在一个窗口里，所有设置的入口也在上面——托盘菜单对会用的人够快，对第一次见它的人不行。
+同一版还加了**看门狗**：事件流断了（钩子被系统摘掉、explorer 重启、会话切换）自己发现、自己
+恢复，不用再重启程序；修了三个边框真问题——点任务栏之后所有窗口都变成非活动色、边框画布沉
+到普通窗口下面导致大片边框消失、输入法候选框弹出来把那一块边框裁掉。另外每次发布多给一个
+**单文件绿色版** exe：不用解压、不用配套文件，双击就用。
 v0.5.5 把发布包收成**一个 exe**：解压后顶层只有 `WindowMark.exe`，双击就能用——设置写在它
 旁边（绿色版），整个文件夹拷到哪儿设置都跟着走，删掉文件夹就卸干净；附属工具都在 `tools\` 里，
 不用猜该打开哪个。安装和卸载也是这个 exe 自己的两个模式（托盘菜单的「安装到系统...」和
@@ -51,13 +57,13 @@ full history.
 
 ## Quick start
 
-1. Download `WindowMark-v0.5.5-win64.zip` from the
-   [v0.5.5 release](https://github.com/yakoye/WindowMark/releases/tag/v0.5.5).
+1. Download `WindowMark-v0.6.0-win64.zip` from the
+   [v0.6.0 release](https://github.com/yakoye/WindowMark/releases/tag/v0.6.0).
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
    包里顶层只有这一个 exe，不用猜该打开哪个；`tools\` 里是诊断工具和剪贴板守护，由程序
    自己去调。
-   发布页上还有一个 `WindowMark-v0.5.5-portable.exe`：**单独一个文件**的绿色版，不用解压、
+   发布页上还有一个 `WindowMark-v0.6.0-portable.exe`：**单独一个文件**的绿色版，不用解压、
    不用配套文件，双击就用，删掉就干净（文件名里带 `Portable`，程序据此把设置写在它旁边）。
    想要诊断工具和剪贴板守护就下 zip 那个。
 4. 第一次启动会问一次要不要设好**开机自动启动**和**桌面图标**，选完就不再问；以后在托盘右键
@@ -85,7 +91,7 @@ full history.
 「设置 - 应用」里的卸载入口也在。
 
 The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.5.5.
+scaffold and does not provide a working macOS application in v0.6.0.
 
 ## 双击没反应 / 看不到边框
 
@@ -854,8 +860,8 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.5.5** is the current release. 它发的是**一个 exe**：解压双击即用，安装和卸载是它自己的
-两个模式，附属工具在 `tools\` 里。The line includes window bookmarks with a magnetic dock
+**v0.6.0** is the current release. 它发的是**一个 exe**：解压双击即用，安装和卸载是它自己的
+两个模式，附属工具在 `tools\` 里；托盘左键打开主面板，边框和事件流出问题会自己恢复。The line includes window bookmarks with a magnetic dock
 and a bookmark → title → thumbnail preview stack, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
 modifier-key window dragging, the `tools\WindowMarkDiag.exe` diagnostic report,
@@ -867,7 +873,7 @@ clipboard guard, and an MIT LICENSE file.
 
 The earlier public repository release is tag `2.0`, corresponding to application version
 v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.5.5 remains auditable.
+v0.6.0 remains auditable.
 
 Fixes go to `v0.4.x`; larger new features go to the next minor line. See
 [VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
