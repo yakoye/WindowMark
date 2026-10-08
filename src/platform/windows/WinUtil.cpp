@@ -213,8 +213,16 @@ ConfigLocation CurrentConfigLocation() {
         !inputs.portable.empty() && std::filesystem::exists(inputs.portable, ec);
     // 绿色版标记：解压即用的包里带着 portable.on，第一次保存时设置就落在 exe 旁边。
     // 目录写不进去（解压到 Program Files 之类）就不算，照常回落到默认位置。
+    // 两种方式声明「我要便携」：
+    //   · exe 旁边放一个 portable.on（发布包里就带着）；
+    //   · 或者 exe 的文件名里带 Portable——这样**单独一个 exe 文件**就是完整的绿色版，
+    //     不用再配一个标记文件。每次发出去试的那个单文件就靠这条。
     const auto marker = PortableMarkerPath();
-    inputs.portableRequested = !marker.empty() && std::filesystem::exists(marker, ec) &&
+    const bool markerPresent = !marker.empty() && std::filesystem::exists(marker, ec);
+    std::wstring stem = InstalledExePath().stem().wstring();
+    for (wchar_t& ch : stem) ch = static_cast<wchar_t>(std::towlower(ch));
+    const bool namedPortable = stem.find(L"portable") != std::wstring::npos;
+    inputs.portableRequested = (markerPresent || namedPortable) && !marker.empty() &&
                                IsDirectoryWritable(marker.parent_path());
 
     inputs.configured = ReadConfiguredConfigPath();
