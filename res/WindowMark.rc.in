@@ -11,6 +11,9 @@
 // binary, because that is the one Explorer shows as the program's file icon.
 1 ICON "@WINDOWMARK_ICON@"
 
+// 收款码。整块由 CMake 填：图片不在就是空的，连资源都没有。
+@WINDOWMARK_DONATE_RC@
+
 // The version block is what Explorer's properties page and every installer-inspection tool
 // read. Without it a release binary reports no version at all.
 //

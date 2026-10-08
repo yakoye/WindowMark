@@ -4,6 +4,7 @@
 #include "WinControlWindow.h"
 #include "WinDragBackend.h"
 #include "WinDragSettingsDialog.h"
+#include "WinDonate.h"
 #include "WinHomePanel.h"
 #include "WinOverlayBackend.h"
 #include "PinDiag.h"
@@ -792,6 +793,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         config.hwndParent = control.NativeHandle();
         config.hInstance = GetModuleHandleW(nullptr);
         config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+        // 赞赏入口。放在脚注里而不是正文：一行小字，不打断关于框本来要说的事。
+        // 收款码没编进 exe（res\donate-*.png 不在）时整行不出现。
+        const bool hasDonate = windowmark::win::HasDonateCodes();
+        if (hasDonate) {
+            config.dwFlags |= TDF_ENABLE_HYPERLINKS;
+            config.pszFooterIcon = TD_INFORMATION_ICON;
+            config.pszFooter = L"这东西是免费的。顺手的话 <a href=\"donate\">请我喝杯咖啡</a> ☕";
+        }
         config.dwCommonButtons = TDCBF_OK_BUTTON;
         config.pszWindowTitle = L"关于 WindowMark";
         if (icon) {
@@ -808,7 +817,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         config.pszContent = content.c_str();
         // TDN_CREATED is the only place the dialog's own HWND is handed out, and it is
         // what the duplicate check above needs.
-        config.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR data) -> HRESULT {
+        config.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM lp,
+                               LONG_PTR data) -> HRESULT {
+            if (msg == TDN_HYPERLINK_CLICKED) {
+                // 关于框自己不关，收款码窗口叠在它上面（它是 owner，会被禁用）。
+                windowmark::win::ShowDonateWindow(hwnd);
+                (void)lp;
+                return S_OK;
+            }
             if (msg == TDN_CREATED) {
                 *reinterpret_cast<HWND*>(data) = hwnd;
                 // Same reason as the settings window: a pinned window sits in the topmost
