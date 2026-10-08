@@ -21,8 +21,8 @@ constexpr wchar_t kDonateClass[] = L"WindowMark.Donate";
 constexpr int kPad = 18;
 // 收款码是竖图（上面一截平台标识、中间二维码、下面一行昵称），所以展示框也是竖的：
 // 塞进方框的话宽度白白浪费，二维码本身反而被缩小——缩小到一定程度就扫不出来了。
-constexpr int kCodeW = 260;
-constexpr int kCodeH = 350;
+constexpr int kCodeW = 300;
+constexpr int kCodeH = 405;
 constexpr int kGap = 18;
 constexpr int kCaption = 20;
 constexpr int kTitle = 24;
@@ -300,9 +300,12 @@ private:
                        std::max<int>(static_cast<int>(work.top),
                                      static_cast<int>(work.bottom) - outerH));
 
+        // owner 要传进去：关于框是 TaskDialog 而且被设成了 topmost，不认 owner 的话这个窗口
+        // 就开在它**后面**——实测抓图看到的正是「只露出标题栏和底下一条」。有 owner 的窗口
+        // 永远排在 owner 上面，不用再去碰 topmost。
         if (!CreateWindowExW(WS_EX_DLGMODALFRAME, kDonateClass, L"赞赏作者",
                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, x, y, outerW, outerH,
-                             nullptr, nullptr, GetModuleHandleW(nullptr), this)) {
+                             owner_, nullptr, GetModuleHandleW(nullptr), this)) {
             return false;
         }
         HWND close = CreateWindowExW(
@@ -325,7 +328,7 @@ private:
 
         HGDIOBJ old = SelectObject(dc, titleFont_ ? titleFont_ : font_);
         RECT line{Scale(kPad), Scale(kPad), client.right - Scale(kPad), Scale(kPad + kTitle)};
-        DrawTextW(dc, L"WindowMark 是免费的。觉得不错的话，赞赏一下作者 ☕", -1, &line,
+        DrawTextW(dc, L"WindowMark 是免费的。觉得不错的话，赞赏一下作者", -1, &line,
                   DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         SelectObject(dc, font_);
 
