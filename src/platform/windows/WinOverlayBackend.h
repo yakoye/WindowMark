@@ -60,9 +60,15 @@ private:
 
     std::map<std::pair<int, bool>, Microsoft::WRL::ComPtr<IDWriteTextFormat>> textFormats_;
     std::unordered_map<WindowId, std::unique_ptr<OverlayWindow>> windows_;
+    // 哪个窗口的书签条是这个 HWND。拖拽落在别人的书签条上时要换算成它的宿主窗口。
+    [[nodiscard]] WindowId HostOfStrip(HWND strip) const;
+
     HWND menuHost_{};
     // 菜单命令执行完，把前台还给这个宿主窗口。
     WindowId menuReturnHost_{};
+    // 「加入分组」选中的那个组；0 = 新建一个。菜单项的序号只在当时那份列表里有意义，所以
+    // 在弹菜单那边就解析成组 id 存下来。
+    int menuGroupId_{};
     bool started_{false};
 };
 

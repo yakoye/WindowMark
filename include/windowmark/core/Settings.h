@@ -74,6 +74,17 @@ struct DrawerSettings {
     // window show through the tabs. Applies to every tab equally - the active one is
     // told apart by geometry, not by opacity.
     int transparency{0};
+    // 书签条的切换快捷键用哪组修饰键："修饰键+数字" 跳到当前这一组的第 N 个窗口（1-9，和
+    // 书签条上看到的顺序一致），"修饰键+`" 在最近两个窗口之间来回。多开游戏账号的人手不在
+    // 鼠标上，这是给他们的。
+    //
+    // 写法是用 + 连起来的修饰键，大小写随意：Ctrl、Alt、Shift、Win。例："Ctrl+Alt"。
+    // **留空＝关掉**，而且默认就是空的：RegisterHotKey 是全局先到先得，注册了 Alt+1 就等于
+    // 把它从浏览器、编辑器、所有程序手里抢走。这种代价只能由用户自己点头。
+    //
+    // 为什么是字符串而不是几个选项：组合有十几种，替用户挑四个出来就是替他把选择定死。
+    // 数字键这部分不开放——1-9 对应第 1-9 个是约定俗成，换成别的只会让人记不住。
+    std::string switchHotkey{};
 };
 
 // Corner rounding, modelled on tacky-borders' border_radius:
@@ -254,7 +265,14 @@ struct DragSettings {
     bool enabled{false};
 };
 
+struct ImeGuardSettings {
+    // 独立授权，不随“启用全部窗口工具”开启。
+    bool enabled{false};
+    bool showHints{true};
+};
+
 struct Settings {
+    ImeGuardSettings imeGuard;
     DrawerSettings drawer;
     BorderSettings border;
     DragSettings drag;

@@ -32,8 +32,9 @@ constexpr std::array<const wchar_t*, 5> kLegacyTopLevelFiles{
 
 // 跟着主程序一起装的附属 exe，都放 tools\ 子目录。ClipKeeper 是可选功能（剪贴板守护），
 // Diag/Inspect 是出问题时让用户双击跑一下的诊断工具。
-constexpr std::array<const wchar_t*, 3> kToolExeNames{
+constexpr std::array<const wchar_t*, 5> kToolExeNames{
     L"ClipKeeper.exe", L"WindowMarkDiag.exe", L"WindowMarkInspect.exe",
+    L"WindowMarkXamlContainerTrial.exe", L"WindowMarkXamlContainerTap.dll",
 };
 
 constexpr wchar_t kToolsDirName[] = L"tools";

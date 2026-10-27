@@ -19,7 +19,15 @@ namespace windowmark::win {
 // 弹出收款码窗口。模态，owner 可以是 nullptr。
 void ShowDonateWindow(HWND owner);
 
-// 关于框脚注左边那颗红心。调用方负责 DestroyIcon。
+// 把「♥ 觉得不错？赞赏一下作者~」挂到一个 TaskDialog 的**按钮行**上（「确定」左边），
+// 并接好点击。在 TDN_DIALOG_CONSTRUCTED 里调用。
+//
+// 为什么要自己挂控件：TaskDialog 只有正文、按钮行、脚注三块，而脚注永远在按钮行**下面**、
+// 单独占一条带子。要的位置它没有，就自己往上面放一个图标和一个链接，再 subclass 对话框
+// 把点击接回来。heart 的所有权仍在调用方，这里只是引用它。
+void AttachDonateLink(HWND taskDialog, HICON heart);
+
+// 关于框那颗红心。调用方负责 DestroyIcon。
 //
 // 为什么要自己画：脚注那行是 SysLink，它只认「非链接=系统文字色、链接=系统链接色」两档，
 // 没法把一个字单独染红。把心放进图标那一格，文字整条做成链接，就同时得到红心和蓝字。

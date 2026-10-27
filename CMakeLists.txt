@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(WindowMark VERSION 0.6.0 LANGUAGES CXX)
+project(WindowMark VERSION 0.6.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -89,10 +89,16 @@ if(WIN32)
     # is the string the About box and the tray menu show. Read it here rather than repeat
     # it, and fail loudly if project(VERSION) has drifted from it - a release binary whose
     # properties page disagrees with its own About box is worse than one with no version.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/shared/AppIdentity.h")
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/shared/AppIdentity.h" WINDOWMARK_APPIDENTITY)
     string(REGEX MATCH "kProductVersion\\[\\][ \t]*=[ \t]*L\"([^\"]+)\""
            WINDOWMARK_VERSION_MATCH "${WINDOWMARK_APPIDENTITY}")
     set(WINDOWMARK_VERSION_STRING "${CMAKE_MATCH_1}")
+    set(WINDOWMARK_VERSION_FLAGS "0x0L")
+    if(WINDOWMARK_VERSION_STRING MATCHES "-")
+        set(WINDOWMARK_VERSION_FLAGS "0x2L")
+    endif()
     if(NOT WINDOWMARK_VERSION_STRING)
         message(FATAL_ERROR "读不出 src/shared/AppIdentity.h 里的 kProductVersion")
     endif()
@@ -124,6 +130,8 @@ if(WIN32)
     set(WINDOWMARK_RC "${CMAKE_CURRENT_BINARY_DIR}/WindowMark.rc")
 
     add_executable(WindowMark WIN32
+        src/platform/windows/WinImeTrayGuard.cpp
+        tools/ime-tray-guard/ImeGuardClient.cpp
         src/platform/windows/WinMain.cpp
         src/platform/windows/WinBorderBackend.cpp
         src/platform/windows/WinDesktopSnapshot.cpp
@@ -154,6 +162,7 @@ if(WIN32)
     add_dependencies(WindowMark windowmark_stamp)
 
     target_include_directories(WindowMark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/ime-tray-guard
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows
         ${CMAKE_CURRENT_SOURCE_DIR}/src/installer
         ${WINDOWMARK_STAMP_DIR}
@@ -192,6 +201,26 @@ if(WIN32)
     target_include_directories(WindowMark PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/shared
     )
+
+    # 原生占位组件随主程序构建，不包含独立预览界面。
+    add_executable(WindowMarkXamlContainerTrial tools/ime-tray-guard/XamlContainerTrial.cpp)
+    add_library(WindowMarkXamlContainerTap SHARED
+        tools/ime-tray-guard/XamlContainerTap.cpp tools/ime-tray-guard/XamlContainerTap.def)
+    foreach(target IN ITEMS WindowMarkXamlContainerTrial WindowMarkXamlContainerTap)
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(${target} PRIVATE windowsapp user32 ole32 oleaut32 uuid advapi32)
+        if(MSVC)
+            target_compile_options(${target} PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
+            target_link_options(${target} PRIVATE "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/tools/ime-tray-guard/lab.manifest")
+        endif()
+    endforeach()
+    add_dependencies(WindowMark WindowMarkXamlContainerTrial WindowMarkXamlContainerTap)
+    add_custom_command(TARGET WindowMark POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:WindowMark>/tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:WindowMarkXamlContainerTrial>" "$<TARGET_FILE:WindowMarkXamlContainerTap>"
+            "$<TARGET_FILE_DIR:WindowMark>/tools")
 
     # Diagnostic tool. Console subsystem so its report is just stdout, and like the
     # installers it does not link windowmark_core - it inspects the running app from the

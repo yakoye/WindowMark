@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <utility>
 #include <cmath>
 #include <cstdint>
@@ -164,6 +165,12 @@ constexpr float kPrimaryHysteresis = 0.02F;
 constexpr float kMaxFrameMs = 34.0F;
 constexpr UINT kRenameCommand = 4001;
 constexpr UINT kSettingsCommand = 4002;
+// 手动分组。4010 是「新建一个组」，4011 起按菜单里列出的顺序一组一个。
+constexpr UINT kLeaveGroupCommand = 4003;
+constexpr UINT kDisbandGroupCommand = 4004;
+constexpr UINT kNewGroupCommand = 4010;
+constexpr UINT kJoinGroupBase = 4011;
+constexpr UINT kJoinGroupLimit = 32;
 
 HWND HwndFromId(WindowId id) {
     return reinterpret_cast<HWND>(static_cast<std::uintptr_t>(id));
@@ -172,6 +179,9 @@ HWND HwndFromId(WindowId id) {
 constexpr wchar_t kMenuHostClass[] = L"WindowMark.BookmarkMenuHost";
 // 菜单选中的命令，投递给菜单主人窗口执行。wParam = 命令，lParam = 书签指向的窗口。
 constexpr UINT kRunMenuCommand = WM_APP + 41;
+// 书签拖到别的窗口上松手，同样投递出去执行。wParam = 被拖的窗口，lParam = 落点窗口。
+// 理由和菜单那条一样：分组会重建书签条，也就是可能把**正在处理这条消息的这个窗口**销毁掉。
+constexpr UINT kRunDropCommand = WM_APP + 42;
 
 // 右键菜单为了能用，临时把前台拿到了本进程；用完还给宿主。只在前台仍是本进程的窗口（或者
 // 没有前台）时才还——这期间用户已经点去了别的程序，就不去抢。
@@ -535,6 +545,9 @@ private:
     // 鼠标在栏上（含离开后的宽限），或者磁场还没退干净。
     [[nodiscard]] bool Engaged() const { return hovering_ || strength_ > 0.0F; }
 
+    // 拖拽落在某条书签条上时，要把那个 HWND 换算回它的宿主窗口。
+    [[nodiscard]] HWND Handle() const noexcept { return hwnd_; }
+
 public:
     // 宿主只是挪了个位置：书签条的尺寸、base 排布都不变，重新摆一次窗口就够。拖动时每个
     // 位置事件都会走到这里（约 120 次每秒），所以这里只有几次整数运算和一次 SetWindowPos，
@@ -672,10 +685,28 @@ private:
         case WM_MOUSELEAVE:
             OnMouseLeave();
             return 0;
-        case WM_LBUTTONUP:
-            OnClick(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        case WM_LBUTTONDOWN:
+            OnPress(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
             return 0;
+        case WM_LBUTTONUP:
+            OnRelease();
+            return 0;
+        case WM_CAPTURECHANGED:
+            // 捕获被别人拿走了（切了前台、系统插进来）：当作取消，别留着半截拖拽状态。
+            CancelDrag();
+            return 0;
+        case WM_RBUTTONDOWN:
+            // 拖到一半改主意：右键取消，和准星那边一样。
+            if (pressed_ || dragging_) {
+                CancelDrag();
+                return 0;
+            }
+            break;
         case WM_RBUTTONUP:
+            if (pressed_ || dragging_) {
+                CancelDrag();
+                return 0;
+            }
             OnContextMenu(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
             return 0;
         case WM_SETCURSOR:
@@ -797,6 +828,10 @@ private:
     }
 
     void OnMouseMove(int x, int y) {
+        if (pressed_ || dragging_) {
+            UpdateDrag();
+            return;
+        }
         if (!mouseTracking_) {
             TRACKMOUSEEVENT tme{};
             tme.cbSize = sizeof(tme);
@@ -1036,14 +1071,116 @@ private:
         if (owner_.callbacks_.onPreviewHide) owner_.callbacks_.onPreviewHide();
     }
 
-    void OnClick(int x, int y) {
+    // 按下先记住按在哪个书签上并抓住鼠标，是点击还是拖拽等移动距离说话。拖拽必须抓鼠标，
+    // 不然光标一离开书签条，后面的移动和松开就都收不到了。
+    void OnPress(int x, int y) {
         const int index = HitTest(x, y);
         if (index < 0 || static_cast<std::size_t>(index) >= model_.items.size()) return;
-        HidePreview();
-        const auto& item = model_.items[static_cast<std::size_t>(index)];
-        if (!item.isSelf && owner_.callbacks_.onActivate) {
-            owner_.callbacks_.onActivate(item.targetWindowId);
+        pressed_ = true;
+        dragging_ = false;
+        dropTarget_ = 0;
+        dragWindow_ = model_.items[static_cast<std::size_t>(index)].targetWindowId;
+        GetCursorPos(&pressPoint_);
+        SetCapture(hwnd_);
+    }
+
+    void OnRelease() {
+        const bool wasDragging = dragging_;
+        const bool hadPress = pressed_;
+        const WindowId dragged = dragWindow_;
+        const WindowId target = dropTarget_;
+        const HWND menuHost = owner_.menuHost_;
+        const WindowId hostId = model_.hostWindowId;
+        ReleaseDrag();
+
+        if (wasDragging && target != 0 && target != dragged && target != hostId) {
+            // 和菜单命令同一条路：留到这次消息处理结束之后执行。分组会重建书签条，也就是
+            // 可能把正在处理这条消息的这个窗口销毁掉。
+            if (menuHost) {
+                PostMessageW(menuHost, kRunDropCommand, static_cast<WPARAM>(dragged),
+                             static_cast<LPARAM>(target));
+            }
+            return;
         }
+        // 拖了但没落到有效的窗口上（落在桌面上、落回自己这条书签条上），就当一次普通点击
+        // ——手一抖超过系统的拖拽阈值，不该害得这一下白点。
+        if (!hadPress) return;
+        HidePreview();
+        if (dragged != 0 && dragged != hostId && owner_.callbacks_.onActivate) {
+            owner_.callbacks_.onActivate(dragged);
+        }
+    }
+
+    void UpdateDrag() {
+        if (!pressed_ && !dragging_) return;
+        if (!dragging_) {
+            POINT now{};
+            GetCursorPos(&now);
+            // 系统自己的拖拽阈值：用户对这个手感是有预期的。没到就还只是一次点击。
+            if (std::abs(now.x - pressPoint_.x) < GetSystemMetrics(SM_CXDRAG) &&
+                std::abs(now.y - pressPoint_.y) < GetSystemMetrics(SM_CYDRAG)) {
+                return;
+            }
+            dragging_ = true;
+            // 拖起来之后书签条就定在当前这一帧：磁场继续跟手会让标签在光标底下乱跑，而这
+            // 会儿要看的是落点，不是书签条。
+            KillTimer(hwnd_, kPreviewTimerId);
+            KillTimer(hwnd_, kGraceTimerId);
+            graceRunning_ = false;
+            thumbnailArmed_ = false;
+            HidePreview();
+        }
+        // 抓着鼠标的时候系统不再问光标该长什么样，所以每次移动自己设一遍。
+        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+
+        const WindowId candidate = DropCandidateUnderCursor();
+        if (candidate == dropTarget_) return;
+        dropTarget_ = candidate;
+        if (owner_.callbacks_.onDropHighlight) owner_.callbacks_.onDropHighlight(candidate);
+    }
+
+    // 松手会落在哪个窗口上。落在别人的书签条上算落在它的宿主窗口上——那条书签条就长在那个
+    // 窗口身上，读起来是一回事。
+    [[nodiscard]] WindowId DropCandidateUnderCursor() const {
+        POINT pt{};
+        if (!GetCursorPos(&pt)) return dropTarget_;
+        HWND hit = WindowFromPoint(pt);
+        if (!hit) return 0;
+        HWND root = GetAncestor(hit, GA_ROOT);
+        if (!root) return 0;
+        if (IsBookmarkStrip(root)) {
+            const WindowId host = owner_.HostOfStrip(root);
+            return host == 0 ? dropTarget_ : host;
+        }
+        // 边框画布铺满整块屏幕，只有画着线的那几个像素是实的；正好压在上面时不该把落点
+        // 弄丢，保持上一个就是。
+        if (IsOwnDecoration(root)) return dropTarget_;
+
+        const auto candidate = static_cast<WindowId>(reinterpret_cast<std::uintptr_t>(root));
+        // 不能当落点的东西一律保持上一个，不清空：拖的过程中光标底下随时会冒出不相干的
+        // 窗口（悬浮工具条、刚出来的提示、系统放的全屏遮罩），清掉就等于松手落在空处。
+        // 留住上一个也让高亮是诚实的——框着谁，松手就并到谁身上。
+        if (owner_.callbacks_.canDrop && !owner_.callbacks_.canDrop(candidate)) {
+            return dropTarget_;
+        }
+        return candidate;
+    }
+
+    void ReleaseDrag() {
+        const bool had = pressed_ || dragging_;
+        pressed_ = false;
+        dragging_ = false;
+        dragWindow_ = 0;
+        dropTarget_ = 0;
+        if (GetCapture() == hwnd_) ReleaseCapture();
+        // 高亮先撤掉：接着可能要重建书签条，让它从真实状态重画，而不是两份叠着。
+        if (had && owner_.callbacks_.onDropHighlight) owner_.callbacks_.onDropHighlight(0);
+    }
+
+    void CancelDrag() {
+        if (!pressed_ && !dragging_) return;
+        ReleaseDrag();
+        Frame();
     }
 
     void OnContextMenu(int x, int y) {
@@ -1075,6 +1212,36 @@ private:
             return;
         }
         AppendMenuW(menu, MF_STRING, kRenameCommand, L"重命名...");
+
+        // 手动分组。每次开菜单现取一遍：组是会话内的东西，随时在变。
+        std::vector<ManualGroupInfo> groups;
+        if (owner.callbacks_.manualGroups) groups = owner.callbacks_.manualGroups();
+        if (groups.size() > kJoinGroupLimit) groups.resize(kJoinGroupLimit);
+        const int currentGroup =
+            owner.callbacks_.manualGroupOf ? owner.callbacks_.manualGroupOf(target) : 0;
+
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        HMENU joinMenu = CreatePopupMenu();
+        if (joinMenu) {
+            AppendMenuW(joinMenu, MF_STRING, kNewGroupCommand, L"新建分组");
+            if (!groups.empty()) AppendMenuW(joinMenu, MF_SEPARATOR, 0, nullptr);
+            UINT slot = 0;
+            for (const ManualGroupInfo& group : groups) {
+                // 它已经在的那个组打上勾：点它等于什么都不做，但至少看得见自己在哪儿。
+                const std::wstring label = Utf8ToWide(group.name) + L"（" +
+                                           std::to_wstring(group.count) + L" 个窗口）";
+                AppendMenuW(joinMenu,
+                            MF_STRING | (group.id == currentGroup ? MF_CHECKED : MF_UNCHECKED),
+                            kJoinGroupBase + slot, label.c_str());
+                ++slot;
+            }
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(joinMenu), L"加入分组");
+        }
+        if (currentGroup != 0) {
+            AppendMenuW(menu, MF_STRING, kLeaveGroupCommand, L"移出分组");
+            AppendMenuW(menu, MF_STRING, kDisbandGroupCommand, L"解散这个分组");
+        }
+
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kSettingsCommand, L"设置...");
 
@@ -1097,9 +1264,19 @@ private:
         PostMessageW(menuHost, WM_NULL, 0, 0);
         DestroyMenu(menu);
 
-        if (choice == kRenameCommand || choice == kSettingsCommand) {
-            // 命令留到这次消息处理结束之后再执行：对话框是模态的，不该嵌在书签条自己的消息
-            // 处理里跑——对话框开着的时候这条书签条随时可能被销毁。
+        const bool joinPicked = choice == kNewGroupCommand ||
+                                (choice >= kJoinGroupBase &&
+                                 choice - kJoinGroupBase < groups.size());
+        if (joinPicked) {
+            // 加入哪个组这会儿就定下来：菜单项的序号只在刚才那份列表里有意义。
+            owner.menuGroupId_ =
+                choice == kNewGroupCommand ? 0 : groups[choice - kJoinGroupBase].id;
+        }
+        if (joinPicked || choice == kLeaveGroupCommand || choice == kDisbandGroupCommand ||
+            choice == kRenameCommand || choice == kSettingsCommand) {
+            // 命令留到这次消息处理结束之后再执行，有两个理由，结论一样：对话框是模态的，不该
+            // 嵌在书签条自己的消息处理里跑；分组会让书签条重建，也就是可能把**正在处理这条
+            // 消息的这个窗口**销毁掉。
             owner.menuReturnHost_ = hostId;
             PostMessageW(menuHost, kRunMenuCommand, static_cast<WPARAM>(choice),
                          static_cast<LPARAM>(target));
@@ -1274,6 +1451,12 @@ private:
     std::vector<Layer> layers_;
     bool previewShown_{false};
     bool menuOpen_{false};
+    // 书签拖到别的窗口上＝并成一组。按下先记着，是点击还是拖拽等移动距离说话。
+    bool pressed_{false};
+    bool dragging_{false};
+    POINT pressPoint_{};
+    WindowId dragWindow_{0};
+    WindowId dropTarget_{0};
     bool timerRunning_{false};
     double lastFrameMs_{};
 
@@ -1366,6 +1549,13 @@ IDWriteTextFormat* WinOverlayBackend::FormatFor(int pixelSize, bool centred) {
     return slot->second.Get();
 }
 
+WindowId WinOverlayBackend::HostOfStrip(HWND strip) const {
+    for (const auto& [id, window] : windows_) {
+        if (window && window->Handle() == strip) return id;
+    }
+    return 0;
+}
+
 bool WinOverlayBackend::EnsureWindowClass() {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -1403,6 +1593,13 @@ LRESULT CALLBACK WinOverlayBackend::MenuHostProc(HWND hwnd, UINT msg, WPARAM wPa
         self->RunMenuCommand(static_cast<UINT>(wParam), static_cast<WindowId>(lParam));
         return 0;
     }
+    if (msg == kRunDropCommand && self) {
+        if (self->callbacks_.onDropToGroup) {
+            self->callbacks_.onDropToGroup(static_cast<WindowId>(wParam),
+                                           static_cast<WindowId>(lParam));
+        }
+        return 0;
+    }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -1412,6 +1609,13 @@ void WinOverlayBackend::RunMenuCommand(UINT command, WindowId target) {
         if (callbacks_.onRename) callbacks_.onRename(target);
     } else if (command == kSettingsCommand) {
         if (callbacks_.onOpenSettings) callbacks_.onOpenSettings();
+    } else if (command == kNewGroupCommand || command >= kJoinGroupBase) {
+        // 具体是哪个组，弹菜单的那边已经存进 menuGroupId_ 了；0 = 新建。
+        if (callbacks_.onJoinGroup) callbacks_.onJoinGroup(target, menuGroupId_);
+    } else if (command == kLeaveGroupCommand) {
+        if (callbacks_.onLeaveGroup) callbacks_.onLeaveGroup(target);
+    } else if (command == kDisbandGroupCommand) {
+        if (callbacks_.onDisbandGroup) callbacks_.onDisbandGroup(target);
     }
     // 对话框关掉以后把前台还给宿主：菜单为了能用，把前台临时拿到了本进程。
     ReturnForeground(host);

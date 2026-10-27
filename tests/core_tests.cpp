@@ -5,6 +5,7 @@
 #include "windowmark/core/DragModifiers.h"
 #include "windowmark/core/Coordinator.h"
 #include "windowmark/core/Hotkey.h"
+#include "windowmark/core/ImeGuardPolicy.h"
 #include "windowmark/core/LayoutEngine.h"
 #include "windowmark/core/MagneticDock.h"
 #include "windowmark/core/PreviewStack.h"
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <unordered_map>
@@ -438,6 +440,15 @@ void TestSettingsHotUpdate() {
     CHECK(coordinator.Start());
     CHECK(overlays.settingsUpdates == 0);
     CHECK(coordinator.CurrentSettings().drawer.transparency == 0);
+    const auto beforeIme = overlays.applyCount;
+    coordinator.SetImeGuardEnabled(true);
+    CHECK(coordinator.CurrentSettings().imeGuard.enabled);
+    CHECK(overlays.settingsUpdates == 0);
+    CHECK(previews.settingsUpdates == 0);
+    CHECK(overlays.applyCount == beforeIme);
+    coordinator.SetImeGuardEnabled(false);
+    CHECK(!coordinator.CurrentSettings().imeGuard.enabled);
+    CHECK(overlays.applyCount == beforeIme);
 
     Settings edited = coordinator.CurrentSettings();
     edited.drawer.transparency = 35;
@@ -537,6 +548,48 @@ void TestClipToBounds() {
         CHECK(got.size() == 2);
         CHECK(got[1].bottom == 100);
     }
+}
+
+void TestImeGuardSettings() {
+    using namespace windowmark;
+    CHECK(!Settings{}.imeGuard.enabled);
+    CHECK(Settings{}.imeGuard.showHints);
+    CHECK(ImeGuardPlatformEligible(26300));
+    CHECK(!ImeGuardPlatformEligible(19045));
+    CHECK(!ImeGuardPlatformEligible(21999));
+    CHECK(ImeGuardPlatformEligible(22000));
+    CHECK(ImeGuardPlatformEligible(26100));
+    CHECK(ImeGuardActuallyActive(true, false, 3, 0));
+    CHECK(!ImeGuardActuallyActive(false, false, 3, 0));
+    CHECK(!ImeGuardActuallyActive(true, true, 3, 0));
+    CHECK(!ImeGuardActuallyActive(true, false, 2, 0));
+    CHECK(!ImeGuardActuallyActive(true, false, 3, 1));
+    CHECK(ImeGuardRestored(false, 0, 5, 1, 1, 0));
+    CHECK(!ImeGuardRestored(false, 3, 5, 1, 1, 0));
+    CHECK(!ImeGuardRestored(false, 0, 5, 1, 0, 0));
+    CHECK(!ImeGuardRestored(false, 0, 5, 1, 1, 1));
+    CHECK(!ImeGuardRestored(true, 0, 5, 1, 1, 0));
+    CHECK(!ImeGuardRestored(false, 0, 3, 1, 1, 0));
+    const auto path = std::filesystem::temp_directory_path() / "windowmark-ime-guard-test.conf";
+    Settings value;
+    value.imeGuard.enabled = true;
+    value.imeGuard.showHints = false;
+    CHECK(Settings::Save(path, value));
+    const auto enabled = Settings::LoadOrCreate(path);
+    CHECK(enabled.imeGuard.enabled);
+    CHECK(!enabled.imeGuard.showHints);
+    CHECK(enabled.drawer.enabled == value.drawer.enabled);
+    CHECK(enabled.drag.enabled == value.drag.enabled);
+    value.imeGuard.enabled = false;
+    value.imeGuard.showHints = true;
+    CHECK(Settings::Save(path, value));
+    CHECK(!Settings::LoadOrCreate(path).imeGuard.enabled);
+    CHECK(Settings::LoadOrCreate(path).imeGuard.showHints);
+    { std::ofstream out(path); out << "ime_guard.enabled=garbage\n"; }
+    CHECK(!Settings::LoadOrCreate(path).imeGuard.enabled);
+    { std::ofstream out(path); out << "drawer.enabled=true\n"; }
+    CHECK(!Settings::LoadOrCreate(path).imeGuard.enabled);
+    std::filesystem::remove(path);
 }
 
 void TestDragSettingsRoundTrip() {
@@ -2250,6 +2303,232 @@ void TestActiveSurvivesUntrackedForeground() {
     CHECK(activeCount() == 0);
 }
 
+// 书签条上的「跳到第 N 个」和「回到上一个」。
+//
+// 第 N 个必须和**书签条上看到的**第 N 个是同一个：两处的挑选和排序一旦分家，用户按出来的
+// 结果就对不上眼睛。所以这条测试盯的不只是「切过去了」，还有「切到的是不是该切的那个」。
+void TestGroupSwitching() {
+    Settings settings;
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    windows.windows = {
+        Make(1, "code.exe", "Grace", 100, true),
+        Make(2, "code.exe", "PCIe", 850),
+        Make(3, "code.exe", "Tail", 1600),
+        Make(9, "solo.exe", "Alone", 300),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    CHECK(coordinator.ActiveWindow() == 1);
+    CHECK(coordinator.ActiveGroupSize() == 3);   // 同一个应用的三个，solo.exe 不算
+
+    windows.activated = 0;
+    CHECK(coordinator.ActivateGroupMember(2));
+    CHECK(windows.activated == 2);
+    CHECK(coordinator.ActivateGroupMember(3));
+    CHECK(windows.activated == 3);
+
+    // 已经在第 1 个上，再按第 1 个：算成功，但不必真去激活一次。
+    windows.activated = 0;
+    CHECK(coordinator.ActivateGroupMember(1));
+    CHECK(windows.activated == 0);
+
+    // 组里没有第 4 个。
+    CHECK(!coordinator.ActivateGroupMember(4));
+    CHECK(!coordinator.ActivateGroupMember(0));
+
+    // 回到上一个：先切到 2，上一个就是 1。
+    windows.Emit({WindowEventKind::ActiveChanged, 2});
+    windows.activated = 0;
+    CHECK(coordinator.ActivatePreviousWindow());
+    CHECK(windows.activated == 1);
+
+    // 落单的应用没有组，按什么都不动。
+    windows.Emit({WindowEventKind::ActiveChanged, 9});
+    CHECK(coordinator.ActiveGroupSize() == 1);
+    windows.activated = 0;
+    CHECK(!coordinator.ActivateGroupMember(2));
+    CHECK(windows.activated == 0);
+}
+
+// 手动分组：把任意窗口（可以来自不同应用）并成一组，右键「加入分组 / 移出分组 / 解散」。
+//
+// 分组只是在 groupKey 上盖一层用户的说法，窗口本身谁也不碰——不 SetParent、不注入，这正是
+// 它在游戏窗口上还能用而 Groupy 那类工具不行的原因。所以这里盯的就是「书签条怎么分」。
+void TestManualGrouping() {
+    Settings settings;
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    // 三个不同的应用，各自落单：自动分组一条书签条都给不出来。
+    windows.windows = {
+        Make(1, "game.exe", "一号", 100, true),
+        Make(2, "chrome.exe", "二号", 900),
+        Make(3, "notes.exe", "三号", 1700),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    CHECK(overlays.last.empty());
+
+    // 新建一个组，这会儿组里只有一个窗口：**不生效**。否则用户刚点完「加入分组」，就会先
+    // 看到一条只有自己的书签条冒出来，再在拉第二个窗口进来时跳一下。
+    const int group = coordinator.JoinManualGroup(1, 0);
+    CHECK(group != 0);
+    CHECK(coordinator.ManualGroupOf(1) == group);
+    CHECK(overlays.last.empty());
+    CHECK(coordinator.ManualGroups().size() == 1);
+    CHECK(coordinator.ManualGroups()[0].count == 1);
+
+    // 第二个窗口进来，这才有书签条：两个宿主各一条，每条上两个标签。
+    coordinator.JoinManualGroup(2, group);
+    CHECK(overlays.last.size() == 2);
+    CHECK(overlays.last[0].items.size() == 2);
+    CHECK(coordinator.ManualGroups()[0].count == 2);
+
+    // 加入另一个组＝从原来那个组出来：一个窗口只能在一个组里，否则「这个窗口该显示哪条
+    // 书签条」没有答案。
+    const int other = coordinator.JoinManualGroup(2, 0);
+    CHECK(other != group);
+    CHECK(coordinator.ManualGroupOf(2) == other);
+    CHECK(coordinator.ManualGroups().size() == 2);
+    CHECK(overlays.last.empty());   // 两个组各剩一个成员，都不生效
+
+    // 移出：组空了，名字也要收掉，菜单里不留空壳。
+    coordinator.LeaveManualGroup(2);
+    CHECK(coordinator.ManualGroupOf(2) == 0);
+    CHECK(coordinator.ManualGroups().size() == 1);
+
+    // 三个一组。
+    coordinator.JoinManualGroup(2, group);
+    coordinator.JoinManualGroup(3, group);
+    CHECK(overlays.last.size() == 3);
+    CHECK(overlays.last[0].items.size() == 3);
+
+    // 解散：手上是组里哪个窗口都行——用户右键的就是其中一个。
+    coordinator.DisbandManualGroup(3);
+    CHECK(coordinator.ManualGroups().empty());
+    CHECK(coordinator.ManualGroupOf(1) == 0);
+    CHECK(coordinator.ManualGroupOf(2) == 0);
+    CHECK(overlays.last.empty());
+
+    // 窗口关掉就从组里拿走：留着的话，菜单上的「N 个窗口」会一直算着一个已经不存在的窗口。
+    const int again = coordinator.JoinManualGroup(1, 0);
+    coordinator.JoinManualGroup(2, again);
+    CHECK(overlays.last.size() == 2);
+    windows.windows.erase(windows.windows.begin() + 1);
+    windows.Emit({WindowEventKind::StructureChanged, 0});
+    CHECK(coordinator.ManualGroupOf(2) == 0);
+    CHECK(coordinator.ManualGroups()[0].count == 1);
+    CHECK(overlays.last.empty());
+
+    // 不在任何组里的窗口，移出和解散都该是安全的空操作。
+    coordinator.LeaveManualGroup(3);
+    coordinator.DisbandManualGroup(3);
+    CHECK(coordinator.ManualGroups().size() == 1);
+    // 不存在的窗口也一样。
+    CHECK(coordinator.JoinManualGroup(999, 0) == 0);
+    CHECK(coordinator.ManualGroups().size() == 1);
+}
+
+// 「这个应用不要书签」那份名单管的是自动分组。用户亲手把窗口拉进一个组，是更明确的意思，
+// 该压过名单——不然他会在排除名单里的应用上点「加入分组」，然后什么也不发生。
+void TestManualGroupBeatsDisabledApp() {
+    Settings settings;
+    settings.selection.disabledAppKeys = {"game.exe", "chrome.exe"};
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    windows.windows = {
+        Make(1, "game.exe", "一号", 100, true),
+        Make(2, "game.exe", "二号", 900),
+        Make(3, "chrome.exe", "三号", 1700),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    // 两个 game.exe 本来会自动成一组，但 game.exe 在排除名单上。
+    CHECK(overlays.last.empty());
+
+    const int group = coordinator.JoinManualGroup(1, 0);
+    coordinator.JoinManualGroup(3, group);
+    CHECK(overlays.last.size() == 2);
+    CHECK(overlays.last[0].items.size() == 2);
+
+    // 快捷键那条路（ActiveGroupMembers）也得认这一组，不然按出来的和看到的对不上。
+    CHECK(coordinator.ActiveGroupSize() == 2);
+    windows.activated = 0;
+    CHECK(coordinator.ActivateGroupMember(2));
+    CHECK(windows.activated == 3);   // 组里第 2 个是窗口 3
+}
+
+// 把书签拖到另一个窗口上：被拖的那个到落点那一组去。落点不在任何组里就新建一个，两个
+// 都进去。
+//
+// 「一个窗口只能在一个组里」在这里会体现成「拖走等于从原来那个组出来」——这正是拖拽该有的
+// 意思，所以这条测试把那个副作用也钉住。
+void TestMergeIntoGroupOf() {
+    Settings settings;
+    MockWindowBackend windows;
+    MockOverlayBackend overlays;
+    MockPreviewBackend previews;
+    MockBorderBackend borders;
+    windows.windows = {
+        Make(1, "game.exe", "一号", 100, true),
+        Make(2, "chrome.exe", "二号", 900),
+        Make(3, "notes.exe", "三号", 1700),
+        Make(4, "music.exe", "四号", 2200),
+    };
+
+    Coordinator coordinator(settings, windows, overlays, previews, &borders);
+    CHECK(coordinator.Start());
+    CHECK(overlays.last.empty());
+
+    // 两个都不在组里：新建一个，两个都进去，于是立刻生效。
+    coordinator.MergeIntoGroupOf(1, 2);
+    CHECK(coordinator.ManualGroups().size() == 1);
+    const int group = coordinator.ManualGroupOf(1);
+    CHECK(group != 0);
+    CHECK(coordinator.ManualGroupOf(2) == group);
+    CHECK(overlays.last.size() == 2);
+    CHECK(overlays.last[0].items.size() == 2);
+
+    // 落点已经在组里：被拖的那个加进去就行，不另开组。
+    coordinator.MergeIntoGroupOf(3, 1);
+    CHECK(coordinator.ManualGroups().size() == 1);
+    CHECK(coordinator.ManualGroupOf(3) == group);
+    CHECK(overlays.last.size() == 3);
+
+    // 拖到同组的另一个成员身上：已经在一起了，什么都不做。
+    coordinator.MergeIntoGroupOf(3, 2);
+    CHECK(coordinator.ManualGroups().size() == 1);
+    CHECK(coordinator.ManualGroupOf(3) == group);
+    CHECK(overlays.last.size() == 3);
+
+    // 拖到一个不在任何组里的窗口上：新建一个组，被拖的那个**从原来那个组出来**。
+    coordinator.MergeIntoGroupOf(3, 4);
+    CHECK(coordinator.ManualGroups().size() == 2);
+    const int fresh = coordinator.ManualGroupOf(3);
+    CHECK(fresh != 0 && fresh != group);
+    CHECK(coordinator.ManualGroupOf(4) == fresh);
+    CHECK(coordinator.ManualGroupOf(1) == group);
+    // 两组各两个人，四条书签条。
+    CHECK(overlays.last.size() == 4);
+
+    // 拖到自己身上、拖一个不存在的窗口：都不该动。
+    const std::size_t before = overlays.last.size();
+    coordinator.MergeIntoGroupOf(1, 1);
+    coordinator.MergeIntoGroupOf(999, 1);
+    coordinator.MergeIntoGroupOf(1, 999);
+    CHECK(coordinator.ManualGroups().size() == 2);
+    CHECK(overlays.last.size() == before);
+}
+
 int main() {
     TestGroupingAndSelfState();
     TestActiveWindowOnlyVisibility();
@@ -2277,9 +2556,14 @@ int main() {
     TestDragGeometry();
     TestMagneticDock();
     TestPreviewStack();
+    TestImeGuardSettings();
     TestDragSettingsRoundTrip();
     TestWatchdog();
     TestActiveSurvivesUntrackedForeground();
+    TestGroupSwitching();
+    TestManualGrouping();
+    TestManualGroupBeatsDisabledApp();
+    TestMergeIntoGroupOf();
     std::cout << "WindowMark core tests passed.\n";
     return 0;
 }

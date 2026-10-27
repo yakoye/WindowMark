@@ -52,6 +52,35 @@ public:
     // 面板上的「置顶刚才那个窗口」也是靠它：菜单项做不到这件事（菜单弹出时前台已经是我们
     // 自己，这正是准星当初存在的理由）。
     [[nodiscard]] WindowId ActiveWindow() const noexcept { return activeWindow_; }
+
+    // 书签条上的第 N 个窗口（从 1 数，和看到的顺序一致）。组＝当前窗口所属应用的那一组，
+    // 也就是书签条上列着的那些。切过去了返回 true；没有那一组、或者没有第 N 个，返回 false。
+    //
+    // 为什么按「当前窗口的组」而不是某个固定列表：多开游戏的人就在其中一个窗口里，他要的是
+    // 「跳到同一个游戏的第 3 个实例」，而不是「全系统第 3 个窗口」。
+    bool ActivateGroupMember(int oneBasedIndex);
+    // 回到上一个用过的窗口（同 Alt+Tab 来回那种）。
+    bool ActivatePreviousWindow();
+    // 手动分组：把任意窗口（可以来自不同应用）并成一组，它们共用一条书签条。
+    //
+    // **会话内有效**，和自定义名称同一个理由：窗口自己也活不过重启，重启后重新拉一次就是。
+    // 持久化需要给窗口一个跨重启的身份，而那在游戏多开这种最需要它的场景里恰恰最不可靠。
+    [[nodiscard]] std::vector<ManualGroupInfo> ManualGroups() const;
+    // 加入分组。groupId == 0 = 新建一个。返回它最终所在的组 id。
+    int JoinManualGroup(WindowId id, int groupId);
+    void LeaveManualGroup(WindowId id);
+    void DisbandManualGroup(WindowId anyMember);
+    // 把 dragged 拖到 target 上：到 target 那一组去。target 不在任何组里就新建一个，
+    // 两个都进去。
+    void MergeIntoGroupOf(WindowId dragged, WindowId target);
+    // 一次散掉所有手动分组。托盘上那个出口：成员不足两个的组是看不见的（按设计不生效），
+    // 它名下那个窗口又没有书签条可供右键，于是单靠右键菜单清不掉它。
+    void DisbandAllManualGroups();
+    // 0 = 不在任何手动组里。
+    [[nodiscard]] int ManualGroupOf(WindowId id) const;
+
+    // 当前这一组有几个窗口。诊断用。
+    [[nodiscard]] std::size_t ActiveGroupSize() const { return ActiveGroupMembers().size(); }
     // 置顶预览：画得和真的置顶一模一样（同色同宽），因为要回答的正是「松手之后长什么样」。
     // 传 0 清掉。
     void SetPinPreview(WindowId id);
@@ -73,6 +102,9 @@ public:
     [[nodiscard]] std::vector<AppSelectionModel> DragSelectionSnapshot() const;
     void ApplyDragSelection(const std::vector<AppSelectionModel>& selection);
     [[nodiscard]] const Settings& CurrentSettings() const noexcept { return settings_; }
+    // 任务栏模块独立管理自己的生命周期，不刷新任何窗口后端。
+    void SetImeGuardEnabled(bool enabled) noexcept { settings_.imeGuard.enabled = enabled; }
+    void SetImeGuardHints(bool enabled) noexcept { settings_.imeGuard.showHints = enabled; }
 
     // Pushes edited settings to the backends and redraws, so the settings UI does not
     // have to restart anything.
@@ -122,6 +154,8 @@ private:
     // Borders cover every tracked top-level window, with no grouping: a single-window app
     // gets a border even though it never gets a bookmark strip.
     [[nodiscard]] std::vector<BorderModel> BuildBorderModels() const;
+    // 当前窗口所在的那一组，按书签条上的顺序。
+    [[nodiscard]] std::vector<WindowId> ActiveGroupMembers() const;
     [[nodiscard]] Color ColorFor(WindowId id);
     [[nodiscard]] bool IsAppEnabled(const std::string& groupKey) const;
     [[nodiscard]] bool IsBorderAppEnabled(const std::string& groupKey) const;
@@ -155,6 +189,19 @@ private:
     unsigned watchdogRecoveries_{0};
     // 见 ActiveWindow：只在确实跟踪得到的窗口上更新。
     WindowId activeWindow_{0};
+    // 上上一个。给「回到上一个窗口」用。
+    WindowId previousActive_{0};
+
+    // 手动分组。窗口 -> 组 id，以及每个组的名字。
+    //
+    // 一个窗口只能在一个组里：否则「这个窗口该显示哪条书签条」没有答案。
+    // 成员不足两个的组**不生效**（窗口照旧跟着它自己的应用组走）——新建分组时组里只有一个
+    // 窗口，这条规则让那个中间状态是无害的：书签条不会先消失再出现。
+    std::unordered_map<WindowId, int> manualGroupOf_;
+    std::map<int, std::string> manualGroupNames_;
+    int nextManualGroup_{1};
+    // 窗口归哪一组：手动组优先（用户明说的压过自动推断的），否则是它所属应用。
+    [[nodiscard]] std::string GroupKeyOf(const WindowInfo& window) const;
     WindowId pinPreview_{0};
     bool started_{false};
 };

@@ -28,4 +28,15 @@ inline constexpr wchar_t kSingletonMutex[] = L"Local\\ClipKeeper.Singleton.v1";
 inline constexpr wchar_t kShowPanelMessage[] = L"ClipKeeper.ShowPanel.v1";
 inline constexpr wchar_t kRequestQuitMessage[] = L"ClipKeeper.RequestQuit.v1";
 
+// QueryState：回一个位掩码，托盘菜单的对勾用它。
+//
+// 为什么要专门一条消息，而不是从外面读它那个复选框：复选框是它窗口里的一个子控件，跨进程
+// 去找、去 BM_GETCHECK，等于把它的界面布局变成两个程序之间的契约——布局一改，对勾就哑了。
+// 一条消息把「状态」和「界面」分开，这正是这个头文件存在的意义。
+//
+// 发的时候用 SendMessageTimeout（菜单正在弹出，不能被一个卡住的进程拖住）。拿不到回复就
+// 按「在跑就算在守护」算：守护本来就是默认开着的。
+inline constexpr wchar_t kQueryStateMessage[] = L"ClipKeeper.QueryState.v1";
+inline constexpr unsigned kStateGuarding = 0x1;   // 自动救援开着 = 正在守护
+
 } // namespace windowmark::clipkeeper

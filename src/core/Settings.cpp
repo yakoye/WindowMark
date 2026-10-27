@@ -280,6 +280,9 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     settings.border.cornerRadius = ParseInt(values, "border.corner_radius", settings.border.cornerRadius, 0, 64);
     settings.border.cornerWidthExtra = ParseInt(values, "border.corner_width_extra", settings.border.cornerWidthExtra, -8, 16);
     settings.border.cornerInset = ParseInt(values, "border.corner_inset", settings.border.cornerInset, -16, 16);
+    if (const auto it = values.find("drawer.switch_hotkey"); it != values.end()) {
+        settings.drawer.switchHotkey = Trim(it->second);
+    }
     if (const auto it = values.find("border.corners"); it != values.end()) {
         settings.border.corners = BorderCornersFromString(it->second);
     }
@@ -325,6 +328,12 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     if (const auto it = values.find("border.excluded_apps"); it != values.end()) {
         settings.border.excludedAppKeys = ParseEncodedList(it->second);
     }
+    if (const auto it = values.find("ime_guard.enabled"); it != values.end()) {
+        settings.imeGuard.enabled = ParseBool(it->second, false);
+    }
+    if (const auto it = values.find("ime_guard.show_hints"); it != values.end()) {
+        settings.imeGuard.showHints = ParseBool(it->second, true);
+    }
     if (const auto it = values.find("drag.enabled"); it != values.end()) {
         settings.drag.enabled = ParseBool(it->second, settings.drag.enabled);
     }
@@ -365,6 +374,8 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
 
     output << "# WindowMark v0.4.3\n";
     output << "# Edit this file, then restart WindowMark.\n\n";
+    output << "ime_guard.enabled=" << (settings.imeGuard.enabled ? "true" : "false") << "\n";
+    output << "ime_guard.show_hints=" << (settings.imeGuard.showHints ? "true" : "false") << "\n";
     output << "drawer.enabled=" << (settings.drawer.enabled ? "true" : "false") << "\n";
     output << "placement=" << ToString(settings.drawer.placement) << "\n";
     output << "drawer.collapsed_extent=" << settings.drawer.collapsedExtent << "\n";
@@ -421,6 +432,10 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
     output << "#                  shifts the ring towards the window centre; negative pushes\n";
     output << "#                  it outwards.\n";
     output << "#   colors         #RGB, #RGBA, #RRGGBB or #RRGGBBAA - alpha is part of the color\n";
+    output << "#   drawer.switch_hotkey 修饰键+1..9 跳到这一组的第 N 个窗口，修饰键+` 回到上一个\n";
+    output << "#                        写法如 Ctrl+Alt；留空=关掉（全局快捷键先到先得，"
+              "开了就等于从别的程序手里抢走）\n";
+    output << "drawer.switch_hotkey=" << settings.drawer.switchHotkey << "\n\n";
     output << "border.enabled=" << (settings.border.enabled ? "true" : "false") << "\n";
     output << "border.width=" << settings.border.width << "\n";
     output << "border.offset=" << settings.border.offset << "\n";

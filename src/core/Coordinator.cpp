@@ -67,6 +67,16 @@ bool Coordinator::Start() {
     callbacks.onPreviewHide = [this]() { previewBackend_.Hide(); };
     callbacks.onRename = onRename_;
     callbacks.onOpenSettings = onOpenSettings_;
+    callbacks.manualGroups = [this]() { return ManualGroups(); };
+    callbacks.manualGroupOf = [this](WindowId id) { return ManualGroupOf(id); };
+    callbacks.onJoinGroup = [this](WindowId id, int group) { JoinManualGroup(id, group); };
+    callbacks.onLeaveGroup = [this](WindowId id) { LeaveManualGroup(id); };
+    callbacks.onDisbandGroup = [this](WindowId id) { DisbandManualGroup(id); };
+    callbacks.onDropHighlight = [this](WindowId id) { SetPinPreview(id); };
+    callbacks.canDrop = [this](WindowId id) { return windows_.contains(id); };
+    callbacks.onDropToGroup = [this](WindowId dragged, WindowId target) {
+        MergeIntoGroupOf(dragged, target);
+    };
 
     if (!previewBackend_.Start(settings_.preview)) {
         return false;
@@ -464,12 +474,150 @@ void Coordinator::OnWindowEvent(const WindowEvent& event) {
         // 窗口」没变——跟着改的话，这些时候没有任何窗口匹配得上活动，屏幕上一个活动边框
         // 都没有，书签条也一起消失。所以不认，连重画都省了。
         if (!windows_.contains(event.windowId)) break;
+        if (event.windowId != activeWindow_) previousActive_ = activeWindow_;
         activeWindow_ = event.windowId;
         // 边框先画，理由同 RefreshAll 里那处。
         ApplyBorders();
         ApplyModels();
         break;
     }
+}
+
+// 和 BuildModels 用同一套口径挑成员、同一套顺序排——快捷键跳到的「第 3 个」必须就是书签条
+// 上看到的第 3 个，两处的规则一旦分家，用户按出来的结果就对不上眼睛。
+std::string Coordinator::GroupKeyOf(const WindowInfo& window) const {
+    const auto it = manualGroupOf_.find(window.id);
+    if (it != manualGroupOf_.end()) {
+        // 成员不足两个的手动组不生效：新建分组时只有一个成员，那一刻不该让这个窗口的书签条
+        // 先消失一次。
+        std::size_t count = 0;
+        for (const auto& [id, group] : manualGroupOf_) {
+            (void)id;
+            if (group == it->second) ++count;
+        }
+        if (count >= 2) return "manual:" + std::to_string(it->second);
+    }
+    return window.groupKey;
+}
+
+std::vector<ManualGroupInfo> Coordinator::ManualGroups() const {
+    std::vector<ManualGroupInfo> out;
+    out.reserve(manualGroupNames_.size());
+    for (const auto& [id, name] : manualGroupNames_) {
+        std::size_t count = 0;
+        for (const auto& [window, group] : manualGroupOf_) {
+            (void)window;
+            if (group == id) ++count;
+        }
+        out.push_back(ManualGroupInfo{id, name, count});
+    }
+    return out;
+}
+
+int Coordinator::JoinManualGroup(WindowId id, int groupId) {
+    if (!windows_.contains(id)) return 0;
+    if (groupId == 0 || !manualGroupNames_.contains(groupId)) {
+        groupId = nextManualGroup_++;
+        manualGroupNames_[groupId] = "分组 " + std::to_string(groupId);
+    }
+    manualGroupOf_[id] = groupId;
+    ApplyModels();
+    return groupId;
+}
+
+void Coordinator::LeaveManualGroup(WindowId id) {
+    const auto it = manualGroupOf_.find(id);
+    if (it == manualGroupOf_.end()) return;
+    const int group = it->second;
+    manualGroupOf_.erase(it);
+    // 组空了就把名字也收掉，免得菜单里堆一串空组。只剩一个成员的组留着：用户可能正要
+    // 往里加第二个，而它本来就不生效。
+    bool anyLeft = false;
+    for (const auto& [window, owner] : manualGroupOf_) {
+        (void)window;
+        if (owner == group) { anyLeft = true; break; }
+    }
+    if (!anyLeft) manualGroupNames_.erase(group);
+    ApplyModels();
+}
+
+void Coordinator::DisbandManualGroup(WindowId anyMember) {
+    const auto it = manualGroupOf_.find(anyMember);
+    if (it == manualGroupOf_.end()) return;
+    const int group = it->second;
+    std::erase_if(manualGroupOf_, [group](const auto& entry) { return entry.second == group; });
+    manualGroupNames_.erase(group);
+    ApplyModels();
+}
+
+void Coordinator::MergeIntoGroupOf(WindowId dragged, WindowId target) {
+    if (dragged == target) return;
+    if (!windows_.contains(dragged) || !windows_.contains(target)) return;
+
+    const int targetGroup = ManualGroupOf(target);
+    if (targetGroup != 0) {
+        // 已经在一起了就什么都不做：拖到同组的另一个成员身上没有别的意思。
+        if (ManualGroupOf(dragged) == targetGroup) return;
+        JoinManualGroup(dragged, targetGroup);
+        return;
+    }
+
+    // 目标还不在任何组里：新建一个，两个都进去。先放目标再放被拖的那个，组里的稳定顺序
+    // 于是和「拖到谁身上」读起来一致。
+    const int group = JoinManualGroup(target, 0);
+    if (group != 0) JoinManualGroup(dragged, group);
+}
+
+void Coordinator::DisbandAllManualGroups() {
+    if (manualGroupOf_.empty() && manualGroupNames_.empty()) return;
+    manualGroupOf_.clear();
+    manualGroupNames_.clear();
+    ApplyModels();
+}
+
+int Coordinator::ManualGroupOf(WindowId id) const {
+    const auto it = manualGroupOf_.find(id);
+    return it == manualGroupOf_.end() ? 0 : it->second;
+}
+
+std::vector<WindowId> Coordinator::ActiveGroupMembers() const {
+    std::vector<WindowId> members;
+    const auto active = windows_.find(activeWindow_);
+    if (active == windows_.end()) return members;
+    const std::string key = GroupKeyOf(active->second);
+    if (key.empty()) return members;
+    // 手动组是用户明说的，不受「这个应用不要书签」的影响；自动组才看那个名单。
+    const bool manual = manualGroupOf_.contains(activeWindow_);
+    if (!manual && !IsAppEnabled(key)) return members;
+
+    for (const auto& [id, window] : windows_) {
+        if (GroupKeyOf(window) != key) continue;
+        if (!IsWindowEnabled(id)) continue;
+        members.push_back(id);
+    }
+    std::sort(members.begin(), members.end(), [this](WindowId a, WindowId b) {
+        const auto ita = stableOrder_.find(a);
+        const auto itb = stableOrder_.find(b);
+        const std::size_t oa = ita == stableOrder_.end() ? 0 : ita->second;
+        const std::size_t ob = itb == stableOrder_.end() ? 0 : itb->second;
+        return oa < ob;
+    });
+    return members;
+}
+
+bool Coordinator::ActivateGroupMember(int oneBasedIndex) {
+    if (!started_ || oneBasedIndex < 1) return false;
+    const std::vector<WindowId> members = ActiveGroupMembers();
+    if (static_cast<std::size_t>(oneBasedIndex) > members.size()) return false;
+    const WindowId target = members[static_cast<std::size_t>(oneBasedIndex - 1)];
+    if (target == activeWindow_) return true;   // 已经在那儿了
+    return windowsBackend_.ActivateWindow(target);
+}
+
+bool Coordinator::ActivatePreviousWindow() {
+    if (!started_ || previousActive_ == 0) return false;
+    if (!windows_.contains(previousActive_)) return false;
+    return windowsBackend_.ActivateWindow(previousActive_);
 }
 
 void Coordinator::WatchdogTick() {
@@ -768,9 +916,12 @@ std::vector<OverlayModel> Coordinator::BuildModels() {
     groups.reserve(windows_.size());
 
     for (const auto& [id, window] : windows_) {
-        if (!window.groupKey.empty() && IsAppEnabled(window.groupKey) && IsWindowEnabled(id)) {
-            groups[window.groupKey].push_back(&window);
-        }
+        const std::string key = GroupKeyOf(window);
+        if (key.empty() || !IsWindowEnabled(id)) continue;
+        // 手动分组是用户明说的，压过「这个应用不要书签」那份名单——他把窗口拉进来，就是
+        // 要在这里看见它。
+        if (!manualGroupOf_.contains(id) && !IsAppEnabled(key)) continue;
+        groups[key].push_back(&window);
     }
 
     std::vector<OverlayModel> models;
@@ -870,6 +1021,17 @@ bool Coordinator::IsBorderWindowEnabled(WindowId id) const {
 }
 
 void Coordinator::PruneTransientState() {
+    // 窗口没了就从手动组里拿掉，组空了把名字也收掉。
+    std::erase_if(manualGroupOf_, [this](const auto& entry) {
+        return !windows_.contains(entry.first);
+    });
+    std::erase_if(manualGroupNames_, [this](const auto& entry) {
+        for (const auto& [window, group] : manualGroupOf_) {
+            (void)window;
+            if (group == entry.first) return false;
+        }
+        return true;
+    });
     std::unordered_set<WindowId> alive;
     alive.reserve(windows_.size());
     for (const auto& [id, _] : windows_) {

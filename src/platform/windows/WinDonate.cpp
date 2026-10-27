@@ -2,6 +2,7 @@
 
 #include "Resource.h"
 
+#include <commctrl.h>
 #include <shellscalingapi.h>
 #include <windows.h>
 #include <wincodec.h>
@@ -399,6 +400,99 @@ bool HasDonateCodes() {
 void ShowDonateWindow(HWND owner) {
     Donate donate;
     donate.Run(owner);
+}
+
+namespace {
+
+constexpr int kDonateLinkId = 0x5A01;
+constexpr int kDonateIconId = 0x5A02;
+constexpr UINT_PTR kDonateSubclassId = 0x5A00;
+
+LRESULT CALLBACK DonateSubclass(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                UINT_PTR, DWORD_PTR) {
+    switch (msg) {
+    case WM_NOTIFY: {
+        auto* header = reinterpret_cast<NMHDR*>(lParam);
+        if (header && header->idFrom == kDonateLinkId &&
+            (header->code == NM_CLICK || header->code == NM_RETURN)) {
+            ShowDonateWindow(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_CTLCOLORSTATIC: {
+        // 按钮行那一带是窗口色（白），而 SysLink 默认拿对话框色（灰），不处理就是一块灰斑。
+        const HWND child = reinterpret_cast<HWND>(lParam);
+        const int id = GetDlgCtrlID(child);
+        if (id == kDonateLinkId || id == kDonateIconId) {
+            auto dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+        }
+        break;
+    }
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, DonateSubclass, kDonateSubclassId);
+        break;
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+} // namespace
+
+void AttachDonateLink(HWND dialog, HICON heart) {
+    if (!dialog) return;
+    // 「确定」按钮给出这一行的垂直位置和高度；左边那一大片是空的，正好放。
+    HWND ok = GetDlgItem(dialog, IDOK);
+    if (!ok) return;
+    RECT okRect{};
+    GetWindowRect(ok, &okRect);
+    MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&okRect), 2);
+
+    const UINT dpi = GetDpiForWindow(dialog);
+    const auto scale = [dpi](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
+    const int icon = GetSystemMetrics(SM_CXSMICON);
+    const int rowH = okRect.bottom - okRect.top;
+    const int left = scale(12);
+
+    HINSTANCE instance = GetModuleHandleW(nullptr);
+    HWND iconWnd = nullptr;
+    int textLeft = left;
+    if (heart) {
+        iconWnd = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ICON |
+                                      SS_REALSIZEIMAGE | SS_CENTERIMAGE,
+                                  left, okRect.top + (rowH - icon) / 2, icon, icon, dialog,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDonateIconId)),
+                                  instance, nullptr);
+        if (iconWnd) {
+            SendMessageW(iconWnd, STM_SETICON, reinterpret_cast<WPARAM>(heart), 0);
+            textLeft = left + icon + scale(6);
+        }
+    }
+
+    HWND link = CreateWindowExW(
+        0, WC_LINK, L"<a href=\"donate\">觉得不错？赞赏一下作者~</a>",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP, textLeft, okRect.top, scale(240), rowH, dialog,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDonateLinkId)), instance, nullptr);
+    if (!link) {
+        if (iconWnd) DestroyWindow(iconWnd);
+        return;
+    }
+    // 跟对话框同一套字体，不然这一行比旁边的「确定」大一号。
+    if (HFONT font = reinterpret_cast<HFONT>(SendMessageW(ok, WM_GETFONT, 0, 0))) {
+        SendMessageW(link, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    // 按文字实际宽度收一下，省得一条看不见的控件压在按钮上。
+    SIZE ideal{};
+    if (SendMessageW(link, LM_GETIDEALSIZE, static_cast<WPARAM>(okRect.left - textLeft),
+                     reinterpret_cast<LPARAM>(&ideal)) &&
+        ideal.cx > 0) {
+        SetWindowPos(link, nullptr, textLeft, okRect.top + (rowH - ideal.cy) / 2, ideal.cx,
+                     ideal.cy, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    SetWindowSubclass(dialog, DonateSubclass, kDonateSubclassId, 0);
 }
 
 HICON CreateHeartIcon(int size) {

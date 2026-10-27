@@ -151,6 +151,13 @@ struct PreviewRequest {
     std::vector<PreviewLayer> layers;
 };
 
+// 一个手动分组在菜单里要显示的样子。
+struct ManualGroupInfo {
+    int id{};
+    std::string name;
+    std::size_t count{};
+};
+
 struct OverlayCallbacks {
     std::function<void(WindowId)> onActivate;
     std::function<void(const PreviewRequest&)> onPreview;
@@ -159,6 +166,21 @@ struct OverlayCallbacks {
     // settings UI; Core only receives the result through Coordinator.
     std::function<void(WindowId)> onRename;
     std::function<void()> onOpenSettings;
+    // 手动分组。菜单要列出现有的组，所以得能查；三个动作各一条回调。
+    // groupId == 0 表示「新建一个组」。
+    std::function<std::vector<ManualGroupInfo>()> manualGroups;
+    std::function<int(WindowId)> manualGroupOf;
+    std::function<void(WindowId, int)> onJoinGroup;
+    std::function<void(WindowId)> onLeaveGroup;
+    std::function<void(WindowId)> onDisbandGroup;
+    // 把书签拖到别的窗口上：拖的过程中高亮松手会落到的那个窗口（0 = 没落在谁身上），
+    // 松手时把两个窗口并成一组。
+    std::function<void(WindowId)> onDropHighlight;
+    std::function<void(WindowId, WindowId)> onDropToGroup;
+    // 这个窗口能不能当落点（在不在跟踪范围里）。拖的过程中光标底下随时会冒出不相干的
+    // 东西——悬浮工具条、刚出来的提示、系统放的全屏遮罩——它们不该把落点清掉，否则松手
+    // 就落在空处。准星那边是同一条规则。
+    std::function<bool(WindowId)> canDrop;
 };
 
 // Platform-neutral selection model used by settings UIs on Windows/macOS.

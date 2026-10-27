@@ -3,6 +3,7 @@
 #include "WinConfigPathDialog.h"
 #include "WinControlWindow.h"
 #include "WinDragBackend.h"
+#include "WinImeTrayGuard.h"
 #include "WinDragSettingsDialog.h"
 #include "WinDonate.h"
 #include "WinHomePanel.h"
@@ -150,6 +151,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     const bool purgeRequested = HasArgument(L"--purge");
+    // 仅投递正常退出请求，不强制结束进程；便于自动验收恢复路径。
+    if (HasArgument(L"--quit")) {
+        NotifyExistingInstance(windowmark::app::kRequestQuitMessage);
+        return 0;
+    }
     // --replace：刚被「安装到系统」启动起来的那份。发起安装的实例还活着（它要等我们起来
     // 才退），所以这里要等互斥体放开，而不是一看有人在跑就默默退出。
     if (HasArgument(L"--replace")) windowmark::setup::WaitForSingletonRelease(8000);
@@ -204,7 +210,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             // 仍然被我们占着，再来第三份照样会被挡住。
             windowmark::setup::StopRunningInstances(4000);
         } else {
-            NotifyExistingInstance(windowmark::app::kSecondInstanceMessage);
+            NotifyExistingInstance(HasArgument(L"--panel") ? L"WindowMark.ShowMainPanel" :
+                                   windowmark::app::kSecondInstanceMessage);
             LogAutoStartPhase(autoStartLaunch, L"already_running");
             return 0;
         }
@@ -260,6 +267,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // Declared before Start() so the context-menu handlers below can capture it; it is
     // only actually started further down, once the coordinator is running.
     windowmark::win::WinControlWindow control;
+    windowmark::win::WinImeTrayGuard imeGuard;
 
     // 拖动的钩子。配置一变就要重新装/卸，所以放在 persist 旁边，两者总是一起调用。
     windowmark::win::WinDragBackend dragBackend;
@@ -407,6 +415,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     // 托盘菜单弹出前现读一遍：对勾永远以当前配置为准。
     handlers.onMenuOpening = [&]() {
+        control.SetImeGuardState(imeGuard.Requested(), imeGuard.Active(), imeGuard.StatusText(), coordinator.CurrentSettings().imeGuard.showHints);
         const windowmark::Settings& now = coordinator.CurrentSettings();
         control.SetEnabledState(now.drawer.enabled);
         control.SetBorderState(now.border.enabled);
@@ -486,7 +495,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     };
     handlers.onGrabCancel = [&]() { coordinator.SetPinPreview(0); };
     handlers.onUnpinAll = [&]() { coordinator.UnpinAll(); };
-    handlers.isPinnable = [&](windowmark::WindowId id) { return coordinator.IsTracked(id); };
+    handlers.canGrab = [&](windowmark::WindowId id) { return coordinator.IsTracked(id); };
+    handlers.onGrabJoinGroup = [&](windowmark::WindowId id, int group) {
+        return coordinator.JoinManualGroup(id, group);
+    };
+    handlers.manualGroups = [&]() { return coordinator.ManualGroups(); };
+    handlers.manualGroupOf = [&](windowmark::WindowId id) {
+        return coordinator.ManualGroupOf(id);
+    };
+    handlers.onDisbandAllGroups = [&]() { coordinator.DisbandAllManualGroups(); };
     handlers.onPinSettings = [&]() {
         openSettingsPage(windowmark::win::SettingsPage::Pinning);
     };
@@ -494,6 +511,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // menu's equivalent did not: opening the menu makes WindowMark the foreground process,
     // so by the time the handler runs there is no user window left to read. A hotkey
     // leaves the foreground exactly where it was.
+    // 书签条的切换快捷键。注册在 control.Start 之后（要 HWND），但处理函数必须在这里就
+    // 挂好——Start 会把整个 handlers 搬走，之后再赋值只是改一个空壳。
+    handlers.onSwitchTo = [&](int index) {
+        const bool ok = coordinator.ActivateGroupMember(index);
+        windowmark::win::PinDiag(L"切换到第 %d 个: %s（这一组有 %zu 个窗口）", index,
+                                 ok ? L"成功" : L"没有那一个",
+                                 coordinator.ActiveGroupSize());
+    };
+    handlers.onSwitchPrevious = [&]() {
+        const bool ok = coordinator.ActivatePreviousWindow();
+        windowmark::win::PinDiag(L"回到上一个窗口: %s", ok ? L"成功" : L"没有上一个");
+    };
     handlers.onPinHotkey = [&]() {
         const HWND foreground = GetForegroundWindow();
         if (!foreground) return;
@@ -550,7 +579,49 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     //
     // 面板自己不干活：要开窗口的动作一律先关面板、再把对应的托盘命令投递回去执行（面板和菜单
     // 因此走同一条分发路径）；开关类当场同步执行，面板留着并刷新自己的勾。
+    imeGuard.onRequestedChanged = [&](bool enabled) {
+        coordinator.SetImeGuardEnabled(enabled);
+        if (!windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings()))
+            control.ShowBalloon(L"输入法占位保护", L"开关状态保存失败，下次启动不会保留。请检查配置文件权限。");
+    };
+    bool imeGuardConfirmationOpen = false;
+    handlers.onToggleImeGuard = [&]() {
+        if (imeGuard.Requested()) { imeGuard.Restore(); return; }
+        if (imeGuardConfirmationOpen) return;
+        // 面板内点击时确认框必须归属于可见面板，否则面板仍可点击、确认框可能落到后面。
+        HWND confirmationOwner = GetActiveWindow();
+        DWORD ownerPid{};
+        if (confirmationOwner) GetWindowThreadProcessId(confirmationOwner, &ownerPid);
+        if (ownerPid != GetCurrentProcessId() || !IsWindowVisible(confirmationOwner))
+            confirmationOwner = nullptr;
+        imeGuardConfirmationOpen = true;
+        const int answer = MessageBoxW(confirmationOwner,
+            L"此功能修改原生任务栏容器宽度，不增加假图标。\n"
+            L"已开放 Windows 11 各种缩放、多屏下主任务栏的测试；Windows 10 适配暂停。\n"
+            L"布局变化、解锁或重连后会尝试自动恢复；系统内部接口不匹配或恢复失败时停止。\n\n是否启用？",
+            L"任务栏输入法占位保护", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND);
+        imeGuardConfirmationOpen = false;
+        if (answer != IDYES) return;
+        if (!imeGuard.Enable()) control.ShowBalloon(L"输入法占位保护", imeGuard.StatusText());
+    };
+    handlers.onRestoreImeGuard = [&]() { imeGuard.Restore(); };
+    handlers.onCheckImeGuard = [&]() {
+        imeGuard.Check(); control.ShowBalloon(L"输入法占位保护", imeGuard.StatusText());
+    };
+    handlers.onImeGuardDiagnostics = [&]() { imeGuard.OpenDiagnostics(control.NativeHandle()); };
+    handlers.onToggleImeHints = [&]() {
+        const bool hints = !coordinator.CurrentSettings().imeGuard.showHints;
+        coordinator.SetImeGuardHints(hints);imeGuard.SetHints(hints);
+        if (!windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings()))
+            control.ShowBalloon(L"提示语设置", L"当前显示已改变，但设置保存失败。");
+    };
+
     windowmark::win::HomePanelContext homeContext;
+    homeContext.imeActive = [&]() { return imeGuard.Active(); };
+    homeContext.imeStatus = [&]() { return imeGuard.StatusText(); };
+    homeContext.imeCommand = [&](int command) {
+        control.RunCommandNow(windowmark::win::WinControlWindow::kToggleImeGuardCommand + command);
+    };
     homeContext.settings = [&]() { return coordinator.CurrentSettings(); };
     homeContext.toggleFeature = [&](windowmark::win::HomeFeature feature) {
         using F = windowmark::win::HomeFeature;
@@ -598,6 +669,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         case Action::None:             break;
         case Action::BookmarkSettings: control.RunCommand(Cmd::kSettingsCommand); break;
         case Action::BookmarkApps:     control.RunCommand(Cmd::kSelectionCommand); break;
+        case Action::BookmarkGroupGrab:
+            control.RunCommand(Cmd::kGrabToGroupCommand);
+            break;
         case Action::BorderSettings:   control.RunCommand(Cmd::kBorderSettingsCommand); break;
         case Action::BorderApps:       control.RunCommand(Cmd::kBorderExcludeCommand); break;
         case Action::PinSettings:      control.RunCommand(Cmd::kPinSettingsCommand); break;
@@ -793,21 +867,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         config.hwndParent = control.NativeHandle();
         config.hInstance = GetModuleHandleW(nullptr);
         config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
-        // 赞赏入口。放在脚注里而不是正文：一行小字，不打断关于框本来要说的事。
-        // 收款码没编进 exe（res\donate-*.png 不在）时整行不出现。
-        // 心要红、字要蓝。SysLink 只有「非链接=文字色、链接=链接色」两档，没法把一个字
-        // 单独染红，所以心走图标那一格（自己画的红心），文字整条做成链接。
+        // 赞赏入口。放在「确定」那一行的左边——TaskDialog 的脚注永远在按钮行**下面**、
+        // 单独占一条带子，而要的就是按钮行本身那一行，所以对话框建好之后自己往上面挂一个
+        // 红心图标加一个链接（AttachDonateLink）。收款码没编进 exe 时整行不出现。
         const bool hasDonate = windowmark::win::HasDonateCodes();
-        HICON heart = nullptr;
-        if (hasDonate) {
-            heart = windowmark::win::CreateHeartIcon(GetSystemMetrics(SM_CXSMICON));
-            config.dwFlags |= TDF_ENABLE_HYPERLINKS;
-            if (heart) {
-                config.dwFlags |= TDF_USE_HICON_FOOTER;
-                config.hFooterIcon = heart;
-            }
-            config.pszFooter = L"<a href=\"donate\">觉得不错？赞赏一下作者~</a>";
-        }
+        HICON heart = hasDonate
+                          ? windowmark::win::CreateHeartIcon(GetSystemMetrics(SM_CXSMICON))
+                          : nullptr;
         config.dwCommonButtons = TDCBF_OK_BUTTON;
         config.pszWindowTitle = L"关于 WindowMark";
         if (icon) {
@@ -822,27 +888,32 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         // it reading freed memory, which is what garbled the installer's title once.
         config.pszMainInstruction = instruction.c_str();
         config.pszContent = content.c_str();
-        // TDN_CREATED is the only place the dialog's own HWND is handed out, and it is
-        // what the duplicate check above needs.
-        config.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM lp,
+        // 回调要带两样东西出去：对话框的 HWND（上面那个「已经开着就提到前面」要用），
+        // 和那颗红心（挂赞赏那一行时要）。
+        struct AboutCallbackState {
+            HWND* out;
+            HICON heart;
+        } aboutState{&aboutDialog, heart};
+
+        config.pfCallback = [](HWND hwnd, UINT msg, WPARAM, LPARAM,
                                LONG_PTR data) -> HRESULT {
-            if (msg == TDN_HYPERLINK_CLICKED) {
-                // 关于框自己不关，收款码窗口叠在它上面（它是 owner，会被禁用）。
-                windowmark::win::ShowDonateWindow(hwnd);
-                (void)lp;
-                return S_OK;
-            }
+            auto* state = reinterpret_cast<AboutCallbackState*>(data);
             if (msg == TDN_CREATED) {
-                *reinterpret_cast<HWND*>(data) = hwnd;
+                *state->out = hwnd;
                 // Same reason as the settings window: a pinned window sits in the topmost
                 // band and nothing below it can be raised above it. TaskDialog has no flag
                 // for this, so it is done here, the one place its HWND is available.
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                return S_OK;
+            }
+            if (msg == TDN_DIALOG_CONSTRUCTED && state->heart) {
+                // 按钮这时候才建好，才量得到「确定」在哪一行。
+                windowmark::win::AttachDonateLink(hwnd, state->heart);
             }
             return S_OK;
         };
-        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&aboutDialog);
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&aboutState);
 
         TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
         aboutDialog = nullptr;
@@ -858,6 +929,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, L"托盘控制器初始化失败，程序已安全退出。", L"WindowMark", MB_OK | MB_ICONERROR);
         return 6;
     }
+    {
+        wchar_t exe[32768]{};
+        const DWORD length = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+        if (length && length < std::size(exe) && imeGuard.Initialize(
+                std::filesystem::path(exe).parent_path() / L"tools", settingsPath.parent_path() / L"ImeTrayGuard")) {
+            imeGuard.SetHints(settings.imeGuard.showHints);
+            if (settings.imeGuard.enabled && !imeGuard.Enable(true)) {
+                coordinator.SetImeGuardEnabled(false);
+                windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings());
+                control.ShowBalloon(L"输入法占位保护未启用", imeGuard.StatusText());
+            }
+        } else if (settings.imeGuard.enabled) {
+            coordinator.SetImeGuardEnabled(false);
+            windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings());
+            control.ShowBalloon(L"输入法占位保护未启用", L"恢复监视器初始化失败，没有启动原生控制程序。");
+        }
+    }
+    if (HasArgument(L"--panel")) control.RunCommand(windowmark::win::WinControlWindow::kPanelCommand);
     // 第一次运行：绿色版双击就跑，没有任何安装向导说过话。这是唯一能交代「图标在托盘里」
     // 并且顺手把开机启动和桌面图标办了的机会——那两件事安装程序会替用户做，绿色版没人做，
     // 藏在托盘右键里等于默认没有。所以这里直接问一次，答完就再也不问。
@@ -903,6 +992,39 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     control.SetDragState(coordinator.CurrentSettings().drag.enabled);
     control.SetPinState(coordinator.CurrentSettings().pin.enabled);
 
+    // 书签条的切换快捷键：修饰键+1..9 跳到这一组的第 N 个窗口，修饰键+` 回到上一个。
+    //
+    // 修饰键由用户写在 drawer.switch_hotkey 里，留空＝关掉。解析放在这儿而不是 core：
+    // MOD_* 是 Win32 的东西，core 不认识 windows.h。
+    const auto parseSwitchMods = [](const std::string& text) -> UINT {
+        UINT mods = 0;
+        std::string token;
+        const auto take = [&]() {
+            if (token.empty()) return;
+            for (char& c : token) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (token == "ctrl" || token == "control") mods |= MOD_CONTROL;
+            else if (token == "alt") mods |= MOD_ALT;
+            else if (token == "shift") mods |= MOD_SHIFT;
+            else if (token == "win" || token == "windows") mods |= MOD_WIN;
+            token.clear();
+        };
+        for (char c : text) {
+            if (c == '+' || c == ' ' || c == '|') take();
+            else token.push_back(c);
+        }
+        take();
+        return mods;
+    };
+    const auto applySwitchHotkeys = [&](bool announceFailure) {
+        const UINT mods = parseSwitchMods(coordinator.CurrentSettings().drawer.switchHotkey);
+        const std::wstring failed = control.SetSwitchHotkeys(mods);
+        if (!failed.empty() && announceFailure) {
+            control.ShowBalloon(L"有几个切换快捷键没注册上",
+                                L"被别的程序占着的：" + failed +
+                                    L"\n全局快捷键先到先得。换一组修饰键再试"
+                                    L"（托盘 →「窗口书签」→「书签设置...」）。");
+        }
+    };
     // Applies the shortcut from settings, and says so out loud when Windows refuses it.
     // Refusal always means another process claimed the combination first; the alternative
     // to telling the user is a shortcut that quietly does nothing, which is
@@ -925,6 +1047,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // records it, and changing it in the dialog does report failure immediately.
     applyHotkey(false);
     reapplyHotkey = [&]() { applyHotkey(true); };
+    // 切换快捷键同理：启动时不打扰，改完设置立刻说。
+    applySwitchHotkeys(false);
     LogAutoStartPhase(autoStartLaunch, L"running");
 
     control.SetPinnedProvider([&]() {
@@ -978,6 +1102,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     // Explicit shutdown order: UI first, then overlay/preview/hooks.
     // Even if the process is force-terminated, all owned HWNDs disappear with the process.
+    imeGuard.Shutdown();
     dragBackend.Shutdown();
     control.Stop();
     coordinator.Stop();

@@ -2,6 +2,7 @@
 
 #include "AppIdentity.h"
 #include "Resource.h"
+#include "PinDiag.h"
 
 #include <shellscalingapi.h>
 #include <windows.h>
@@ -40,6 +41,7 @@ enum : int {
     kIdAbout = 2046,
     kIdExit = 2047,
     kIdPinGrab = 2048,
+    kIdGroupGrab = 2050,
 };
 
 struct FeatureText {
@@ -47,27 +49,28 @@ struct FeatureText {
     const wchar_t* name;
     const wchar_t* what;
     const wchar_t* how;
-    bool hasApps;   // 有没有「排除应用...」
+    bool hasApps;    // 有没有「排除应用...」
+    bool hasGroup;   // 有没有「⊕ 分组...」（只有书签有）
 };
 
 // 说明写成「这东西是什么」+「手上怎么操作」两行。写长了没人看，写成功能清单又等于没说。
 constexpr std::array<FeatureText, 4> kFeatures{{
     {HomeFeature::Bookmarks, L"窗口书签",
      L"同一个程序开着的几个窗口，共享一排书签贴在窗口内侧，点一下直接切过去。",
-     L"用法：鼠标移到窗口下沿那排彩色小块上，离鼠标越近的越大；左键切换窗口，右键改名。",
-     true},
+     L"用法：鼠标移到窗口下沿那排彩色小块上；左键切换窗口，右键改名或把任意窗口拉成一组。",
+     true, true},
     {HomeFeature::Borders, L"窗口边框",
      L"给每个窗口描一圈边，当前窗口和其他窗口两种颜色，一眼看出焦点在哪。",
      L"用法：开着就有，不用操作。最大化的窗口不画（边框在窗口外 3px，最大化时那 3px 不存在）。",
-     true},
+     true, false},
     {HomeFeature::Pinning, L"窗口置顶",
      L"把窗口钉在最上层，并给它一条高亮边框表示已经钉住；退出时会恢复原样。",
      L"用法：下面那个「置顶刚才那个窗口」按钮，或在窗口标题栏右键选「置于顶层」；也可以设快捷键。",
-     false},
+     false, false},
     {HomeFeature::Drag, L"窗口拖动",
      L"按住一个修饰键，在窗口里任意位置拖动就能搬动它，不用够到标题栏。",
      L"用法：默认关着。打开后按住右 Alt 拖动；按一下不拖 = 窗口居中，用来救跑到屏幕外的窗口。",
-     true},
+     true, false},
 }};
 
 [[nodiscard]] bool FeatureEnabled(const Settings& settings, HomeFeature feature) {
@@ -125,6 +128,7 @@ public:
             DispatchMessageW(&msg);
         }
 
+        if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
         if (ownerWasEnabled) {
             EnableWindow(owner_, TRUE);
             SetForegroundWindow(owner_);
@@ -149,7 +153,23 @@ private:
 
     LRESULT Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (msg) {
+        case WM_SYSKEYDOWN:
+            // 自绘模态窗口不是资源对话框，显式分发这四个助记键。
+            if (wParam == 'I') { OnCommand(2051); return 0; }
+            if (wParam == 'R') { OnCommand(2052); return 0; }
+            if (wParam == 'K') { OnCommand(2053); return 0; }
+            if (wParam == 'L') { OnCommand(2054); return 0; }
+            if (wParam == 'H') { OnCommand(2055); return 0; }
+            break;
+        case WM_TIMER:
+            RefreshStates();
+            return 0;
         case WM_COMMAND:
+            if (LOWORD(wParam) >= 2051 && LOWORD(wParam) <= 2055) {
+                // 仅执行按钮点击通知，不把焦点等通知当成第二次开关。
+                if (HIWORD(wParam) != BN_CLICKED) return 0;
+                PinDiag(L"输入法面板点击：id=%u notification=%u", LOWORD(wParam), HIWORD(wParam));
+            }
             OnCommand(LOWORD(wParam));
             return 0;
         case WM_CLOSE:
@@ -165,6 +185,10 @@ private:
     }
 
     void OnCommand(int id) {
+        if (id >= 2051 && id <= 2055) {
+            if (ctx_.imeCommand) ctx_.imeCommand(id - 2051);
+            RefreshStates(); return;
+        }
         // 四个开关：当场切、当场刷新，面板不关——它们不开窗口，关掉反而打断。
         for (int i = 0; i < static_cast<int>(kFeatures.size()); ++i) {
             if (id == kIdToggleBase + i) {
@@ -189,6 +213,7 @@ private:
             return;
         case kIdPinLast:          Finish(HomeAction::PinLastWindow); return;
         case kIdPinGrab:          Finish(HomeAction::PinGrab); return;
+        case kIdGroupGrab:        Finish(HomeAction::BookmarkGroupGrab); return;
         case kIdDesktopShortcut:  Finish(HomeAction::DesktopShortcut); return;
         case kIdConfigPath:       Finish(HomeAction::ConfigPath); return;
         case kIdClipKeeper:       Finish(HomeAction::ClipKeeper); return;
@@ -298,6 +323,7 @@ private:
         }
 
         BuildControls();
+        SetTimer(hwnd_, 1, 500, nullptr);
         ShowWindow(hwnd_, SW_SHOW);
         SetForegroundWindow(hwnd_);
         return true;
@@ -307,6 +333,8 @@ private:
     [[nodiscard]] static int ContentHeight() {
         int y = kPad + kRowH + kLineH + kSectionGap;                 // 标题 + 一句话
         y += static_cast<int>(kFeatures.size()) * (kRowH + kGap + kLineH * 2 + kSectionGap);
+        y += kRowH + kGap + kLineH * 2 + kSectionGap;
+        y += kRowH + kGap;                                         // 空位提示语开关
         y += kRowH + kGap;                                          // 置顶刚才那个窗口
         y += kRowH + kSectionGap;                                   // 开机启动 + 准星
         y += (kRowH + kGap) * 3;                                    // 程序级按钮三行
@@ -318,7 +346,7 @@ private:
         const int full = kWidth - kPad * 2;
         int y = kPad;
 
-        Add(L"STATIC", L"四个窗口小工具，合在一个托盘程序里", SS_LEFT, kPad, y, full, kRowH,
+        Add(L"STATIC", L"窗口与任务栏工具，独立开关", SS_LEFT, kPad, y, full, kRowH,
             -1, true);
         y += kRowH;
         Add(L"STATIC", L"下面每一项都可以单独开关；按钮进去是那一项的设置。", SS_LEFT, kPad, y,
@@ -335,6 +363,12 @@ private:
                 Add(L"BUTTON", L"排除应用...", BS_PUSHBUTTON | WS_TABSTOP, buttonX, y,
                     kAppsButtonW, kRowH, kIdAppsBase + i);
             }
+            if (f.hasGroup) {
+                // 准星那个字形和「抓取窗口置顶」是同一个：它说的是「这一条会给你一个准星」。
+                buttonX -= kAppsButtonW + kGap;
+                Add(L"BUTTON", L"⊕ 分组...", BS_PUSHBUTTON | WS_TABSTOP, buttonX, y,
+                    kAppsButtonW, kRowH, kIdGroupGrab);
+            }
             toggles_[static_cast<std::size_t>(i)] =
                 Add(L"BUTTON", f.name, BS_AUTOCHECKBOX | WS_TABSTOP, kPad, y,
                     buttonX - kPad - kGap, kRowH, kIdToggleBase + i, true);
@@ -344,6 +378,18 @@ private:
             Add(L"STATIC", f.how, SS_LEFT, kPad, y, full, kLineH, -1);
             y += kLineH + kSectionGap;
         }
+
+        imeToggle_ = Add(L"BUTTON", L"输入法占位保护(&I)", BS_AUTOCHECKBOX | WS_TABSTOP,
+                         kPad, y, 252, kRowH, 2051, true);
+        Add(L"BUTTON", L"恢复(&R)", BS_PUSHBUTTON | WS_TABSTOP, kPad + 258, y, 90, kRowH, 2052);
+        Add(L"BUTTON", L"检查(&K)", BS_PUSHBUTTON | WS_TABSTOP, kPad + 354, y, 90, kRowH, 2053);
+        Add(L"BUTTON", L"日志(&L)", BS_PUSHBUTTON | WS_TABSTOP, kPad + 450, y, 90, kRowH, 2054);
+        y += kRowH + kGap;
+        imeHints_ = Add(L"BUTTON", L"空位显示轻松提示语(&H)（不拦截点击）", BS_AUTOCHECKBOX | WS_TABSTOP,
+                        kPad, y, full, kRowH, 2055);
+        y += kRowH + kGap;
+        imeStatus_ = Add(L"STATIC", L"", SS_LEFT, kPad, y, full, kLineH * 2, -1);
+        y += kLineH * 2 + kSectionGap;
 
         // 置顶刚才那个窗口：面板是从托盘点出来的，而托盘和面板都不在跟踪列表里，所以程序
         // 记着的「最后一个被跟踪的活动窗口」正是用户打开面板之前在用的那个。
@@ -395,6 +441,24 @@ private:
 
     void RefreshStates() {
         const Settings settings = ctx_.settings ? ctx_.settings() : Settings{};
+        if (imeHints_ && GetCapture()!=imeHints_ && !(SendMessageW(imeHints_,BM_GETSTATE,0,0)&BST_PUSHED)) {
+            const WPARAM check=settings.imeGuard.showHints?BST_CHECKED:BST_UNCHECKED;
+            if(SendMessageW(imeHints_,BM_GETCHECK,0,0)!=static_cast<LRESULT>(check))SendMessageW(imeHints_,BM_SETCHECK,check,0);
+        }
+        if (imeToggle_) {
+            const bool active = ctx_.imeActive && ctx_.imeActive();
+            // 鼠标仍按着时不重置原生按钮状态；只在实际变化时重画，避免定时刷新干扰点击。
+            if (GetCapture() != imeToggle_ && !(SendMessageW(imeToggle_, BM_GETSTATE, 0, 0) & BST_PUSHED)) {
+                const WPARAM checked = active ? BST_CHECKED : BST_UNCHECKED;
+                if (SendMessageW(imeToggle_, BM_GETCHECK, 0, 0) != static_cast<LRESULT>(checked))
+                    SendMessageW(imeToggle_, BM_SETCHECK, checked, 0);
+            }
+            const std::wstring label = settings.imeGuard.enabled && !active ?
+                L"占位保护：等待生效(&I)" : L"输入法占位保护(&I)";
+            if (label != imeLabel_) { SetWindowTextW(imeToggle_, label.c_str()); imeLabel_ = label; }
+            const std::wstring status = ctx_.imeStatus ? ctx_.imeStatus() : L"";
+            if (status != imeStatusText_) { SetWindowTextW(imeStatus_, status.c_str()); imeStatusText_ = status; }
+        }
         for (std::size_t i = 0; i < kFeatures.size(); ++i) {
             if (!toggles_[i]) continue;
             const bool on = FeatureEnabled(settings, kFeatures[i].feature);
@@ -420,6 +484,8 @@ private:
     HomeAction action_{HomeAction::None};
     std::array<HWND, 4> toggles_{};
     HWND autoStart_{};
+    HWND imeToggle_{}, imeStatus_{}, imeHints_{};
+    std::wstring imeLabel_, imeStatusText_;
     HWND pinLast_{};
 };
 

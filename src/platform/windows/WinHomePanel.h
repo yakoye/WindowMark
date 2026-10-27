@@ -27,6 +27,9 @@ enum class HomeAction {
     None,
     BookmarkSettings,
     BookmarkApps,
+    // 书签那一块的第三个按钮：准星抓一个窗口，新建一个手动分组。面板上只给「新建」这一
+    // 条路——挑已有的组要列表，那是托盘子菜单的事。
+    BookmarkGroupGrab,
     BorderSettings,
     BorderApps,
     PinSettings,
@@ -47,6 +50,9 @@ enum class HomeAction {
 enum class HomeFeature { Bookmarks, Borders, Pinning, Drag };
 
 struct HomePanelContext {
+    std::function<void(int)> imeCommand;
+    std::function<bool()> imeActive;
+    std::function<std::wstring()> imeStatus;
     // 每次打开都现读，不传快照：开关可能刚在托盘菜单里被改过。
     std::function<Settings()> settings;
     // 开 / 关某个功能。面板调完会重新读一遍 settings 刷新自己。

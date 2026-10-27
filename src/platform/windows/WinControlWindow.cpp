@@ -5,6 +5,7 @@
 #include "ClipKeeperIdentity.h"
 #include "PinDiag.h"
 #include "Resource.h"
+#include "WinUtil.h"
 
 #include <shellapi.h>
 #include <shellscalingapi.h>
@@ -63,9 +64,13 @@ bool WinControlWindow::Start(Handlers handlers) {
         {L"onTogglePinning", static_cast<bool>(handlers_.onTogglePinning)},
         {L"onTogglePinWindow", static_cast<bool>(handlers_.onTogglePinWindow)},
         {L"onGrabPreview", static_cast<bool>(handlers_.onGrabPreview)},
+        {L"onGrabJoinGroup", static_cast<bool>(handlers_.onGrabJoinGroup)},
         {L"onGrabCommit", static_cast<bool>(handlers_.onGrabCommit)},
         {L"onGrabCancel", static_cast<bool>(handlers_.onGrabCancel)},
-        {L"isPinnable", static_cast<bool>(handlers_.isPinnable)},
+        {L"canGrab", static_cast<bool>(handlers_.canGrab)},
+        {L"manualGroups", static_cast<bool>(handlers_.manualGroups)},
+        {L"manualGroupOf", static_cast<bool>(handlers_.manualGroupOf)},
+        {L"onDisbandAllGroups", static_cast<bool>(handlers_.onDisbandAllGroups)},
         {L"onUnpinAll", static_cast<bool>(handlers_.onUnpinAll)},
         {L"onPinSettings", static_cast<bool>(handlers_.onPinSettings)},
         {L"onPinHotkey", static_cast<bool>(handlers_.onPinHotkey)},
@@ -116,9 +121,41 @@ void WinControlWindow::Stop() noexcept {
         UnregisterHotKey(hwnd_, kPinHotkeyId);
         pinHotkey_ = {};
     }
+    SetSwitchHotkeys(0);
     RemoveTrayIcon();
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
+}
+
+std::wstring WinControlWindow::SetSwitchHotkeys(UINT mods) {
+    if (!hwnd_) return {};
+    if (mods == switchMods_) return {};
+
+    if (switchMods_ != 0) {
+        for (int i = 1; i <= 9; ++i) UnregisterHotKey(hwnd_, kSwitchHotkeyBase + i);
+        UnregisterHotKey(hwnd_, kSwitchPreviousId);
+        switchMods_ = 0;
+    }
+    if (mods == 0) return {};
+
+    // MOD_NOREPEAT：按住不放不该连续切换。
+    constexpr UINT kNoRepeat = 0x4000;
+    std::wstring failed;
+    for (int i = 1; i <= 9; ++i) {
+        const UINT vk = static_cast<UINT>('0' + i);
+        if (!RegisterHotKey(hwnd_, kSwitchHotkeyBase + i, mods | kNoRepeat, vk)) {
+            if (!failed.empty()) failed += L"、";
+            failed += static_cast<wchar_t>(L'0' + i);
+        }
+    }
+    if (!RegisterHotKey(hwnd_, kSwitchPreviousId, mods | kNoRepeat, VK_OEM_3)) {
+        if (!failed.empty()) failed += L"、";
+        failed += L"`";
+    }
+    switchMods_ = mods;
+    PinDiag(L"切换快捷键已注册 mods=0x%X，没注册上的: %s", mods,
+            failed.empty() ? L"(无)" : failed.c_str());
+    return failed;
 }
 
 bool WinControlWindow::SetPinHotkey(const Hotkey& hotkey) {
@@ -234,7 +271,7 @@ void WinControlWindow::UpdateGrabTarget() {
     // last valid target also makes the highlight honest: whatever is outlined is what gets
     // pinned.
     if (candidate == 0) return;
-    if (handlers_.isPinnable && !handlers_.isPinnable(candidate)) return;
+    if (handlers_.canGrab && !handlers_.canGrab(candidate)) return;
     if (candidate == grabTarget_) return;
 
     grabTarget_ = candidate;
@@ -242,8 +279,10 @@ void WinControlWindow::UpdateGrabTarget() {
     if (handlers_.onGrabPreview) handlers_.onGrabPreview(candidate);
 }
 
-void WinControlWindow::BeginGrabFromMenu() {
+void WinControlWindow::BeginGrabFromMenu(GrabPurpose purpose, int groupId) {
     if (grabState_ != GrabState::None) return;
+    grabPurpose_ = purpose;
+    grabGroupId_ = groupId;
     ShowGrabHandle();
 }
 
@@ -376,7 +415,16 @@ void WinControlWindow::PaintGrabHandle(HWND handle) const {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
     RECT text{pad + size + pad, 0, client.right - pad, client.bottom};
-    DrawTextW(dc, L"按住准星拖到\n目标窗口上松开", -1, &text,
+    // 说明里带上这次抓来干什么：准星长得一样，松手之后的结果不一样，光一个准星说不清。
+    const wchar_t* hint = L"按住准星拖到\n目标窗口上松开";
+    std::wstring joinHint;
+    if (grabPurpose_ == GrabPurpose::JoinGroup) {
+        joinHint = grabGroupId_ == 0 ? L"拖到窗口上松开\n→ 新建分组"
+                                     : L"拖到窗口上松开\n→ 分组 " +
+                                           std::to_wstring(grabGroupId_);
+        hint = joinHint.c_str();
+    }
+    DrawTextW(dc, hint, -1, &text,
               DT_LEFT | DT_VCENTER | DT_NOPREFIX | DT_WORDBREAK);
     if (oldFont) SelectObject(dc, oldFont);
     if (font) DeleteObject(font);
@@ -483,9 +531,64 @@ void WinControlWindow::EndGrab(bool commit) {
     if (handlers_.onGrabPreview) handlers_.onGrabPreview(0);
     PinDiag(L"EndGrab: commit=%d target=%llu", commit ? 1 : 0, (unsigned long long)target);
     if (commit && target != 0) {
-        if (handlers_.onGrabCommit) handlers_.onGrabCommit(target);
+        if (grabPurpose_ == GrabPurpose::JoinGroup) {
+            CommitGrabToGroup(target);
+        } else if (handlers_.onGrabCommit) {
+            handlers_.onGrabCommit(target);
+        }
     } else if (handlers_.onGrabCancel) {
         handlers_.onGrabCancel();
+    }
+}
+
+void WinControlWindow::CommitGrabToGroup(WindowId target) {
+    if (!handlers_.onGrabJoinGroup) return;
+
+    wchar_t title[96]{};
+    GetWindowTextW(reinterpret_cast<HWND>(static_cast<std::uintptr_t>(target)), title, 96);
+    std::wstring name = title[0] ? title : L"这个窗口";
+    if (name.size() > 28) name = name.substr(0, 27) + L"…";
+
+    // 它本来就在目标组里：加也是加，但屏幕上什么都不会变，得单独说一句。
+    if (grabGroupId_ != 0 && handlers_.manualGroupOf &&
+        handlers_.manualGroupOf(target) == grabGroupId_) {
+        ShowBalloon(L"它已经在这个组里了",
+                    L"「" + name + L"」本来就在「分组 " + std::to_wstring(grabGroupId_) +
+                        L"」里，什么都没变。");
+        return;
+    }
+
+    const int before = grabGroupId_;
+    const int group = handlers_.onGrabJoinGroup(target, grabGroupId_);
+    if (group == 0) {
+        // 只会是「这个窗口没被跟踪」。canGrab 已经挡过一道，还是走到这儿就说出来，
+        // 别让用户对着一个什么都没发生的准星猜。
+        ShowBalloon(L"加入分组没成功", L"「" + name + L"」现在不在 WindowMark 的跟踪范围里。");
+        return;
+    }
+
+    // 组名和人数现查：加入之后才知道这个组变成几个人，而「新建分组」连 id 都是刚分配的。
+    std::wstring label = L"分组 " + std::to_wstring(group);
+    std::size_t count = 0;
+    if (handlers_.manualGroups) {
+        for (const ManualGroupInfo& info : handlers_.manualGroups()) {
+            if (info.id != group) continue;
+            label = Utf8ToWide(info.name);
+            count = info.count;
+            break;
+        }
+    }
+
+    if (count >= 2) {
+        ShowBalloon(L"已加入分组",
+                    L"「" + name + L"」进了「" + label + L"」，现在 " +
+                        std::to_wstring(count) + L" 个窗口。");
+    } else {
+        // 一个成员的组按设计不生效（不然新建分组的那一刻书签条会先闪一下），所以这时候
+        // 屏幕上什么都不会变——不说一声，用户只会以为点了没用。
+        ShowBalloon(before == 0 ? L"分组建好了" : L"已加入分组",
+                    L"「" + name + L"」进了「" + label +
+                        L"」。再抓一个窗口进来，这条书签条就会出现。");
     }
 }
 
@@ -515,6 +618,36 @@ void WinControlWindow::ShowMenu() {
         // so it alone decided how far left the 书签 panel reached - visibly further than
         // the 窗口边框 panel next to it.
         AppendMenuW(bookmarks, MF_STRING, kSelectionCommand, L"选择应用/窗口...");
+
+        // 手动分组的入口。书签上右键也能加入分组，但那要求那个窗口**已经有**书签条
+        // ——也就是它那个应用至少开着两个窗口。落单的窗口只能从这儿进来。
+        groupMenuIds_.clear();
+        if (enabled_) {
+            std::vector<ManualGroupInfo> groups;
+            if (handlers_.manualGroups) groups = handlers_.manualGroups();
+            HMENU grabGroup = CreatePopupMenu();
+            if (grabGroup) {
+                AppendMenuW(grabGroup, MF_STRING, kGrabToGroupCommand, L"新建分组");
+                if (!groups.empty()) AppendMenuW(grabGroup, MF_SEPARATOR, 0, nullptr);
+                for (const ManualGroupInfo& group : groups) {
+                    if (groupMenuIds_.size() >= kGroupCommandLimit) break;
+                    const std::wstring label = Utf8ToWide(group.name) + L"（" +
+                                               std::to_wstring(group.count) + L" 个窗口）";
+                    AppendMenuW(grabGroup, MF_STRING,
+                                kGroupCommandBase +
+                                    static_cast<UINT>(groupMenuIds_.size()),
+                                label.c_str());
+                    groupMenuIds_.push_back(group.id);
+                }
+                // 和「抓取窗口置顶」同一个字形：它说的是「这一条会给你一个准星」。
+                AppendMenuW(bookmarks, MF_POPUP, reinterpret_cast<UINT_PTR>(grabGroup),
+                            L"\u2295抓取窗口加入分组");
+            }
+            if (!groups.empty()) {
+                AppendMenuW(bookmarks, MF_STRING, kDisbandAllGroupsCommand, L"解散所有分组");
+            }
+        }
+
         AppendMenuW(bookmarks, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(bookmarks, MF_STRING, kSettingsCommand, L"书签设置...");
         AppendMenuW(menu, MF_POPUP | (enabled_ ? MF_CHECKED : MF_UNCHECKED),
@@ -577,18 +710,43 @@ void WinControlWindow::ShowMenu() {
                     reinterpret_cast<UINT_PTR>(dragging), L"窗口拖动");
     }
 
+    {
+        HMENU ime = CreatePopupMenu();
+        AppendMenuW(ime, MF_STRING | MF_DISABLED, 0, imeStatus_.c_str());
+        AppendMenuW(ime, MF_STRING | (imeActive_ ? MF_CHECKED : MF_UNCHECKED),
+                    kToggleImeGuardCommand, imeRequested_ ? L"关闭输入法占位保护" : L"启用输入法占位保护");
+        AppendMenuW(ime, MF_STRING, kRestoreImeGuardCommand, L"恢复系统默认布局");
+        AppendMenuW(ime, MF_STRING | (imeHints_ ? MF_CHECKED : MF_UNCHECKED), kToggleImeHintsCommand, L"空位显示轻松提示语");
+        AppendMenuW(ime, MF_STRING, kCheckImeGuardCommand, L"检查兼容性（只读）");
+        AppendMenuW(ime, MF_STRING, kImeGuardDiagnosticsCommand, L"打开诊断日志目录");
+        AppendMenuW(menu, MF_POPUP | (imeActive_ ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(ime), L"任务栏输入法占位保护");
+    }
     // 剪贴板守护。它是独立进程（ClipKeeper.exe），这一项开关的是它的**面板**：
     // 对勾 = 面板当前可见，与点击行为一一对应。停止守护在 ClipKeeper 自己的面板里做。
     //
     // 它也是顶层唯一能真正点击切换的功能项——上面四个带子菜单，MF_POPUP 项没有命令 ID，
     // 点击即展开子菜单，没法兼作开关。
     //
-    // 状态每次开菜单实时查，不缓存：用户可能从 ClipKeeper 自己的托盘把它收起或退出。
+    // 对勾的含义是「它在不在守护」，不是「面板开着没开」——收起面板正是它的正常用法
+    // （继续在托盘里守护），按面板可见来打勾，一收面板勾就没了，看上去像关掉了。
+    //
+    // 每次开菜单实时查，不缓存：用户随时可能从 ClipKeeper 自己的托盘里暂停或退出它。
     {
         namespace ck = windowmark::clipkeeper;
         const HWND panel = FindWindowW(ck::kWindowClass, nullptr);
-        const bool visible = panel != nullptr && IsWindowVisible(panel) != FALSE;
-        AppendMenuW(menu, MF_STRING | (visible ? MF_CHECKED : MF_UNCHECKED),
+        bool guarding = panel != nullptr;
+        if (guarding) {
+            // 超时发：菜单正弹着，不能被一个卡住的进程拖住。问不出来就按「在跑就算在守护」
+            // 算——守护本来就是默认开着的。
+            static const UINT query = RegisterWindowMessageW(ck::kQueryStateMessage);
+            DWORD_PTR state = 0;
+            if (query != 0 &&
+                SendMessageTimeoutW(panel, query, 0, 0, SMTO_ABORTIFHUNG, 200, &state) != 0) {
+                guarding = (state & ck::kStateGuarding) != 0;
+            }
+        }
+        AppendMenuW(menu, MF_STRING | (guarding ? MF_CHECKED : MF_UNCHECKED),
                     kClipKeeperCommand, L"剪贴板守护");
     }
 
@@ -603,7 +761,7 @@ void WinControlWindow::ShowMenu() {
     // 放在最上面：第一次见这个程序的人，菜单里能看懂的只有这一项。
     AppendMenuW(menu, MF_STRING, kPanelCommand, L"面板...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kToggleAllCommand, anythingOn ? L"暂停所有" : L"启用所有");
+    AppendMenuW(menu, MF_STRING, kToggleAllCommand, anythingOn ? L"暂停窗口工具" : L"启用窗口工具");
     // Top level rather than inside either submenu: it switches the program, not a feature.
     // The tick is read from the registry every time the menu opens instead of being cached,
     // because Windows lets the user turn a startup entry off from Task Manager and from
@@ -649,6 +807,11 @@ LRESULT CALLBACK WinControlWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 }
 
 LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+    static const UINT showPanel = RegisterWindowMessageW(L"WindowMark.ShowMainPanel");
+    if (showPanel && msg == showPanel) {
+        if (handlers_.onShowPanel) handlers_.onShowPanel();
+        return 0;
+    }
     // Registered message ids are runtime values, so they cannot be switch labels.
     if (requestQuitMessage_ != 0 && msg == requestQuitMessage_) {
         if (handlers_.onExit) handlers_.onExit();
@@ -674,6 +837,15 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
                 handlers_.onPinHotkey ? 1 : 0);
         if (static_cast<int>(wParam) == kPinHotkeyId && handlers_.onPinHotkey) {
             handlers_.onPinHotkey();
+            return 0;
+        }
+        if (static_cast<int>(wParam) == kSwitchPreviousId && handlers_.onSwitchPrevious) {
+            handlers_.onSwitchPrevious();
+            return 0;
+        }
+        if (const int index = static_cast<int>(wParam) - kSwitchHotkeyBase;
+            index >= 1 && index <= 9 && handlers_.onSwitchTo) {
+            handlers_.onSwitchTo(index);
         }
         return 0;
     case WM_TIMER:
@@ -753,6 +925,19 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
             }
         }
 
+        // 同上：一条命令一个现有分组，抓来的窗口进那个组。
+        {
+            const UINT command = LOWORD(wParam);
+            if (command >= kGroupCommandBase &&
+                command < kGroupCommandBase + kGroupCommandLimit) {
+                const std::size_t index = command - kGroupCommandBase;
+                if (index < groupMenuIds_.size()) {
+                    BeginGrabFromMenu(GrabPurpose::JoinGroup, groupMenuIds_[index]);
+                }
+                return 0;
+            }
+        }
+
         const std::function<void()>* handler = nullptr;
         switch (LOWORD(wParam)) {
         case kToggleAllCommand:      handler = &handlers_.onToggleAll; break;
@@ -767,12 +952,21 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kDragSettingsCommand:   handler = &handlers_.onDragSettings; break;
         case kDragExcludeCommand:    handler = &handlers_.onDragExcludeApps; break;
 
+        case kToggleImeGuardCommand: handler = &handlers_.onToggleImeGuard; break;
+        case kRestoreImeGuardCommand: handler = &handlers_.onRestoreImeGuard; break;
+        case kCheckImeGuardCommand: handler = &handlers_.onCheckImeGuard; break;
+        case kImeGuardDiagnosticsCommand: handler = &handlers_.onImeGuardDiagnostics; break;
+        case kToggleImeHintsCommand: handler = &handlers_.onToggleImeHints; break;
         case kUnpinAllCommand:       handler = &handlers_.onUnpinAll; break;
         case kPinSettingsCommand:    handler = &handlers_.onPinSettings; break;
         case kGrabToPinCommand:
             // Entered after the menu closes, so the menu's own mouse messages are gone.
-            BeginGrabFromMenu();
+            BeginGrabFromMenu(GrabPurpose::Pin, 0);
             return 0;
+        case kGrabToGroupCommand:
+            BeginGrabFromMenu(GrabPurpose::JoinGroup, 0);
+            return 0;
+        case kDisbandAllGroupsCommand: handler = &handlers_.onDisbandAllGroups; break;
         case kClipKeeperCommand:     handler = &handlers_.onClipKeeper; break;
         case kConfigPathCommand:     handler = &handlers_.onConfigPath; break;
         case kDesktopShortcutCommand: handler = &handlers_.onDesktopShortcut; break;

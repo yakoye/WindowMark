@@ -300,6 +300,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ShowMainWindow();
         return 0;
     }
+    // 谁在问「你还在守护吗」。WindowMark 的托盘菜单用它决定打不打勾。
+    // 自动救援关掉＝暂停，这时候虽然进程在跑，但它不救援，对勾也该没。
+    static const UINT kQueryState = ::RegisterWindowMessageW(ck::kQueryStateMessage);
+    if (kQueryState != 0 && msg == kQueryState) {
+        return IsAutoRescueEnabled() ? static_cast<LRESULT>(ck::kStateGuarding) : 0;
+    }
     if (kRequestQuit != 0 && msg == kRequestQuit) {
         // g_exiting 是既有标志：置位后 WM_CLOSE 不再收起到托盘，而是走到 DefWindowProc
         // -> WM_DESTROY，那里会 ChangeClipboardChain 干净地退出监听链。

@@ -622,6 +622,13 @@ const Field kFields[] = {
      nullptr, nullptr, 0, nullptr, nullptr, nullptr, nullptr,
      kBorderInactiveSwatches, static_cast<int>(std::size(kBorderInactiveSwatches))},
 
+    // 切换快捷键。给文本框而不是下拉：修饰键组合有十几种，挑四个塞进下拉就是替用户把
+    // 选择定死。留空＝关掉。
+    {FieldKind::Text, SettingsPage::Bookmarks, L"窗口书签", L"切换快捷键", 0, 0,
+     nullptr, nullptr, nullptr, nullptr, 0,
+     [](const Settings& s) { return Utf8ToWide(s.drawer.switchHotkey); },
+     [](Settings& s, const std::wstring& v) { s.drawer.switchHotkey = WideToUtf8(v); }},
+
     // --- 排除窗口 ---
     // Lives on the border page because that is where an unwanted outline is noticed, but
     // it excludes the window from bookmarks too - the shell chrome that needs silencing
