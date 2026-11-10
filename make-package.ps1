@@ -19,7 +19,7 @@ if ((Test-Path $target) -and !$Force) { throw "目标已存在，不覆盖：$ta
 Copy-Item -LiteralPath $source -Destination $target -Force
 $hash = (Get-FileHash $source -Algorithm SHA256).Hash
 if ((Get-FileHash $target -Algorithm SHA256).Hash -ne $hash) { throw '产物校验失败' }
-if ($Release) {
+if ($Release -or $Candidate) {
     foreach ($root in @('C:/Users/color/Downloads/yakoye-release/WindowMark', '//192.168.7.100/Downloads/yakoye-release/WindowMark')) {
         $archive = Join-Path $root "v$version"
         New-Item -ItemType Directory -Force $archive | Out-Null
