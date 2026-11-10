@@ -8,6 +8,13 @@ namespace windowmark::win {
 namespace {
 constexpr wchar_t kClass[] = L"WindowMark.ImeTrayGuard.Backend";
 constexpr wchar_t kVersionKey[] = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+ULONGLONG TimeValue(FILETIME time) {
+    return (static_cast<ULONGLONG>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+}
+ULONGLONG ProcessCreated(HANDLE process) {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    return process && GetProcessTimes(process, &created, &exited, &kernel, &user) ? TimeValue(created) : 0;
+}
 }
 WinImeTrayGuard::~WinImeTrayGuard() { Shutdown(); }
 bool WinImeTrayGuard::Initialize(std::filesystem::path tools, std::filesystem::path data) {
@@ -51,16 +58,67 @@ void WinImeTrayGuard::SetRequested(bool value) {
     requested_ = value;
     if (onRequestedChanged) onRequestedChanged(value);
 }
+DWORD WinImeTrayGuard::TargetPid() const {
+#ifdef WINDOWMARK_IME_GUARD_TESTING
+    if (fixturePid_) return fixturePid_;
+#endif
+    DWORD pid{};
+    if (const HWND bar = FindWindowW(L"Shell_TrayWnd", nullptr)) GetWindowThreadProcessId(bar, &pid);
+    return pid;
+}
+bool WinImeTrayGuard::TargetExited() const {
+    return targetProcess_ && WaitForSingleObject(targetProcess_, 0) == WAIT_OBJECT_0;
+}
+bool WinImeTrayGuard::MarkerObsolete(DWORD pid, ULONGLONG created) const {
+    std::ifstream input(marker_);
+    std::string line;
+    DWORD previousPid{}; ULONGLONG previousCreated{};
+    while (std::getline(input, line)) {
+        if (line.starts_with("target_pid=")) previousPid = static_cast<DWORD>(strtoul(line.c_str()+11, nullptr, 10));
+        if (line.starts_with("target_created=")) previousCreated = _strtoui64(line.c_str()+15, nullptr, 10);
+    }
+    if (previousPid && previousCreated) {
+        HANDLE previous = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, previousPid);
+        if (!previous) return GetLastError() == ERROR_INVALID_PARAMETER;
+        const auto stamp = ProcessCreated(previous);
+        const bool gone = WaitForSingleObject(previous, 0) == WAIT_OBJECT_0 || (stamp && stamp != previousCreated);
+        CloseHandle(previous);
+        return gone;
+    }
+    // 兼容旧版仅记录主程序 PID 的标记：新 Explorer 晚于标记创建，旧布局不会跨进程遗留。
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    return pid && created && GetFileAttributesExW(marker_.c_str(), GetFileExInfoStandard, &attributes) &&
+        created > TimeValue(attributes.ftLastWriteTime);
+}
 bool WinImeTrayGuard::Enable(bool automatic) {
+    // 保存用户偏好；运行失败、任务栏未就绪不等于用户取消启用。
+    SetRequested(true);
     if (!hwnd_ || shuttingDown_) { message_ = L"恢复监视器不可用，未启用。"; return false; }
     if (client_.Current().running) { message_ = L"等待上一会话恢复完成后再启用。"; return false; }
     recovering_ = false;
     const auto reason = Compatibility();
-    if (!reason.empty()) { message_ = reason; SetRequested(false); return false; }
+    if (!reason.empty()) {
+        message_ = L"已保存启用设置；" + reason;
+        if (!TargetPid()) RecoverLayout(L"已保存启用设置，等待任务栏就绪后自动恢复。");
+        return false;
+    }
+    const DWORD pid = TargetPid();
+    HANDLE target = pid ? OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+    const auto created = ProcessCreated(target);
+    if (!target || !created || WaitForSingleObject(target, 0) != WAIT_TIMEOUT) {
+        if (target) CloseHandle(target);
+        RecoverLayout(L"已保存启用设置，等待任务栏进程就绪。"); return false;
+    }
+    if (targetProcess_) CloseHandle(targetProcess_);
+    targetProcess_ = target;
+    observedPid_ = pid; observedCreated_ = created;
     std::error_code ec;
-    if (automatic && (std::filesystem::exists(marker_, ec) || ec)) {
-        message_ = L"上次恢复未确认，已阻止自动启用；请检查诊断后手动重试。";
-        SetRequested(false); return false;
+    const bool marked = std::filesystem::exists(marker_, ec);
+    if (marked && MarkerObsolete(pid, created)) std::filesystem::remove(marker_, ec);
+    const bool remains = std::filesystem::exists(marker_, ec);
+    if (automatic && (ec || remains)) {
+        message_ = L"启用设置已保留；当前 Explorer 的上次恢复未确认，暂停重试。可关闭后重新启用。";
+        return false;
     }
     try {
         // Explorer 加载独立运行副本，避免安装目录 DLL 锁定阻塞升级/卸载。
@@ -71,7 +129,8 @@ bool WinImeTrayGuard::Enable(bool automatic) {
             std::filesystem::copy_file(tools_ / name, runtime / name);
         log_ = data_ / (id + L".jsonl");
         std::ofstream marker(marker_, std::ios::trunc);
-        marker << "pid=" << GetCurrentProcessId() << "\n"; marker.close();
+        marker << "pid=" << GetCurrentProcessId() << "\ntarget_pid=" << pid
+               << "\ntarget_created=" << created << "\n"; marker.close();
         if (!marker) throw std::runtime_error("marker");
         DWORD fixturePid = 0;
 #ifdef WINDOWMARK_IME_GUARD_TESTING
@@ -80,7 +139,7 @@ bool WinImeTrayGuard::Enable(bool automatic) {
         if (!client_.Start(runtime, log_, fixturePid)) {
             message_ = client_.Current().error;
             // 不能确认失败发生在哪一步，保留标记供下次启动诊断。
-            SetRequested(false); return false;
+            return false;
         }
         hadLease_ = true; message_ = L"已请求启用，正在核验原生容器；尚未生效。";
         taskbar_ = FindWindowW(L"Shell_TrayWnd", nullptr);
@@ -88,7 +147,7 @@ bool WinImeTrayGuard::Enable(bool automatic) {
         taskbarMonitor_ = taskbar_ ? MonitorFromWindow(taskbar_, MONITOR_DEFAULTTONULL) : nullptr;
         SetRequested(true); return true;
     } catch (...) {
-        message_ = L"准备原生组件或恢复标记失败，未启用。"; SetRequested(false); return false;
+        message_ = L"启用设置已保留；准备原生组件或恢复标记失败，当前未生效。"; return false;
     }
 }
 bool WinImeTrayGuard::Active() const noexcept {
@@ -121,35 +180,44 @@ void WinImeTrayGuard::Restore() {
 void WinImeTrayGuard::Pause(const wchar_t* reason) {
     recovering_ = false;
     if (!requested_ && !client_.Current().running) return;
-    SetRequested(false); client_.Stop(); message_ = reason;
+    client_.Stop(); message_ = reason;
 }
 void WinImeTrayGuard::RecoverLayout(const wchar_t* reason) {
     if (!requested_ || shuttingDown_) return;
     recovering_ = true;
     recoverAt_ = GetTickCount64() + 2000;
-    recoverDeadline_ = recoverAt_ + 30000;
     client_.Stop();
     message_ = reason;
 }
 void WinImeTrayGuard::Tick() {
     client_.Tick();
     const auto& s = client_.Current();
+    if (requested_ && !shuttingDown_) {
+        const DWORD pid = TargetPid();
+        HANDLE target = pid ? OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+        const auto created = ProcessCreated(target);
+        if (target) CloseHandle(target);
+        if (created && (pid != observedPid_ || created != observedCreated_)) {
+            observedPid_ = pid; observedCreated_ = created;
+            RecoverLayout(L"任务栏进程已重建，保留启用设置，等待稳定后自动恢复。");
+        } else if (TargetExited() && !recovering_) {
+            RecoverLayout(L"任务栏进程已退出，保留启用设置，等待新任务栏。");
+        }
+    }
     if (s.running && s.restoreFailures) Pause(L"恢复校验异常；已停止续租，请查看日志。");
     if (!s.running && hadLease_) {
         hadLease_ = false;
-        if (ImeGuardRestored(s.running, s.exitCode, s.state, s.writes, s.restores, s.restoreFailures)) {
+        if (TargetExited() || ImeGuardRestored(s.running, s.exitCode, s.state, s.writes, s.restores, s.restoreFailures)) {
             std::error_code ec; std::filesystem::remove(marker_, ec);
             if (ec) { recovering_ = false; message_ = L"布局已恢复，但恢复标记清理失败；请手动检查。"; }
-            else if (!recovering_) message_ = L"已关闭，原生布局已确认恢复。";
-        } else { recovering_ = false; message_ = L"保护已停止，恢复结果未确认；不自动重试。请查看诊断日志。"; }
-        if (!recovering_) SetRequested(false);
+            else if (!recovering_ && requested_ && !shuttingDown_ && s.writes > 0)
+                RecoverLayout(L"原生布局已确认恢复，保留启用设置并重新建立保护。");
+            else if (!recovering_) message_ = requested_ ? L"启用设置已保留，当前保护停止。" : L"已关闭，原生布局已确认恢复。";
+        } else { recovering_ = false; message_ = L"启用设置已保留；保护停止且恢复未确认，暂停当前任务栏重试。请查看诊断日志。"; }
     }
     if (recovering_ && requested_ && !s.running && !suspended_) {
         const auto now = GetTickCount64();
-        if (now >= recoverDeadline_) {
-            recovering_ = false; SetRequested(false);
-            message_ = L"任务栏持续未就绪，自动恢复已停止；可手动重新启用。";
-        } else if (now >= recoverAt_ && Compatibility().empty()) {
+        if (now >= recoverAt_ && Compatibility().empty()) {
             // 只在原布局已确认恢复后重连一次；连接失败不循环重试。
             Enable(true);
         }
@@ -173,12 +241,13 @@ void WinImeTrayGuard::OpenDiagnostics(HWND owner) const {
 void WinImeTrayGuard::Shutdown() {
     if (shuttingDown_) return;
     shuttingDown_ = true;
-    // 正常退出保留用户启用意图；只有失败或系统事件才自动清除配置。
+    // 正常退出只停止运行会话，保留用户启用偏好；失败和系统事件也不清除配置。
     onRequestedChanged = {};
     Restore();
     const auto deadline = GetTickCount64() + 6500;
     while (client_.Current().running && GetTickCount64() < deadline) { Tick(); Sleep(20); }
     if (hwnd_) { WTSUnRegisterSessionNotification(hwnd_); DestroyWindow(hwnd_); hwnd_ = nullptr; }
+    if (targetProcess_) { CloseHandle(targetProcess_); targetProcess_ = nullptr; }
 }
 LRESULT CALLBACK WinImeTrayGuard::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* self = reinterpret_cast<WinImeTrayGuard*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -191,7 +260,7 @@ LRESULT CALLBACK WinImeTrayGuard::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         if (msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED)
             self->RecoverLayout(L"显示布局变化，等待稳定后自动恢复保护。");
         if (msg == self->taskbarCreated_ && self->taskbarCreated_)
-            self->Pause(L"Explorer 已重建任务栏，已暂停保护。");
+            self->RecoverLayout(L"Explorer 已重建任务栏，保留启用设置，自动恢复保护。");
         if (msg == WM_POWERBROADCAST && wp == PBT_APMSUSPEND) {
             self->suspended_ |= 4; self->RecoverLayout(L"系统休眠，唤醒后自动恢复保护。");
         }

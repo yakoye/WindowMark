@@ -9,6 +9,10 @@ public:
     ~WinImeTrayGuard();
     bool Initialize(std::filesystem::path tools, std::filesystem::path data);
     bool Enable(bool automatic = false);
+    void ResumeSavedPreference() {
+        SetRequested(true);
+        RecoverLayout(L"已记住启用设置，等待任务栏稳定后自动恢复。");
+    }
     void Restore();
     void Shutdown();
     void Check();
@@ -28,6 +32,9 @@ private:
     void Pause(const wchar_t* reason);
     void RecoverLayout(const wchar_t* reason);
     void SetRequested(bool value);
+    DWORD TargetPid() const;
+    bool TargetExited() const;
+    bool MarkerObsolete(DWORD pid, ULONGLONG created) const;
     [[nodiscard]] std::wstring Compatibility() const;
     ime_guard::Client client_;
     HWND hwnd_{};
@@ -37,10 +44,13 @@ private:
     bool requested_{}, hadLease_{}, shuttingDown_{};
     bool recovering_{};
     unsigned suspended_{};
-    ULONGLONG recoverAt_{}, recoverDeadline_{};
+    ULONGLONG recoverAt_{};
     HWND taskbar_{};
     UINT taskbarDpi_{};
     HMONITOR taskbarMonitor_{};
+    HANDLE targetProcess_{};
+    DWORD observedPid_{};
+    ULONGLONG observedCreated_{};
 #ifdef WINDOWMARK_IME_GUARD_TESTING
     DWORD fixturePid_{};
 #endif

@@ -449,12 +449,12 @@ private:
             const bool active = ctx_.imeActive && ctx_.imeActive();
             // 鼠标仍按着时不重置原生按钮状态；只在实际变化时重画，避免定时刷新干扰点击。
             if (GetCapture() != imeToggle_ && !(SendMessageW(imeToggle_, BM_GETSTATE, 0, 0) & BST_PUSHED)) {
-                const WPARAM checked = active ? BST_CHECKED : BST_UNCHECKED;
+                const WPARAM checked = settings.imeGuard.enabled ? BST_CHECKED : BST_UNCHECKED;
                 if (SendMessageW(imeToggle_, BM_GETCHECK, 0, 0) != static_cast<LRESULT>(checked))
                     SendMessageW(imeToggle_, BM_SETCHECK, checked, 0);
             }
             const std::wstring label = settings.imeGuard.enabled && !active ?
-                L"占位保护：等待生效(&I)" : L"输入法占位保护(&I)";
+                L"占位保护：已启用(&I)" : L"输入法占位保护(&I)";
             if (label != imeLabel_) { SetWindowTextW(imeToggle_, label.c_str()); imeLabel_ = label; }
             const std::wstring status = ctx_.imeStatus ? ctx_.imeStatus() : L"";
             if (status != imeStatusText_) { SetWindowTextW(imeStatus_, status.c_str()); imeStatusText_ = status; }

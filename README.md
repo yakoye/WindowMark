@@ -1,8 +1,8 @@
-# WindowMark v0.6.2
+# WindowMark v0.6.3
 
-源码：`WindowMark-dev`；普通开发包：`dist/test`；历史候选：`dist/rc`；正式包：`dist/WindowMark-v0.6.2-win64.zip`。
+本次开发与发布检出：`WindowMark-release-0.6.3`；原开发目录 `WindowMark-dev` 保留。普通开发包：`dist/test`；历史候选：`dist/rc`；正式包：`dist/WindowMark-v0.6.3-win64.zip`。
 正式完整 ZIP 使用 `make-package.ps1 -Release` 生成，按版本双归档到本机和 NAS 的
-`yakoye-release/WindowMark/v0.6.2`，旧版不覆盖。
+`yakoye-release/WindowMark/v0.6.3`，旧版不覆盖。
 
 ## 任务栏输入法占位保护与轻松提示语
 
@@ -14,11 +14,11 @@
 此路径依赖限定映像的非公开接口；移除已知崩溃路径不等于所有稳定性问题均已解决。
 现已接入 WindowMark 主面板与托盘菜单，`ime_guard.enabled=false` 默认关闭。
 rc.3 已去掉 100% DPI、单显示器及特定 Windows 补丁号的测试门禁；各种缩放、多屏环境均可尝试启用，保护范围是输入法所在的主任务栏。系统加载映像不匹配时仍拒绝调用未知内部地址。
-显示布局变化先恢复原值，稳定 2 秒后重新学习宽度；锁屏、断开、休眠后在会话恢复时尝试一次自动恢复。恢复未确认、Explorer 重建或连接失败时停止，不重启 Explorer、不循环附加。
+显示布局变化先恢复原值，稳定 2 秒后重新学习宽度；锁屏、断开、休眠后在会话恢复时尝试自动恢复。v0.6.3 保留启用偏好，开机等待任务栏就绪、Explorer 重建后自动重新连接；旧进程退出后清理其过期恢复标记。同一存活 Explorer 恢复未确认时保留设置并暂停，不循环附加。
 `ime_guard.show_hints=true` 默认显示轻松提示语：原生图标消失后，在保留空位每 45 秒轮换「加油鸭」「喝杯水」「歇一会」「眨眨眼」「慢慢来」「伸个懒腰」。图标恢复时隐藏，文字不接收点击；可从主面板或托盘关闭，变回透明空位。
-勾选只表示原生保护实际生效；等待、恢复中和不支持构建会显示原因。窗口工具总开关不会暗中启用此项。
+勾选表示已保存的启用偏好；状态文字单独显示生效、等待或暂停原因。只有主动关闭或恢复默认布局才取消启用。旧版已经误保存为关闭的用户，升级后重新勾选一次；也可退出后用 `WindowMark.exe --ime-guard-enable` 显式启用。窗口工具总开关不会暗中启用此项。
 用户已确认本机可用并授权发布。八小时监测完成，5711 个样本无进程缺失、保护失效、陈旧日志或错误；Windows 10 的新增保护功能暂停，多屏、非 100% DPI 仍未完成全面验收。
-版本发布与测试范围见 [v0.6.2 发布记录](docs/tests/Release-0.6.2-20261028.md)。
+本次配置与重启修复见 [v0.6.3 测试记录](docs/tests/Release-0.6.3-20261110.md)；历史验证见 [v0.6.2 发布记录](docs/tests/Release-0.6.2-20261028.md)。
 开放测试与验收范围见 [rc.3 测试记录](docs/tests/IME-Tray-Guard-RC3-20261025.md)。
 完整解压 ZIP 后运行 `WindowMark.exe`，必须保留 `tools` 目录，不能只复制裸 EXE。
 新增模块的[集成清单](docs/features/IME-Tray-Guard-Integration.md)和
@@ -92,8 +92,8 @@ full history.
 
 ## Quick start
 
-1. 从 [v0.6.2 发布页](https://github.com/yakoye/WindowMark/releases/tag/v0.6.2)
-   下载 `WindowMark-v0.6.2-win64.zip`。
+1. 从 [v0.6.3 发布页](https://github.com/yakoye/WindowMark/releases/tag/v0.6.3)
+   下载 `WindowMark-v0.6.3-win64.zip`。
 2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
 3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
    包里顶层只有这一个 exe，不用猜该打开哪个；`tools\` 里是诊断工具和剪贴板守护，由程序
@@ -962,7 +962,7 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## Version policy
 
-**v0.6.2** 为当前版本，采用完整 ZIP 交付：解压后双击主 EXE 即用，安装和卸载是它自己的
+**v0.6.3** 为当前版本，采用完整 ZIP 交付：解压后双击主 EXE 即用，安装和卸载是它自己的
 两个模式，附属工具在 `tools\` 里；托盘左键打开主面板，边框和事件流出问题会自己恢复。The line includes window bookmarks with a magnetic dock
 and a bookmark → title → thumbnail preview stack, per-window borders
 drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,

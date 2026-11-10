@@ -38,6 +38,7 @@ $docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'portable.on',
           'docs/tests/IME-Tray-Guard-Activation-Followup-20261024.md',
           'docs/tests/IME-Tray-Guard-RC3-20261025.md',
           'docs/tests/Release-0.6.2-20261028.md',
+          'docs/tests/Release-0.6.3-20261110.md',
           'docs/tests/IME-Tray-Guard-Windows10-Collaboration.md',
           'measure_shadow_auto.bat', 'measure_shadow_inset.bat', 'show_border_log.bat')
 $tools = @(

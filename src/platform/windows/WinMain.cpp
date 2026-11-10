@@ -935,14 +935,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (length && length < std::size(exe) && imeGuard.Initialize(
                 std::filesystem::path(exe).parent_path() / L"tools", settingsPath.parent_path() / L"ImeTrayGuard")) {
             imeGuard.SetHints(settings.imeGuard.showHints);
-            if (settings.imeGuard.enabled && !imeGuard.Enable(true)) {
-                coordinator.SetImeGuardEnabled(false);
-                windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings());
-                control.ShowBalloon(L"输入法占位保护未启用", imeGuard.StatusText());
-            }
+            // 显式启动参数等同于用户确认启用；普通启动只恢复已保存的偏好。
+            if (HasArgument(L"--ime-guard-enable")) imeGuard.Enable(false);
+            else if (settings.imeGuard.enabled) imeGuard.ResumeSavedPreference();
         } else if (settings.imeGuard.enabled) {
-            coordinator.SetImeGuardEnabled(false);
-            windowmark::Settings::Save(settingsPath, coordinator.CurrentSettings());
+            imeGuard.Enable(true); // 保留已保存偏好，即使本次监视器不可用。
             control.ShowBalloon(L"输入法占位保护未启用", L"恢复监视器初始化失败，没有启动原生控制程序。");
         }
     }

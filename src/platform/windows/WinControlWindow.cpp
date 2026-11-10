@@ -713,13 +713,13 @@ void WinControlWindow::ShowMenu() {
     {
         HMENU ime = CreatePopupMenu();
         AppendMenuW(ime, MF_STRING | MF_DISABLED, 0, imeStatus_.c_str());
-        AppendMenuW(ime, MF_STRING | (imeActive_ ? MF_CHECKED : MF_UNCHECKED),
+        AppendMenuW(ime, MF_STRING | (imeRequested_ ? MF_CHECKED : MF_UNCHECKED),
                     kToggleImeGuardCommand, imeRequested_ ? L"关闭输入法占位保护" : L"启用输入法占位保护");
         AppendMenuW(ime, MF_STRING, kRestoreImeGuardCommand, L"恢复系统默认布局");
         AppendMenuW(ime, MF_STRING | (imeHints_ ? MF_CHECKED : MF_UNCHECKED), kToggleImeHintsCommand, L"空位显示轻松提示语");
         AppendMenuW(ime, MF_STRING, kCheckImeGuardCommand, L"检查兼容性（只读）");
         AppendMenuW(ime, MF_STRING, kImeGuardDiagnosticsCommand, L"打开诊断日志目录");
-        AppendMenuW(menu, MF_POPUP | (imeActive_ ? MF_CHECKED : MF_UNCHECKED),
+        AppendMenuW(menu, MF_POPUP | (imeRequested_ ? MF_CHECKED : MF_UNCHECKED),
                     reinterpret_cast<UINT_PTR>(ime), L"任务栏输入法占位保护");
     }
     // 剪贴板守护。它是独立进程（ClipKeeper.exe），这一项开关的是它的**面板**：
