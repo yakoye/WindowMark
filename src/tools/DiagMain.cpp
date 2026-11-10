@@ -9,7 +9,7 @@
 // 隐私：不收集窗口标题（常有文档名、网址、聊天对象），路径里的用户目录换成
 // %USERPROFILE%。排查边框问题有类名和进程名就够了——报告是要贴到别人面前的。
 //
-//   双击                          报告存到桌面、复制到剪贴板，弹窗提示
+//   双击                          报告存到程序目录、复制到剪贴板，弹窗提示
 //   WindowMarkDiag.exe --out 文件  只写到指定文件，不弹窗、不碰剪贴板（自动化验证用）
 
 #include "AppIdentity.h"
@@ -543,6 +543,7 @@ Settings CollectConfig(const std::vector<RunningCopy>& running,
     std::error_code ec;
     inputs.portable = exe.parent_path() / L"settings.conf";
     inputs.portableExists = std::filesystem::exists(inputs.portable, ec);
+    inputs.portableRequested = true;
     inputs.configured = win::ReadConfiguredConfigPath();
     inputs.configuredUsable =
         !inputs.configured.empty() && win::IsDirectoryWritable(inputs.configured.parent_path());
@@ -848,7 +849,7 @@ void CollectBorders(const Settings& settings, const std::vector<RunningCopy>& ru
 //   diag.log    跟着配置文件走，绿色版就在 exe 旁边，整个文件夹自带一切。
 void CollectLogs(const std::filesystem::path& configDir) {
     Section(L"WindowMark 自己的日志");
-    const std::filesystem::path startupRoot = win::LocalDataRoot();
+    const std::filesystem::path startupRoot = configDir;
     const std::filesystem::path diagRoot = configDir.empty() ? startupRoot : configDir;
     for (const wchar_t* name : {L"startup.log", L"diag.log"}) {
         const bool isDiag = name == std::wstring(L"diag.log");
@@ -887,12 +888,8 @@ void CollectLogs(const std::filesystem::path& configDir) {
 }
 
 [[nodiscard]] std::filesystem::path DesktopReportPath() {
-    PWSTR desktop = nullptr;
-    std::filesystem::path dir;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktop)) && desktop) {
-        dir = desktop;
-    }
-    if (desktop != nullptr) CoTaskMemFree(desktop);
+    auto dir = OwnExePath().parent_path();
+    if (dir.parent_path().filename() == L".runtime") dir = dir.parent_path().parent_path();
     SYSTEMTIME now{};
     GetLocalTime(&now);
     wchar_t name[96]{};
@@ -991,10 +988,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     std::wstring message;
     if (saved) {
-        message = L"诊断报告已经保存到桌面，并复制到了剪贴板：\n\n" + path.filename().wstring() +
+        message = L"诊断报告已经保存到程序目录，并复制到了剪贴板：\n\n" + path.filename().wstring() +
                   L"\n\n直接粘贴发给开发者就行。\n\n现在打开报告看看吗？";
     } else {
-        message = L"报告没能保存到桌面，但已经复制到了剪贴板——直接粘贴发给开发者就行。";
+        message = L"报告没能保存到程序目录，但已经复制到了剪贴板——直接粘贴发给开发者就行。";
     }
     const int choice = MessageBoxW(nullptr, message.c_str(), L"WindowMark 诊断",
                                    (saved ? MB_YESNO : MB_OK) | MB_ICONINFORMATION);

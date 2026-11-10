@@ -196,8 +196,9 @@ bool IsDirectoryWritable(const std::filesystem::path& directory) {
     std::error_code ec;
     if (!std::filesystem::is_directory(directory, ec)) return false;
     // 真写一次再删掉。只看权限位在网络盘和只读介质上会给出错误答案。
-    const auto probe = directory / L"windowmark-write-probe.tmp";
-    HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    const auto probe = directory / (L"windowmark-write-probe-" + std::to_wstring(GetCurrentProcessId()) +
+                                     L"-" + std::to_wstring(GetTickCount64()) + L".tmp");
+    HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     CloseHandle(file);
@@ -205,34 +206,7 @@ bool IsDirectoryWritable(const std::filesystem::path& directory) {
 }
 
 ConfigLocation CurrentConfigLocation() {
-    ConfigLocationInputs inputs;
-    std::error_code ec;
-
-    inputs.portable = PortableConfigPath();
-    inputs.portableExists =
-        !inputs.portable.empty() && std::filesystem::exists(inputs.portable, ec);
-    // 绿色版标记：解压即用的包里带着 portable.on，第一次保存时设置就落在 exe 旁边。
-    // 目录写不进去（解压到 Program Files 之类）就不算，照常回落到默认位置。
-    // 两种方式声明「我要便携」：
-    //   · exe 旁边放一个 portable.on（发布包里就带着）；
-    //   · 或者 exe 的文件名里带 Portable——这样**单独一个 exe 文件**就是完整的绿色版，
-    //     不用再配一个标记文件。每次发出去试的那个单文件就靠这条。
-    const auto marker = PortableMarkerPath();
-    const bool markerPresent = !marker.empty() && std::filesystem::exists(marker, ec);
-    std::wstring stem = InstalledExePath().stem().wstring();
-    for (wchar_t& ch : stem) ch = static_cast<wchar_t>(std::towlower(ch));
-    const bool namedPortable = stem.find(L"portable") != std::wstring::npos;
-    inputs.portableRequested = (markerPresent || namedPortable) && !marker.empty() &&
-                               IsDirectoryWritable(marker.parent_path());
-
-    inputs.configured = ReadConfiguredConfigPath();
-    inputs.configuredUsable =
-        !inputs.configured.empty() && IsDirectoryWritable(inputs.configured.parent_path());
-
-    const auto root = LocalDataRoot();
-    inputs.fallback = root.empty() ? std::filesystem::path{} : root / L"settings.conf";
-
-    return ResolveConfigLocation(inputs);
+    return ConfigLocation{PortableConfigPath(), ConfigSource::Portable, false};
 }
 
 std::filesystem::path RoamingDataRoot() {
@@ -503,11 +477,13 @@ unsigned SystemAccentColor() {
 void PurgeAllUserData() {
     RemoveStartupRegistration();
     std::error_code ec;
-    const auto local = LocalDataRoot();
-    if (!local.empty()) std::filesystem::remove_all(local, ec);
-    ec.clear();
-    const auto roaming = RoamingDataRoot();
-    if (!roaming.empty()) std::filesystem::remove_all(roaming, ec);
+    const auto root = InstalledExePath().parent_path();
+    if (root.empty()) return;
+    // 只清理明确属于本程序的条目，绝不递归删除 EXE 所在目录。
+    for (const auto* name : {L"settings.conf", L"diag.on", L"diag.log", L"startup.log", L"ImeTrayGuard", L".runtime"}) {
+        ec.clear();
+        std::filesystem::remove_all(root / name, ec);
+    }
 }
 
 } // namespace windowmark::win

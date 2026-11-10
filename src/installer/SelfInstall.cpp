@@ -30,15 +30,6 @@ constexpr std::array<const wchar_t*, 5> kLegacyTopLevelFiles{
     L"WindowMarkInspect.exe", L"ClipKeeper.exe",
 };
 
-// 跟着主程序一起装的附属 exe，都放 tools\ 子目录。ClipKeeper 是可选功能（剪贴板守护），
-// Diag/Inspect 是出问题时让用户双击跑一下的诊断工具。
-constexpr std::array<const wchar_t*, 5> kToolExeNames{
-    L"ClipKeeper.exe", L"WindowMarkDiag.exe", L"WindowMarkInspect.exe",
-    L"WindowMarkXamlContainerTrial.exe", L"WindowMarkXamlContainerTap.dll",
-};
-
-constexpr wchar_t kToolsDirName[] = L"tools";
-
 void EnsureCommonControls() {
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
@@ -155,34 +146,6 @@ bool Launch(const std::filesystem::path& exePath, const wchar_t* arguments) {
     return false;
 }
 
-std::filesystem::path ToolSource(const std::filesystem::path& selfDir, const wchar_t* name) {
-    // 发布包的样子：tools\ 子目录。
-    const auto packaged = selfDir / kToolsDirName / name;
-    std::error_code ec;
-    if (std::filesystem::exists(packaged, ec)) return packaged;
-    // 直接从构建目录安装时所有 exe 都在一层里，LocatePayload 认得那几个位置。
-    return LocatePayload(name);
-}
-
-// 附属工具装不上只是少几个功能，主程序照常工作，所以记进 warnings 而不是让安装失败。
-void CopyTools(const std::filesystem::path& selfDir, const std::filesystem::path& installDir,
-               std::wstring& warnings) {
-    const auto toolsDir = installDir / kToolsDirName;
-    std::wstring error;
-    if (!EnsureDirectory(toolsDir, error)) {
-        warnings += error + L"\n";
-        return;
-    }
-    for (const wchar_t* name : kToolExeNames) {
-        const auto source = ToolSource(selfDir, name);
-        if (source.empty()) {
-            warnings += L"未找到 " + std::wstring(name) + L"，对应功能不可用。\n";
-            continue;
-        }
-        if (!CopyFileTo(source, toolsDir / name, error)) warnings += error + L"\n";
-    }
-}
-
 void RemoveLegacyTopLevelFiles(const std::filesystem::path& installDir) {
     std::error_code ec;
     for (const wchar_t* name : kLegacyTopLevelFiles) {
@@ -243,7 +206,22 @@ int DoInstall(bool silent, bool fromTray, bool& quitSelf) {
 
     std::wstring warnings;
     RemoveLegacyTopLevelFiles(installDir);
-    CopyTools(selfDir, installDir, warnings);
+    // 内置组件不再复制为安装目录中的独立 tools。
+    const auto configTarget = installDir / L"settings.conf";
+    std::error_code configEc;
+    if (!std::filesystem::exists(configTarget, configEc)) {
+        const auto configSource = selfDir / L"settings.conf";
+        if (std::filesystem::exists(configSource, configEc)) {
+            const auto oldGuard = selfDir / L"ImeTrayGuard";
+            const auto newGuard = installDir / L"ImeTrayGuard";
+            if (std::filesystem::exists(oldGuard, configEc) && !std::filesystem::exists(newGuard, configEc))
+                std::filesystem::copy(oldGuard, newGuard, std::filesystem::copy_options::recursive, configEc);
+            if (configEc || !CopyFileTo(configSource, configTarget, error)) {
+                if (!silent) ShowMessage(L"WindowMark", TD_ERROR_ICON, L"设置迁移失败", L"原设置已保留，请将设置及输入法状态目录复制到目标目录后再启动。");
+                return 5;
+            }
+        }
+    }
 
     if (!WriteUninstallEntry(installDir, DirectorySizeKb(installDir))) {
         warnings += L"卸载入口注册失败，「设置 - 应用」里可能看不到 WindowMark。\n";
@@ -257,7 +235,7 @@ int DoInstall(bool silent, bool fromTray, bool& quitSelf) {
 
     if (!silent) {
         std::wstring detail = L"安装位置：\n" + installDir.wstring() + L"\n\n设置文件：\n" +
-                              LocalDataDir().wstring() +
+                              (installDir / L"settings.conf").wstring() +
                               L"\n\n卸载：托盘菜单里的「卸载 WindowMark」，或「设置 - 应用」。";
         if (!warnings.empty()) detail += L"\n\n以下项目需要注意：\n" + warnings;
         ShowMessage(L"WindowMark 安装", warnings.empty() ? TD_INFORMATION_ICON : TD_WARNING_ICON,
@@ -332,7 +310,14 @@ int DoUninstall(bool silent, bool staged, bool purge, bool& quitSelf) {
 
     std::wstring warnings;
     std::wstring error;
-    if (!RemoveTree(InstallDir(), error)) warnings += error + L"\n";
+    if (purge) {
+        if (!RemoveTree(InstallDir(), error)) warnings += error + L"\n";
+    } else {
+        // 设置现在与程序同目录；普通卸载只移除程序组件，保留用户数据。
+        for (const auto* name : {L"WindowMark.exe", L"tools", L".runtime"}) {
+            if (!RemoveTree(InstallDir() / name, error)) warnings += error + L"\n";
+        }
+    }
     if (purge) {
         if (!RemoveTree(LocalDataDir(), error)) warnings += error + L"\n";
         if (!RemoveTree(RoamingDataDir(), error)) warnings += error + L"\n";
@@ -342,7 +327,7 @@ int DoUninstall(bool silent, bool staged, bool purge, bool& quitSelf) {
         std::wstring detail = purge
             ? L"程序文件、开机自启项、快捷方式，以及全部设置和缓存数据都已删除。"
             : L"程序文件、开机自启项和快捷方式已删除。\n设置保留在：\n" +
-                  LocalDataDir().wstring();
+                  InstallDir().wstring();
         detail += L"\n\n没有安装过服务、驱动、Explorer 补丁或系统级注册表项，无需其他清理。";
         if (!warnings.empty()) detail += L"\n\n以下项目需要手动处理：\n" + warnings;
         ShowMessage(L"WindowMark 卸载", warnings.empty() ? TD_INFORMATION_ICON : TD_WARNING_ICON,

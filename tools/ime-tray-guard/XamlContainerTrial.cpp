@@ -145,7 +145,10 @@ int wmain(int argc,wchar_t** argv) {
         Handle target(OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid));
         USHORT processMachine{},nativeMachine{};
         if(!target.value || !IsWow64Process2(target.value,&processMachine,&nativeMachine) || processMachine!=IMAGE_FILE_MACHINE_UNKNOWN || nativeMachine!=IMAGE_FILE_MACHINE_AMD64)throw std::runtime_error("Only native x64 targets validated");
-        Handle singleton(CreateMutexW(nullptr,FALSE,L"Local\\WindowMark.XamlContainerTrial.Controller"));
+        // 自建夹具互相隔离，也不占用真实 Explorer 的控制器锁。
+        const auto singletonName = native ? std::wstring(L"Local\\WindowMark.XamlContainerTrial.Controller")
+            : L"Local\\WindowMark.XamlContainerTrial.Fixture." + std::to_wstring(pid);
+        Handle singleton(CreateMutexW(nullptr,FALSE,singletonName.c_str()));
         if(!singleton.value||GetLastError()==ERROR_ALREADY_EXISTS)return 4;
         GUID guid{};if(FAILED(CoCreateGuid(&guid)))throw std::runtime_error("GUID failed");
         wchar_t id[40]{};StringFromGUID2(guid,id,40);

@@ -24,6 +24,7 @@
 #include "AppIdentity.h"
 #include "AutoStart.h"
 #include "BuildStamp.h"
+#include "EmbeddedTools.h"
 #include "InstallerCommon.h"
 #include "SelfInstall.h"
 #include "Resource.h"
@@ -68,20 +69,12 @@ bool HasArgument(const wchar_t* expected) {
 
 // A Run-key launch is otherwise indistinguishable from "Windows never tried" once the
 // process has disappeared. Keep a tiny append-only audit trail only for --autostart runs;
-// ordinary manual launches stay silent. This deliberately uses LOCALAPPDATA and Win32/C
-// primitives so it also works before COM, the coordinator and the tray window exist.
+// 普通手动启动不写审计日志；开机启动日志写入 EXE 同目录，COM 初始化前也可记录。
 void LogAutoStartPhase(bool autoStartLaunch, const wchar_t* phase, DWORD code = 0) {
     if (!autoStartLaunch) return;
 
-    wchar_t localAppData[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", localAppData, static_cast<DWORD>(std::size(localAppData)));
-    if (length == 0 || length >= static_cast<DWORD>(std::size(localAppData))) return;
-
-    const std::wstring directory = std::wstring(localAppData) + L"\\WindowMark";
-    if (!CreateDirectoryW(directory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        return;
-    }
+    const auto directory = windowmark::win::InstalledExePath().parent_path().wstring();
+    if (directory.empty()) return;
 
     FILE* file = nullptr;
     if (_wfopen_s(&file, (directory + L"\\startup.log").c_str(), L"a, ccs=UTF-8") != 0 ||
@@ -134,6 +127,22 @@ void NotifyExistingInstance(const wchar_t* messageName) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // 自检与子功能模式不会触碰正在运行的主实例，也不会启用输入法保护。
+    if (HasArgument(L"--prepare-portable") || HasArgument(L"--clipkeeper")) {
+        std::filesystem::path tools;
+        std::wstring error;
+        if (!windowmark::win::IsDirectoryWritable(windowmark::win::InstalledExePath().parent_path()) ||
+            !windowmark::bundle::Prepare(tools, error)) return 7;
+        if (HasArgument(L"--clipkeeper")) {
+            SetEnvironmentVariableW(L"WINDOWMARK_OWNER_EXE", windowmark::win::InstalledExePath().c_str());
+            const auto exe = tools / L"ClipKeeper.exe";
+            return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr,
+                                                          exe.parent_path().c_str(), SW_SHOWNORMAL)) > 32 ? 0 : 8;
+        }
+        const auto path = windowmark::win::PortableConfigPath();
+        const auto settings = windowmark::Settings::LoadOrCreate(path);
+        return windowmark::Settings::Save(path, settings) ? 0 : 9;
+    }
     const bool autoStartLaunch = HasArgument(L"--autostart");
     LogAutoStartPhase(autoStartLaunch, L"attempt");
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -227,7 +236,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
-    // 三层查找：exe 同目录 -> 注册表 ConfigPath -> %LOCALAPPDATA%。
+    std::filesystem::path toolsDirectory;
+    std::wstring bundleError;
+    if (!windowmark::win::IsDirectoryWritable(windowmark::win::InstalledExePath().parent_path()) ||
+        !windowmark::bundle::Prepare(toolsDirectory, bundleError)) {
+        MessageBoxW(nullptr, bundleError.empty() ? L"程序目录不可写。请将 EXE 放到可写目录，配置和数据将保存在那里。" : bundleError.c_str(),
+                    L"WindowMark", MB_OK | MB_ICONERROR);
+        return 7;
+    }
+    SetEnvironmentVariableW(L"WINDOWMARK_OWNER_EXE", windowmark::win::InstalledExePath().c_str());
+
+    // 单文件绿色版固定使用主 EXE 同目录配置。
     const windowmark::ConfigLocation configLocation = windowmark::win::CurrentConfigLocation();
     if (configLocation.path.empty()) {
         LogAutoStartPhase(autoStartLaunch, L"data_path_failed", 4);
@@ -235,9 +254,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 4;
     }
     const auto settingsPath = configLocation.path;
+    // 原安装目录升级：只在本地配置缺失时迁移旧设置，保留原件；全新绿色目录不继承别处设置。
+    if (windowmark::setup::RunningFromInstallDir()) {
+        try {
+            if (!std::filesystem::exists(settingsPath)) {
+                auto previous = windowmark::win::ReadConfiguredConfigPath();
+                if (previous.empty() || !std::filesystem::exists(previous))
+                    previous = windowmark::win::LocalDataRoot() / L"settings.conf";
+                if (std::filesystem::exists(previous)) {
+                    const auto oldGuard = previous.parent_path() / L"ImeTrayGuard";
+                    const auto newGuard = settingsPath.parent_path() / L"ImeTrayGuard";
+                    if (std::filesystem::exists(oldGuard) && !std::filesystem::exists(newGuard))
+                        std::filesystem::copy(oldGuard, newGuard, std::filesystem::copy_options::recursive);
+                    std::filesystem::copy_file(previous, settingsPath);
+                }
+            }
+        } catch (...) {
+            MessageBoxW(nullptr, L"旧设置迁移失败，原文件已保留。请将旧 settings.conf 及 ImeTrayGuard 目录复制到 EXE 旁边后再启动。",
+                        L"WindowMark", MB_OK | MB_ICONERROR);
+            return 10;
+        }
+    }
     // 诊断开关（diag.on）和日志（diag.log）跟着配置文件走：绿色版的配置在 exe 旁边，
-    // 排查文件也就在 exe 旁边，整个文件夹仍然自带一切。startup.log 不跟——那条审计日志
-    // 要在任何解析之前就能写，永远在 %LOCALAPPDATA%\WindowMark。
+    // 排查文件和启动日志都在 EXE 同目录，整个文件夹自带配置和数据。
     windowmark::win::SetPinDiagDir(settingsPath.parent_path().wstring());
 
     // 指定过位置但那里已经没了（U 盘拔了、目录被删、变成只读）。这时候用的是默认位置的
@@ -693,12 +732,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // exe 和 ClipKeeper 一样在 tools\ 里。
     handlers.onDiagnose = [&]() {
         const auto exe =
-            windowmark::win::InstalledExePath().parent_path() / L"tools" / L"WindowMarkDiag.exe";
+            toolsDirectory / L"WindowMarkDiag.exe";
         std::error_code ec;
         if (!std::filesystem::exists(exe, ec)) {
             control.ShowBalloon(L"找不到诊断工具",
                                 L"它应当在这里：" + exe.wstring() +
-                                    L"\n解压发布包时把 tools 文件夹一起解压出来即可。");
+                                    L"\n退出并重新启动 WindowMark，会重新校验内置组件。");
             return;
         }
         SHELLEXECUTEINFOW info{};
@@ -721,14 +760,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if (!panel) {
             // 没在跑：启动它，它自带面板。附属 exe 都在 WindowMark.exe 旁边的 tools\ 里——
             // 顶层只留一个 exe，用户打开文件夹不用猜该双击哪个。
-            const auto exe = windowmark::win::InstalledExePath().parent_path() / L"tools" /
+            const auto exe = toolsDirectory /
                              ck::kExeName;
             std::error_code ec;
             if (!std::filesystem::exists(exe, ec)) {
                 MessageBoxW(nullptr,
                             (L"找不到 ClipKeeper.exe。\n\n它应当在这里：\n" + exe.wstring() +
-                             L"\n\n解压发布包时如果只取了 WindowMark.exe，把 tools 文件夹一起"
-                             L"解压出来即可。")
+                             L"\n\n退出并重新启动 WindowMark，会重新校验内置组件。")
                                 .c_str(),
                             L"WindowMark", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
                 return;
@@ -736,7 +774,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             STARTUPINFOW si{};
             si.cb = sizeof(si);
             PROCESS_INFORMATION pi{};
-            std::wstring command = exe.wstring();
+            std::wstring command = L"\"" + exe.wstring() + L"\"";
             if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr,
                                nullptr, &si, &pi)) {
                 CloseHandle(pi.hThread);
@@ -785,47 +823,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         });
     };
     handlers.onConfigPath = [&]() {
-        exclusive([&] {
-            const auto before = windowmark::win::CurrentConfigLocation();
-            std::filesystem::path chosen;
-            if (!windowmark::win::WinConfigPathDialog::ShowModal(
-                    control.NativeHandle(), before.path, before.source, chosen)) {
-                return;
-            }
-            if (chosen == before.path) return;
-
-            // 先把现有配置搬过去，否则用户改完设置会发现配置「没了」。搬不过去就整个
-            // 放弃，别留下一个指向空位置的注册表值。
-            if (!windowmark::Settings::Save(chosen, coordinator.CurrentSettings())) {
-                MessageBoxW(control.NativeHandle(), L"写入新位置失败，配置位置未改变。",
-                            L"WindowMark", MB_OK | MB_ICONWARNING);
-                return;
-            }
-
-            const auto portable = windowmark::win::PortableConfigPath();
-            const bool choosingPortable = !portable.empty() && chosen == portable;
-
-            // 从便携切走时，exe 旁边那份必须改名。它在查找顺序里排第一，留着的话下次
-            // 启动又会把它选回来，用户改的设置等于没生效。改名而不是删除：那是用户的
-            // 数据，不是我们的。
-            if (before.source == windowmark::ConfigSource::Portable && !choosingPortable) {
-                std::error_code ec;
-                std::filesystem::rename(portable, portable.wstring() + L".disabled", ec);
-            }
-
-            // 注册表只在选「自定义」时才写。选默认位置或程序目录都要清掉它，否则下次
-            // 启动第 2 层会把旧值又捡回来。
-            const auto fallbackRoot = windowmark::win::LocalDataRoot();
-            const auto fallback = fallbackRoot.empty() ? std::filesystem::path{}
-                                                       : fallbackRoot / L"settings.conf";
-            const bool custom = !choosingPortable && chosen != fallback;
-            windowmark::win::WriteConfiguredConfigPath(custom ? chosen
-                                                              : std::filesystem::path{});
-
-            MessageBoxW(control.NativeHandle(),
-                        L"配置位置已更改，重启 WindowMark 后生效。", L"WindowMark",
-                        MB_OK | MB_ICONINFORMATION);
-        });
+        ShellExecuteW(control.NativeHandle(), L"open", settingsPath.parent_path().c_str(),
+                      nullptr, nullptr, SW_SHOWNORMAL);
     };
 
     handlers.onAbout = [&]() {
@@ -848,7 +847,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                          L"程序位置：\n") +
             windowmark::win::InstalledExePath().wstring() + L"\n\n" +
             L"配置文件：\n" + settingsPath.wstring() + L"\n\n" +
-            L"以普通用户进程运行，不注入 DLL、不修改 Explorer 或任务栏、\n"
+            L"以普通用户进程运行；输入法占位功能会加载任务栏适配组件。\n"
             L"不安装服务、驱动或系统级注册表项。";
         // Version and build stamp together: the version says which release this is, the
         // stamp says which build, and only the stamp is impossible to forget to update.
@@ -933,7 +932,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         wchar_t exe[32768]{};
         const DWORD length = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
         if (length && length < std::size(exe) && imeGuard.Initialize(
-                std::filesystem::path(exe).parent_path() / L"tools", settingsPath.parent_path() / L"ImeTrayGuard")) {
+                toolsDirectory, settingsPath.parent_path() / L"ImeTrayGuard")) {
             imeGuard.SetHints(settings.imeGuard.showHints);
             // 显式启动参数等同于用户确认启用；普通启动只恢复已保存的偏好。
             if (HasArgument(L"--ime-guard-enable")) imeGuard.Enable(false);

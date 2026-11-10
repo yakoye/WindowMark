@@ -22,7 +22,7 @@ $release = Join-Path $PSScriptRoot 'build\Release'
 $setup = Join-Path $release 'WindowMark.exe'
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\WindowMark'
 $installedExe = Join-Path $installDir 'WindowMark.exe'
-$settings = Join-Path $env:LOCALAPPDATA 'WindowMark\settings.conf'
+$settings = Join-Path $env:LOCALAPPDATA 'Programs/WindowMark/settings.conf'
 
 function Step($text) {
     Write-Host ''

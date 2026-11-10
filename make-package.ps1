@@ -1,212 +1,33 @@
-﻿# 生成安装包：把 build\Release 里的产物和文档收进一个 zip，结构和发布包完全一样——
-# 顶层只有一个 WindowMark.exe，解压双击就能用；附属 exe 都在 tools\ 里。
-#
-#   .\make-package.ps1            测试包 -> dist\test\WindowMark-v<版本>-test-<构建时间>-<提交>-win64.zip
-#   .\make-package.ps1 -Release   发布包 -> dist\WindowMark-v<版本>-win64.zip（发布前才用）
-#
-# 测试包的名字里带构建时间和提交号，永远不会和发布包同名：版本号没改之前，测试包要是也叫
-# WindowMark-v0.5.3-win64.zip，就会把已经发布出去的那个 v0.5.3 覆盖掉。
-# 发布包已经存在时拒绝覆盖，除非加 -Force。
-#
-# reinstall.ps1 装完会自动调用它（测试包），所以每次编译安装都会留下一个安装包。
-param(
-    [switch]$Release,
-    [switch]$Candidate,
-    [switch]$Force
-)
-
+﻿# 单 EXE 绿色版交付；开发文档和测试工具不进入用户附件。
+param([switch]$Release, [switch]$Candidate, [switch]$Force)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
-if ($Release -and $Candidate) { throw 'Release and Candidate cannot be used together' }
-
-$build = Join-Path $PSScriptRoot 'build\Release'
-
-# 和发布包同样的内容。要加文件就加在这里。
-#
-# 顶层只放主程序一个 exe：以前六个 exe 平铺在根上，用户第一眼不知道该双击哪个。安装和
-# 卸载现在是 WindowMark.exe 自己的两个模式（托盘菜单里的「安装到系统」「卸载」），剩下的
-# 附属 exe 一律进 tools\——程序自己按这个路径去找它们。
-$binaries = @('WindowMark.exe')
-$toolBinaries = @('ClipKeeper.exe', 'WindowMarkDiag.exe', 'WindowMarkInspect.exe',
-                  'WindowMarkXamlContainerTrial.exe', 'WindowMarkXamlContainerTap.dll')
-# portable.on 让解压出来的这份把设置写在自己目录里（绿色版）。安装程序按文件清单拷贝，
-# 不会把它带进安装目录，所以安装版仍然用 %LOCALAPPDATA%。
-$docs = @('README.md', 'CHANGELOG.md', 'LICENSE', 'portable.on',
-          'docs/features/IME-Tray-Guard-Integration.md',
-          'docs/tests/IME-Tray-Guard-Integration-20261024.md',
-          'docs/tests/IME-Tray-Guard-Installed-RC1-20261024.md',
-          'docs/tests/IME-Tray-Guard-Activation-Followup-20261024.md',
-          'docs/tests/IME-Tray-Guard-RC3-20261025.md',
-          'docs/tests/Release-0.6.2-20261028.md',
-          'docs/tests/Release-0.6.3-20261110.md',
-          'docs/tests/IME-Tray-Guard-Windows10-Collaboration.md',
-          'measure_shadow_auto.bat', 'measure_shadow_inset.bat', 'show_border_log.bat')
-$tools = @(
-    'auto-shadow-inset.py', 'diagnose-window.py', 'find-stray-lines.py', 'inspect-corner.py',
-    'measure-gap.py', 'measure-shadow-inset.ps1', 'measure-stroke.py', 'watch-diag-log.ps1',
-    'watch-line-over.py'
-)
-
-function Fail($text) {
-    Write-Host $text -ForegroundColor Red
-    exit 1
-}
-
-# ---- 版本号：唯一来源是 AppIdentity.h 的 kProductVersion，和关于框、托盘菜单是同一个 ----
-$identity = Get-Content (Join-Path $PSScriptRoot 'src\shared\AppIdentity.h') -Raw -Encoding UTF8
-$m = [regex]::Match($identity, 'kProductVersion\[\]\s*=\s*L"([^"]+)"')
-if (-not $m.Success) { Fail '读不出 src\shared\AppIdentity.h 里的 kProductVersion' }
-$version = $m.Groups[1].Value
-if ($Candidate -and $version -notmatch '-rc\.[0-9]+$') { Fail '候选包版本必须显式带 -rc.N' }
-if ($Release -and $version -match '-') { Fail '预发布版本请使用 -Candidate，不生成正式发布包' }
-
-# ---- 要打进去的文件，一个都不能少 ----
-$entries = New-Object System.Collections.Generic.List[object]
-foreach ($name in $binaries) { $entries.Add(@{ Source = (Join-Path $build $name); Entry = $name }) }
-foreach ($name in $toolBinaries) {
-    $entries.Add(@{ Source = (Join-Path $build $name); Entry = "tools/$name" })
-}
-foreach ($name in $docs) { $entries.Add(@{ Source = (Join-Path $PSScriptRoot $name); Entry = $name }) }
-foreach ($name in $tools) {
-    $entries.Add(@{ Source = (Join-Path (Join-Path $PSScriptRoot 'tools') $name); Entry = "tools/$name" })
-}
-$missing = @($entries | Where-Object { -not (Test-Path $_.Source) } | ForEach-Object { $_.Source })
-if ($missing.Count -gt 0) {
-    $missing | ForEach-Object { Write-Host "  缺少 $_" -ForegroundColor Red }
-    Fail '有文件不存在，没有打包。先跑一次 reinstall.ps1（或 build.bat）完成构建。'
-}
-
-# ---- 构建时间：构建戳是构建自己写的，不会过期，也不会写错 ----
-$stampTime = $null
-$stampFile = Join-Path $PSScriptRoot 'build\generated\BuildStamp.h'
-if (Test-Path $stampFile) {
-    $s = [regex]::Match((Get-Content $stampFile -Raw), 'L"([^"]+)"')
-    if ($s.Success) { $stampTime = $s.Groups[1].Value }
-}
-if (-not $stampTime) {
-    $stampTime = (Get-Item (Join-Path $build 'WindowMark.exe')).LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
-}
-
-# ---- 名字和位置 ----
-if ($Candidate) {
-    $outDir = Join-Path (Join-Path $PSScriptRoot 'dist/rc') "v$version"
-    $zipName = "WindowMark-v$version-win64.zip"
-} elseif ($Release) {
-    $outDir = Join-Path $PSScriptRoot 'dist'
-    $zipName = "WindowMark-v$version-win64.zip"
-} else {
-    $commit = 'nogit'
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-        $head = & git rev-parse --short HEAD 2>$null
-        if ($LASTEXITCODE -eq 0 -and $head) { $commit = "$head".Trim() }
-        # 有没提交的源码改动时标出来：这个包未必对得上任何一个提交
-        $dirty = & git status --porcelain --untracked-files=no 2>$null
-        if ($dirty) { $commit = "$commit-dirty" }
-    }
-    $digits = $stampTime -replace '[^0-9]', ''          # 20260918111358
-    $when = $digits.Substring(0, 8) + '-' + $digits.Substring(8, 4)
-    $outDir = Join-Path $PSScriptRoot 'dist\test'
-    $zipName = "WindowMark-v$version-test-$when-$commit-win64.zip"
-}
-
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$zip = Join-Path $outDir $zipName
-if (Test-Path $zip) {
-    if (($Release -or $Candidate) -and -not $Force) {
-        Fail "$zip 已经存在。发布包不覆盖；确实要重打就加 -Force。"
-    }
-    Remove-Item -LiteralPath $zip -Force
-}
-
-# ---- 打包：直接写进 zip，文件平铺在根上，脚本在 tools 子目录里——和发布包一样 ----
-Add-Type -AssemblyName System.IO.Compression
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
-try {
-    foreach ($e in $entries) {
-        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-            $archive, $e.Source, $e.Entry, [System.IO.Compression.CompressionLevel]::Optimal)
-    }
-} finally {
-    $archive.Dispose()
-}
-
-# ---- 回读核对：包里每个文件和源文件逐字节一致，一个不多一个不少 ----
-$sha = [System.Security.Cryptography.SHA256]::Create()
-$problem = $null
-$archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
-try {
-    if ($archive.Entries.Count -ne $entries.Count) {
-        $problem = "包里有 $($archive.Entries.Count) 个文件，应该是 $($entries.Count) 个"
-    } else {
-        foreach ($e in $entries) {
-            $entry = $archive.GetEntry($e.Entry)
-            if (-not $entry) { $problem = "包里缺少 $($e.Entry)"; break }
-            $stream = $entry.Open()
-            try { $inZip = [BitConverter]::ToString($sha.ComputeHash($stream)) } finally { $stream.Dispose() }
-            $onDisk = [BitConverter]::ToString($sha.ComputeHash([System.IO.File]::ReadAllBytes($e.Source)))
-            if ($inZip -ne $onDisk) { $problem = "包里的 $($e.Entry) 和源文件不一致"; break }
-        }
-    }
-} finally {
-    $archive.Dispose()
-}
-if ($problem) { Fail "安装包核对失败：$problem" }
-
-# ---- 报告 ----
-$info = Get-Item $zip
-Write-Host ''
-Write-Host '安装包已生成：' -ForegroundColor Green
-Write-Host "  $($info.FullName)"
-Write-Host ("  {0:N0} 字节，{1} 个文件，逐个核对过；构建时间 {2}" -f $info.Length, $entries.Count, $stampTime)
-$installed = Join-Path $env:LOCALAPPDATA 'Programs\WindowMark\WindowMark.exe'
-if (Test-Path $installed) {
-    $same = (Get-FileHash $installed).Hash -eq (Get-FileHash (Join-Path $build 'WindowMark.exe')).Hash
-    if ($same) {
-        Write-Host '  包里的 WindowMark.exe 就是这台机器上已安装的那个'
-    } else {
-        Write-Host '  注意：包里的 WindowMark.exe 和这台机器上已安装的不是同一个文件' -ForegroundColor Yellow
+if ($Release -and $Candidate) { throw 'Release 与 Candidate 不可同时使用' }
+$identity = Get-Content src/shared/AppIdentity.h -Raw -Encoding UTF8
+if ($identity -notmatch 'kProductVersion\[\]\s*=\s*L"([^"]+)"') { throw '无法读取版本号' }
+$version = $Matches[1]
+if ($Release -and $version.Contains('-')) { throw '候选版本不能正式发布' }
+$source = Join-Path $PSScriptRoot 'build/Release/WindowMark.exe'
+if (!(Test-Path $source)) { throw '请先构建 Release' }
+if ((Get-Item $source).VersionInfo.ProductVersion -ne $version) { throw '构建版本与源码不一致' }
+if ($Release) { $directory = Join-Path $PSScriptRoot "dist/v$version" }
+elseif ($Candidate) { $directory = Join-Path $PSScriptRoot "dist/rc/v$version" }
+else { $directory = Join-Path $PSScriptRoot ("dist/test/v$version-" + (Get-Date -Format yyyyMMdd-HHmmss)) }
+New-Item -ItemType Directory -Force $directory | Out-Null
+$target = Join-Path $directory 'WindowMark.exe'
+if ((Test-Path $target) -and !$Force) { throw "目标已存在，不覆盖：$target" }
+Copy-Item -LiteralPath $source -Destination $target -Force
+$hash = (Get-FileHash $source -Algorithm SHA256).Hash
+if ((Get-FileHash $target -Algorithm SHA256).Hash -ne $hash) { throw '产物校验失败' }
+if ($Release) {
+    foreach ($root in @('C:/Users/color/Downloads/yakoye-release/WindowMark', '//192.168.7.100/Downloads/yakoye-release/WindowMark')) {
+        $archive = Join-Path $root "v$version"
+        New-Item -ItemType Directory -Force $archive | Out-Null
+        $copy = Join-Path $archive 'WindowMark.exe'
+        if ((Test-Path $copy) -and (Get-FileHash $copy).Hash -ne $hash) { throw "不同的归档已存在：$copy" }
+        Copy-Item -LiteralPath $target -Destination $copy -Force
+        if ((Get-FileHash $copy).Hash -ne $hash) { throw "归档校验失败：$copy" }
     }
 }
-# 原生占位保护需要随附控制程序和 DLL。不再把裸主程序称为完整单文件绿色版。
-Write-Host '请完整解压 ZIP 后运行 WindowMark.exe；保留 tools 目录。'
-
-# 正式发布产物同时归档到本机和 NAS。按「项目 / 版本」分目录，后续版本不会覆盖旧版；
-# 测试包不归档，避免日常开发构建把发布目录塞满。
-if ($Release -or $Candidate) {
-    $releaseRoots = @(
-        'C:\Users\color\Downloads\yakoye-release',
-        '\\192.168.7.100\Downloads\yakoye-release'
-    )
-    $releaseFiles = @($zip)
-    $releaseNotes = Join-Path $outDir "release-notes-v$version.md"
-    if (Test-Path -LiteralPath $releaseNotes) { $releaseFiles += $releaseNotes }
-
-    Write-Host ''
-    Write-Host '发布归档：'
-    foreach ($root in $releaseRoots) {
-        $target = Join-Path (Join-Path $root 'WindowMark') "v$version"
-        try {
-            New-Item -ItemType Directory -Force -Path $target | Out-Null
-            foreach ($source in $releaseFiles) {
-                $destination = Join-Path $target (Split-Path $source -Leaf)
-                if ((Test-Path -LiteralPath $destination) -and
-                    (Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
-                    throw "同版本归档内容不同，拒绝覆盖：$destination"
-                }
-                Copy-Item -LiteralPath $source -Destination $destination -Force
-                if ((Get-FileHash -LiteralPath $source).Hash -ne
-                    (Get-FileHash -LiteralPath $destination).Hash) {
-                    throw "复制后哈希不一致：$destination"
-                }
-            }
-            Write-Host "  $target（$($releaseFiles.Count) 个文件，哈希一致）" -ForegroundColor Green
-        } catch {
-            Fail "发布包归档失败：$target`n$($_.Exception.Message)"
-        }
-    }
-}
-Write-Host ''
-Write-Host '  用法：解压后双击 WindowMark.exe 就能用（绿色版，设置存在 exe 旁边）；'
-Write-Host '        想装进系统：托盘菜单「安装到系统...」，或 WindowMark.exe --install'
-exit 0
+Write-Output "单文件：$target"
+Write-Output "SHA256：$hash"

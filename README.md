@@ -1,8 +1,7 @@
-# WindowMark v0.6.3
+# WindowMark v0.6.4-rc.1
 
-本次开发与发布检出：`WindowMark-release-0.6.3`；原开发目录 `WindowMark-dev` 保留。普通开发包：`dist/test`；历史候选：`dist/rc`；正式包：`dist/WindowMark-v0.6.3-win64.zip`。
-正式完整 ZIP 使用 `make-package.ps1 -Release` 生成，按版本双归档到本机和 NAS 的
-`yakoye-release/WindowMark/v0.6.3`，旧版不覆盖。
+单 EXE 绿色版开发检出：`WindowMark-portable`。候选交付为 `dist/rc/v0.6.4-rc.1/WindowMark.exe`。
+已发布的 v0.6.3 和历史归档保留不变。后续正式发布使用 `make-package.ps1 -Release`，只交付一个 EXE，并按项目和版本双目录归档核验。
 
 ## 任务栏输入法占位保护与轻松提示语
 
@@ -20,7 +19,7 @@ rc.3 已去掉 100% DPI、单显示器及特定 Windows 补丁号的测试门禁
 用户已确认本机可用并授权发布。八小时监测完成，5711 个样本无进程缺失、保护失效、陈旧日志或错误；Windows 10 的新增保护功能暂停，多屏、非 100% DPI 仍未完成全面验收。
 本次配置与重启修复见 [v0.6.3 测试记录](docs/tests/Release-0.6.3-20261110.md)；历史验证见 [v0.6.2 发布记录](docs/tests/Release-0.6.2-20261028.md)。
 开放测试与验收范围见 [rc.3 测试记录](docs/tests/IME-Tray-Guard-RC3-20261025.md)。
-完整解压 ZIP 后运行 `WindowMark.exe`，必须保留 `tools` 目录，不能只复制裸 EXE。
+v0.6.3 及以前的完整包需要保留 tools；本分支已将必需组件内置，用户只下载主 EXE。
 新增模块的[集成清单](docs/features/IME-Tray-Guard-Integration.md)和
 [Windows 10 协作说明](docs/tests/IME-Tray-Guard-Windows10-Collaboration.md)单独记录验收边界。
 不会新增假托盘图标，不主动重启Explorer/输入法，不修改全局输入设置。
@@ -90,41 +89,22 @@ per-monitor overlay canvas, which fixed inactive borders landing at the wrong de
 brief incomplete border after a fast window switch. See [CHANGELOG.md](CHANGELOG.md) for the
 full history.
 
-## Quick start
+## 单 EXE 绿色版（0.6.4-rc.1 开发验收）
 
-1. 从 [v0.6.3 发布页](https://github.com/yakoye/WindowMark/releases/tag/v0.6.3)
-   下载 `WindowMark-v0.6.3-win64.zip`。
-2. **解压之前**：右键 zip →「属性」→ 勾选底部的「解除锁定」→ 确定。原因见下一节。
-3. 解压到任意目录，**双击 `WindowMark.exe` 就能用**——这就是绿色版，不需要安装。
-   包里顶层只有这一个 exe，不用猜该打开哪个；`tools\` 里是诊断工具和剪贴板守护，由程序
-   自己去调。
-   必须保留完整 `tools` 目录，其中包含输入法保护所需控制程序和 DLL；不要只复制主 EXE。
-4. 第一次启动会问一次要不要设好**开机自动启动**和**桌面图标**，选完就不再问；以后在托盘右键
-   菜单里随时能改。
-5. **左键单击托盘图标**会打开面板：四个功能各是什么、怎么用、现在开着没开，以及所有设置的
-   入口都在上面。右键仍然是菜单，会用之后它更快。
-6. Open at least two normal windows from the same application to see bookmarks.
+后续用户下载文件统一为 **WindowMark.exe**，GitHub 附件、本机和 NAS 正式归档采用同样格式。
+此分支仍为候选开发版，已发布的 v0.6.3 ZIP 保留原样。
 
-### 绿色版：东西都在那个文件夹里
+1. 将 EXE 放到可写文件夹，双击运行；不需要解压配套 tools 或创建 portable.on。
+2. 配置固定保存在旁边的 `settings.conf`，输入法保护数据保存在 `ImeTrayGuard/`。
+3. 必需组件嵌入 EXE，程序自动释放到同目录隐藏的 `.runtime/` 缓存并校验；不要手动运行其中的 EXE。
+4. 通过主面板或托盘菜单开启各项功能。托盘「打开配置和数据目录」直接打开程序文件夹。
+5. 搬迁时复制整个文件夹；升级时退出旧程序，只替换主 EXE，保留配置和数据。移动后如启用了开机启动，请重新勾选一次，更新系统启动路径。
 
-包里带着一个 `portable.on`，有它在，设置就写在 `WindowMark.exe` 旁边的 `settings.conf`：
+单文件指下载交付只有一个 EXE；运行后会产生配置、日志和内部缓存文件。输入法保护需要加载真实 DLL，不能承诺运行期间磁盘上永远只有一个文件。缓存缺失或损坏会在重启时自动修复，正在使用的组件不会被静默替换为其他版本。
 
-- 整个文件夹拷到 U 盘、换台电脑、挪到别的盘，设置都跟着走。
-- 不想要了，**直接删掉文件夹**就是卸干净，注册表和系统目录里不留东西（开机启动如果开过，
-  先在托盘里关掉，那一项在注册表里）。
-- 删掉 `portable.on` 再启动，就改回系统默认位置 `%LOCALAPPDATA%\WindowMark\settings.conf`。
-  托盘的「配置文件...」里也能随时切换，并且会把现有配置搬过去。
+目录不可写时明确报错，不回落到 AppData。原安装目录升级时会在本地配置缺失时迁移旧配置并保留原件；全新绿色目录不会自动继承另一份配置。旧安装命令仅保留兼容，普通绿色使用不需要安装。
 
-想装进系统（`%LOCALAPPDATA%\Programs\WindowMark`、开始菜单项、「设置 - 应用」里的卸载
-入口）的，用托盘菜单里的 **「安装到系统...」**——安装就是 `WindowMark.exe` 自己的一个模式，
-没有单独的安装程序 exe。装完当前这份会退出，换成安装目录里的那份接着跑，解压出来的文件夹
-就可以删了。安装只拷 exe 和 `tools\`，不带 `portable.on`，所以安装版用系统默认位置。
-
-卸载：安装目录里那份的托盘菜单会把「安装到系统...」换成 **「卸载 WindowMark...」**，
-「设置 - 应用」里的卸载入口也在。
-
-The functional release targets Windows 10/11. The macOS directory remains an architecture
-scaffold and does not provide a working macOS application in v0.6.0.
+文档和测试脚本保留在源码仓库。MIT 许可证随源码提供，并内置于主程序资源。
 
 ## 双击没反应 / 看不到边框
 
@@ -158,7 +138,7 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
 
 ### 程序在跑，但边框没画出来
 
-双击 `tools\WindowMarkDiag.exe`。它会把诊断报告存到桌面、复制到剪贴板，**直接粘贴发给开发者**
+从主面板运行诊断。它会把诊断报告存到程序目录、复制到剪贴板，**直接粘贴发给开发者**
 就行。报告开头的「发现的问题」一节通常已经说明了原因，常见的几种：
 
 | 报告里说 | 意思 |
@@ -177,21 +157,7 @@ WindowMark 是托盘程序，起没起来只看托盘里有没有它的图标。
 重绘花了多久、层级调整被谁拒了），在**配置文件旁边**新建一个空文件 `diag.on`（没有扩展名），
 程序立刻开始往同一个目录的 `diag.log` 追加记录——不用重启，删掉 `diag.on` 就停。
 
-配置文件在哪，诊断文件就在哪：
-
-| 用法 | `diag.on` / `diag.log` 放在 |
-|---|---|
-| 绿色版（包里带 `portable.on`）| `WindowMark.exe` 旁边 |
-| 安装版 | `%LOCALAPPDATA%\WindowMark\` |
-
-拿不准的话跑一次 `tools\WindowMarkDiag.exe`，报告最后一行写着实际路径。
-
-边框、书签、置顶、拖动四部分写的是同一个 `diag.log`，同一个开关。双击 `show_border_log.bat`
-可以一边复现一边看（它调 `tools\watch-diag-log.ps1`，自己去找正在运行的那个 exe 的日志；
-`-Filter 边框` 只看含某个词的行，`-Off` 关掉记录）。
-
-`startup.log` 是另一回事：它只记开机自启那几次的启动阶段，必须在任何配置解析之前就能写，
-所以**永远**在 `%LOCALAPPDATA%\WindowMark\`，不跟着绿色版走。
+配置、`diag.on`、`diag.log`、`startup.log` 都在主 EXE 旁边。无需到 AppData 查找。开发仓库仍保留日志查看脚本，普通用户无需下载这些脚本。
 
 ### 看门狗：卡住了会自己恢复
 
@@ -559,7 +525,7 @@ The tray menu itself carries the program-wide switches, above 关于 and 退出:
 ──────────
   暂停所有             master switch; reads 启用所有 while paused（不含剪贴板守护）
 ✓ 开机启动
-  配置文件...          配置文件放在哪，见「配置文件位置」一节
+  打开配置和数据目录    打开 EXE 所在目录
   关于
 ──────────
   退出
@@ -664,46 +630,19 @@ Important safety properties:
 
 ## 配置文件位置
 
-默认位置是 `%LOCALAPPDATA%\WindowMark\settings.conf`。托盘菜单的「配置文件...」可以改，
-三个选项对应三层查找顺序：
+固定使用主 EXE 旁的 `settings.conf`，不按文件名或 portable.on 切换，不再通过注册表重定向。
+托盘菜单「打开配置和数据目录」显示实际目录。日志、输入法保护数据及内部缓存都保存在这里。
+目录不可写时启动失败并提示，不静默使用 AppData。
 
-```text
-1. exe 同目录的 settings.conf              存在即用（便携，跟着程序走）
-2. HKCU\Software\WindowMark\ConfigPath     「自定义」写在这里
-3. %LOCALAPPDATA%\WindowMark\settings.conf 默认
-```
-
-**便携排在自定义之前**，因为注册表跟着机器走，而 exe 旁边的 conf 跟着程序走——U 盘插到
-别人电脑上，不该去读那台机器上指定的本地路径。这可能反直觉，所以对话框顶部始终显示
-当前实际生效的是哪一份。
-
-切换位置时现有配置会被搬过去。从便携切走时，exe 旁那份会改名为 `settings.conf.disabled`
-而不是删掉，否则下次启动第 1 层又会把它抢回去。
-
-### 如果 C 盘装了还原工具
-
-**只把配置文件挪个位置解决不了这个问题。** WindowMark 默认装在
-`C:\Users\<用户>\AppData\Local\Programs\WindowMark\`，跟配置一样在 C 盘，会被一起还原。
-注册表里的自定义路径同理——`HKCU` 也在 C 盘。
-
-唯一可靠的做法是**把整个 WindowMark 目录拷到非 C 盘**（D 盘或 U 盘），从那里运行，
-配置放在 exe 同目录。三点提醒：
-
-- 是「搬走」不是「多放一份」。C 盘那份如果还在跑，第二个实例会因单例互斥量冲突直接退出。
-- 便携模式下开机自启动写的是当时的绝对路径，**U 盘盘符一变就失效**。
-- `border.excluded_apps` 和 `selection.disabled_apps` 记的是**被排除的那些应用**的 exe
-  绝对路径（Chrome、墨鱼阅读等）。换一台机器路径不同，这两项会**静默失效**——不报错，
-  只是匹配不上。这是按 exe 路径标识应用的固有代价，也正是它能把墨鱼阅读和 Chrome 分开
-  的原因：两者类名同为 `Chrome_WidgetWin_1`。
-
-配置文件里没有任何指向 WindowMark 自身的路径，所以没有可以改成相对路径的东西。
+搬迁时退出 WindowMark，复制整个文件夹。若启用了开机启动，搬迁后重新勾选以更新绝对路径。
+系统盘有还原工具时，可将整个目录放到非还原分区。应用排除列表记录的其他软件绝对路径仍需按新机器调整。
 
 ## Settings
 
 On first Windows run WindowMark creates:
 
 ```text
-%LOCALAPPDATA%\WindowMark\settings.conf
+WindowMark.exe 同目录/settings.conf
 ```
 
 Defaults:
@@ -867,7 +806,7 @@ Double-click, or from PowerShell / CMD:
 |---|---|
 | `build.bat` | 只编译 |
 | **`rebuild_and_install.bat`** | 编译 → 单元测试 → 卸载旧版 → 装新版并启动 → 打印生效的配置 → **生成安装包**。改完直接看效果就用它 |
-| `make_package.bat` | 只打包：顶层一个 `WindowMark.exe`，控制程序及 DLL 在 `tools\`。测试 ZIP 放 `dist\test\`，名字带构建时间和提交号；`-Release` 才生成正式 ZIP 并按 `WindowMark\v<版本>\` 双归档、核对哈希。不再生成缺少输入法组件的裸 EXE 包；已有正式包时不覆盖 |
+| `make_package.bat` | 只生成单个 WindowMark.exe；候选位于 dist/rc，正式版本用 -Release 并完成双目录哈希核验 |
 | `rebuild_and_install.bat -Fresh` | 同上，**并删除 `settings.conf`**。改的是代码里的默认值时必须用这个，否则旧配置会盖掉新默认值 |
 | `rebuild_and_install.bat -NoBuild` | 跳过编译，只重装（约 5 秒）|
 | **`check_border.bat`** | 边框诊断：倒数 5 秒让你切到目标窗口，然后报边框的位置、层级、四条边逐点取色，以及每个不对的点被哪个窗口盖着 |
@@ -875,50 +814,14 @@ Double-click, or from PowerShell / CMD:
 
 `.bat` 里全是 ASCII，不是疏忽：`cmd.exe` 按系统 ANSI 代码页读 `.bat`，写 UTF-8 中文会变乱码并打断命令解析。中文输出由对应的 `.ps1` 负责。
 
-## Install / uninstall
+## 使用、升级和移除
 
-发布包顶层只有一个 exe。安装和卸载是 `WindowMark.exe` 自己的两个模式，没有安装程序 exe：
+绿色版直接运行 EXE。升级前退出，替换 EXE，保留配置和数据；不要从内部缓存目录启动组件。
+移除前关闭开机启动并退出程序，再自行移走整个文件夹。卸载前请备份需要保留的配置。
 
-```text
-WindowMark.exe                the app（也是安装程序和卸载程序）
-tools\WindowMarkDiag.exe      出问题时双击，把报告贴回来
-tools\WindowMarkInspect.exe   哪个窗口有边框、为什么
-tools\ClipKeeper.exe          剪贴板守护，托盘菜单里开
-```
+为兼容旧部署，仍保留 `--install`、`--uninstall` 命令。安装只复制主 EXE，并将设置保存在目标目录；不再复制 tools。普通卸载只删除程序组件，保留同目录配置和输入法数据；显式 /Purge 才清理数据。旧安装目录升级会在本地配置缺失时迁移旧设置，并保留旧数据原件。
 
-以前这六个 exe 平铺在包的根目录里，第一眼根本不知道该双击哪个——这是用户反馈里原话。
-
-安装：托盘菜单 **「安装到系统...」**，或命令行 `WindowMark.exe --install`。一个对话框，
-写着安装位置和一个 **开机时自动启动 WindowMark** 勾选框（全新安装默认不勾，升级时按现状
-预置），然后装到 `%LOCALAPPDATA%\Programs\WindowMark`、建开始菜单快捷方式、注册
-**设置 - 应用** 里的条目、启动安装的那份并让当前这份退出。安装目录里的旧版遗留文件
-（以前那几个顶层 exe）会一并删掉。
-
-The startup switch reflects Windows' effective state, not merely the presence of a Run
-value. If Task Manager or Settings disables WindowMark, the tray item becomes unchecked.
-Enabling it writes a quoted command ending in `--autostart` and clears the corresponding
-`StartupApproved` veto. After the next sign-in, `%LOCALAPPDATA%\WindowMark\startup.log`
-records `attempt` followed by `running`, or the startup phase that failed.
-
-卸载：安装目录里那份的托盘菜单 **「卸载 WindowMark...」**、**设置 - 应用**，或命令行
-`WindowMark.exe --uninstall`。对话框上有 **同时删除我的设置和缓存数据** 勾选框，不勾就保留
-`%LOCALAPPDATA%\WindowMark`。卸载程序住在它要删的那个目录里，所以它先把自己拷到 `%TEMP%`
-再从那儿开工，干完安排删掉那份临时副本。
-
-**WindowMark 正在运行从来不是错误。** 两个模式都先请活着的实例从自己的消息循环里退出、
-等它走，然后才继续——覆盖安装就是重启一次。普通地第二次双击 `WindowMark.exe` 也不是错误：
-它把请求交给已经在跑的那份（弹个托盘气泡）然后安静退出。
-
-脚本用的开关：
-
-```text
-WindowMark.exe --install    /S  /StartWithWindows  /NoStartWithWindows
-WindowMark.exe --uninstall  /S  /Purge
-```
-
-`/Purge` additionally removes `%LOCALAPPDATA%\WindowMark` and the reserved roaming data
-directory. No shell extension, service, driver, Explorer patch, COM registration, or
-system-wide registry state is ever installed — everything lives under the current user.
+启动日志 `startup.log` 固定写在主 EXE 目录。开机启动仍由用户主动开启，系统启动项引用当前 EXE 的绝对路径。
 
 ## Validation status
 
@@ -960,23 +863,6 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 [tacky-borders](https://github.com/lukeyou05/tacky-borders)（Rust），这里是独立的原生实现，
 不是它的移植。
 
-## Version policy
+## 版本与交付约定
 
-**v0.6.3** 为当前版本，采用完整 ZIP 交付：解压后双击主 EXE 即用，安装和卸载是它自己的
-两个模式，附属工具在 `tools\` 里；托盘左键打开主面板，边框和事件流出问题会自己恢复。The line includes window bookmarks with a magnetic dock
-and a bookmark → title → thumbnail preview stack, per-window borders
-drawn on a per-monitor overlay canvas, per-application border exclusions, window pinning,
-modifier-key window dragging, the `tools\WindowMarkDiag.exe` diagnostic report,
-`tools\WindowMarkInspect.exe`, executables with no Visual C++ runtime dependency,
-reliable start-with-Windows state
-handling with a login-attempt audit log, borders clamped to the window's own monitor and kept
-off the taskbar, a configurable config-file location (portable or custom path), the ClipKeeper
-clipboard guard, and an MIT LICENSE file.
-
-The earlier public repository release is tag `2.0`, corresponding to application version
-v0.2.0. All intermediate versions are retained in the changelog so the progression to
-v0.6.0 remains auditable.
-
-Fixes go to `v0.4.x`; larger new features go to the next minor line. See
-[VALIDATION.md](VALIDATION.md) for what is verified and what still is not, and
-[ROADMAP.md](ROADMAP.md) for what is deferred.
+当前分支为 v0.6.4-rc.1 候选。GitHub 后续用户附件统一为一个 `WindowMark.exe`，完整功能所需组件内置；运行后在程序目录生成配置、数据和缓存。源代码仓库保留 README、CHANGELOG、许可证与测试文档，不再混入用户下载包。正式版本继续按项目和版本归档到本机和 NAS，保留历史并核对 SHA-256。

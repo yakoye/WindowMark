@@ -88,6 +88,9 @@ bool SetStartupEnabled(bool enable) {
     LONG rc = ERROR_SUCCESS;
     if (enable) {
         std::wstring value = L"\"" + ExePath() + L"\"";
+        wchar_t owner[32768]{};
+        const auto length = GetEnvironmentVariableW(L"WINDOWMARK_OWNER_EXE", owner, 32768);
+        if (length && length < 32768) value = L"\"" + std::wstring(owner) + L"\" --clipkeeper";
         rc = ::RegSetValueExW(key, L"ClipKeeper", 0, REG_SZ,
                               reinterpret_cast<const BYTE*>(value.c_str()),
                               static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));

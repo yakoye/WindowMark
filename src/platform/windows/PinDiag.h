@@ -13,14 +13,14 @@
 // 名字里的 Pin 是历史：最早只给置顶那条路用。现在边框、书签、拖动、托盘都写在这里。
 //
 // 日志目录由 WinMain 在解析出配置位置之后用 SetPinDiagDir 定下来。在那之前（极早期的几行）
-// 用 %LOCALAPPDATA%\WindowMark，和 startup.log 同一个地方——那条审计日志必须在任何解析之前
-// 就能写，所以它永远在 %LOCALAPPDATA%。
+// 使用 EXE 所在目录；startup.log 同样位于该目录。
 
 #include <windows.h>
 
 #include <cstdarg>
 #include <cstdio>
 #include <string>
+#include <filesystem>
 
 namespace windowmark::win {
 
@@ -42,11 +42,10 @@ inline void SetPinDiagDir(std::wstring directory) {
 
 [[nodiscard]] inline std::wstring PinDiagDir() {
     if (!detail::PinDiagDirStorage().empty()) return detail::PinDiagDirStorage();
-    wchar_t dir[MAX_PATH]{};
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH) == 0) return {};
-    // Forward slashes on purpose: the Win32 file APIs take them, and it keeps these paths
-    // free of the backslash escaping that every text tool in the chain mangles.
-    return std::wstring(dir) + L"/WindowMark/";
+    wchar_t exe[32768]{};
+    const auto length = GetModuleFileNameW(nullptr, exe, 32768);
+    if (!length || length >= 32768) return {};
+    return std::filesystem::path(exe).parent_path().wstring() + L"/";
 }
 
 [[nodiscard]] inline bool PinDiagOn() {

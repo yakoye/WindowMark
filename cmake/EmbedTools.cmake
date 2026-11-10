@@ -1,0 +1,2 @@
+file(WRITE "${OUT}" "301 RCDATA \"${CLIP}\"\n302 RCDATA \"${DIAG}\"\n303 RCDATA \"${INSPECT}\"\n304 RCDATA \"${TRIAL}\"\n305 RCDATA \"${TAP}\"\n")
+file(APPEND "${OUT}" "306 RCDATA \"${LICENSE}\"\n")

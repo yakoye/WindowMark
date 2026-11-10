@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(WindowMark VERSION 0.6.3 LANGUAGES CXX)
+project(WindowMark VERSION 0.6.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -130,6 +130,7 @@ if(WIN32)
     set(WINDOWMARK_RC "${CMAKE_CURRENT_BINARY_DIR}/WindowMark.rc")
 
     add_executable(WindowMark WIN32
+        src/shared/EmbeddedTools.cpp
         src/platform/windows/WinImeTrayGuard.cpp
         tools/ime-tray-guard/ImeGuardClient.cpp
         src/platform/windows/WinMain.cpp
@@ -196,6 +197,7 @@ if(WIN32)
         oleaut32
         shlwapi
         windowscodecs
+        bcrypt
     )
 
     target_include_directories(WindowMark PRIVATE
@@ -281,6 +283,21 @@ if(WIN32)
     if(MSVC)
         target_compile_options(ClipKeeper PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
     endif()
+
+    set(EMBEDDED_TOOLS_RC "${CMAKE_CURRENT_BINARY_DIR}/EmbeddedTools-$<CONFIG>.rc")
+    add_custom_command(OUTPUT "${EMBEDDED_TOOLS_RC}"
+        COMMAND ${CMAKE_COMMAND} "-DOUT=${EMBEDDED_TOOLS_RC}"
+            "-DCLIP=$<TARGET_FILE:ClipKeeper>" "-DDIAG=$<TARGET_FILE:WindowMarkDiag>"
+            "-DINSPECT=$<TARGET_FILE:WindowMarkInspect>"
+            "-DTRIAL=$<TARGET_FILE:WindowMarkXamlContainerTrial>"
+            "-DTAP=$<TARGET_FILE:WindowMarkXamlContainerTap>"
+            "-DLICENSE=${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
+        DEPENDS ClipKeeper WindowMarkDiag WindowMarkInspect
+            WindowMarkXamlContainerTrial WindowMarkXamlContainerTap
+            "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake")
+    target_sources(WindowMark PRIVATE "${EMBEDDED_TOOLS_RC}")
 
 elseif(APPLE)
     enable_language(OBJCXX)
