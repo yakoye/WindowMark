@@ -704,15 +704,6 @@ void WinControlWindow::ShowMenu() {
                     reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
     }
 
-    HMENU mouse = CreatePopupMenu();
-    if (mouse) {
-        AppendMenuW(mouse, MF_STRING | (wheelEnabled_ ? MF_CHECKED : MF_UNCHECKED), kToggleWheelCommand, L"滚轮调节");
-        AppendMenuW(mouse, MF_STRING | (pointerEnabled_ ? MF_CHECKED : MF_UNCHECKED), kTogglePointerCommand, L"指针调节");
-        AppendMenuW(mouse, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(mouse, MF_STRING, kMouseSettingsCommand, L"鼠标设置...");
-        AppendMenuW(menu, MF_POPUP | ((wheelEnabled_ || pointerEnabled_) ? MF_CHECKED : MF_UNCHECKED),
-                    reinterpret_cast<UINT_PTR>(mouse), L"鼠标控制");
-    }
     HMENU dragging = CreatePopupMenu();
     if (dragging) {
         AppendMenuW(dragging, MF_STRING | (dragEnabled_ ? MF_CHECKED : MF_UNCHECKED),
@@ -722,6 +713,16 @@ void WinControlWindow::ShowMenu() {
         AppendMenuW(dragging, MF_STRING, kDragSettingsCommand, L"拖动设置...");
         AppendMenuW(menu, MF_POPUP | (dragEnabled_ ? MF_CHECKED : MF_UNCHECKED),
                     reinterpret_cast<UINT_PTR>(dragging), L"窗口拖动");
+    }
+
+    HMENU mouse = CreatePopupMenu();
+    if (mouse) {
+        AppendMenuW(mouse, MF_STRING | (wheelEnabled_ ? MF_CHECKED : MF_UNCHECKED), kToggleWheelCommand, L"滚轮调节");
+        AppendMenuW(mouse, MF_STRING | (pointerEnabled_ ? MF_CHECKED : MF_UNCHECKED), kTogglePointerCommand, L"指针调节");
+        AppendMenuW(mouse, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(mouse, MF_STRING, kMouseSettingsCommand, L"鼠标设置...");
+        AppendMenuW(menu, MF_POPUP | ((wheelEnabled_ || pointerEnabled_) ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(mouse), L"鼠标控制");
     }
 
     {
