@@ -58,3 +58,20 @@
 - [ ] GitHub v0.6.5 发布及公开下载核对。
 
 Windows 10 按用户指示暂不适配；没有进行断线重新认证、整机重启或所有混合 DPI 布局验收。鼠标硬件远程链路的手感限制见鼠标测试文档。若确认恢复失败则停止续租、保留诊断；回退使用安装目录 `history/<旧哈希前12位>/WindowMark.exe`，正常退出后替换主 EXE，保留配置和数据，不通过反复重启 Explorer 绕过问题。
+
+## 干净提交构建复核
+
+已从干净提交 `5ec0be8` 构建，内置标识 `0.6.5 · 5ec0be8 · 2026-11-24 21:07:50`。SHA-256 为 `793b29008d77d533113f82fcdd25a30a3ec996ecb4b1fc0a6bbd7472d79ddd11`。主构建日志无警告/错误记录，最终单 EXE 离屏验收 14 项通过。57 项 Python 测试（包括新判定器）已合并运行，无跳过。
+
+以下四份 EXE 内容一致，旧构建已保留在各目录 `history/<旧哈希前12位>`：
+
+- `dist/v0.6.5/WindowMark.exe`。
+- 本机 `C:/Users/color/Downloads/yakoye-release/WindowMark/v0.6.5/WindowMark.exe`。
+- NAS `//192.168.7.100/Downloads/yakoye-release/WindowMark/v0.6.5/WindowMark.exe`。
+- 7.100 实际安装运行的根目录 `C:/Users/color/Downloads/yakoye-release/WindowMark/WindowMark.exe`。
+
+最终升级不带启用参数，也不再次校准。7.100 主程序 18644 → 24184 后自动恢复 76 DIP；任务栏 Explorer 27212 → 4224 后，主程序 24184 保持运行并自动恢复 76 DIP；两项 `restore_failures=0`。最终主程序无参数，由常驻 Explorer 23776 启动，脱离开发工具进程树。
+
+证据在共享 `WindowMark-release-065-final-04`，最终构建的程序重启、Explorer 重启门禁均已再次通过。仍未捕捉远程应用导致的完整显隐往返，不能发布。共享 `WindowMark-065-输入法往返测试/run_capture.bat` 提供一键只读采样，每次创建独立结果目录；脚本全 ASCII，不重新连接、不截图、不注入输入。用户只需切换现有远程窗口和本地编辑器。
+
+本节是构建后的验证记录，后续仅修改测试文档的提交不改变上述 EXE 对应的代码提交标识。GitHub 发布授权已经取得，无需再次询问是否发布；待最后一项真实证据通过后执行。
