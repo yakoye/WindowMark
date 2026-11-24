@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(WindowMark VERSION 0.6.4 LANGUAGES CXX)
+project(WindowMark VERSION 0.6.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,6 +74,7 @@ if(WIN32)
     add_custom_target(windowmark_stamp
         COMMAND ${CMAKE_COMMAND}
                 -DOUT=${WINDOWMARK_STAMP_DIR}/BuildStamp.h
+                -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteBuildStamp.cmake
         BYPRODUCTS ${WINDOWMARK_STAMP_DIR}/BuildStamp.h
         COMMENT "Writing build stamp")
@@ -131,6 +132,8 @@ if(WIN32)
 
     add_executable(WindowMark WIN32
         src/shared/EmbeddedTools.cpp
+        src/platform/windows/WinMouseControl.cpp
+        src/platform/windows/WinMouseSettings.cpp
         src/platform/windows/WinImeTrayGuard.cpp
         tools/ime-tray-guard/ImeGuardClient.cpp
         src/platform/windows/WinMain.cpp
@@ -343,6 +346,14 @@ if(WINDOWMARK_BUILD_TESTS)
 
     if(WIN32)
         add_executable(windowmark_autostart_tests tests/autostart_tests.cpp)
+        add_executable(windowmark_mouse_tests tests/mouse_tests.cpp src/platform/windows/WinMouseControl.cpp)
+        target_include_directories(windowmark_mouse_tests PRIVATE include src/platform/windows)
+        target_compile_definitions(windowmark_mouse_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(windowmark_mouse_tests PRIVATE windowmark_core user32)
+        if(MSVC)
+            target_compile_options(windowmark_mouse_tests PRIVATE /W4 /WX /permissive- /EHsc /utf-8)
+        endif()
+        add_test(NAME windowmark_mouse_tests COMMAND windowmark_mouse_tests)
         target_include_directories(windowmark_autostart_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/shared)
         target_compile_definitions(windowmark_autostart_tests PRIVATE

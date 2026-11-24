@@ -1,7 +1,15 @@
-# WindowMark v0.6.4-rc.1
+# WindowMark v0.6.5
 
-单 EXE 绿色版开发检出：`WindowMark-portable`。候选交付为 `dist/rc/v0.6.4-rc.1/WindowMark.exe`。
+单 EXE 绿色版开发检出：`WindowMark-portable`。0.6.5 交付为 `dist/v0.6.5/WindowMark.exe`。
 已发布的 v0.6.3 和历史归档保留不变。后续正式发布使用 `make-package.ps1 -Release`，只交付一个 EXE，并按项目和版本双目录归档核验。
+
+## 鼠标控制
+
+托盘右键 → **鼠标控制** → 滚轮调节 / 指针调节。两个开关互相独立，默认都关闭；启用的子项打勾，任一启用时父级也打勾。
+点击「鼠标设置…」打开统一面板。滚轮默认 50 毫秒，觉得快可改 80 或 100；指针使用 Windows 的 1–20 速度。
+关闭指针调节或正常退出会恢复原速度。远程绝对坐标移动可能不受 Windows 速度影响，需要设备实测。
+无需 AutoHotkey，配置与恢复记录保存在 EXE 同目录。主面板、托盘提示和关于窗口显示「版本号 · 7 位提交号 · 构建时间」。
+详见[鼠标控制说明](docs/features/Mouse-Control.md)与[0.6.5 测试记录](docs/tests/Mouse-Control-0.6.5-20261124.md)。
 
 ## 任务栏输入法占位保护与轻松提示语
 
@@ -89,10 +97,10 @@ per-monitor overlay canvas, which fixed inactive borders landing at the wrong de
 brief incomplete border after a fast window switch. See [CHANGELOG.md](CHANGELOG.md) for the
 full history.
 
-## 单 EXE 绿色版（0.6.4-rc.1 开发验收）
+## 单 EXE 绿色版
 
 后续用户下载文件统一为 **WindowMark.exe**，GitHub 附件、本机和 NAS 正式归档采用同样格式。
-此分支仍为候选开发版，已发布的 v0.6.3 ZIP 保留原样。
+当前构建版本为 0.6.5，已发布的 v0.6.3 ZIP 保留原样。
 
 1. 将 EXE 放到可写文件夹，双击运行；不需要解压配套 tools 或创建 portable.on。
 2. 配置固定保存在旁边的 `settings.conf`，输入法保护数据保存在 `ImeTrayGuard/`。
@@ -865,4 +873,4 @@ MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、闭源、商用、�
 
 ## 版本与交付约定
 
-当前分支为 v0.6.4-rc.1 候选。GitHub 后续用户附件统一为一个 `WindowMark.exe`，完整功能所需组件内置；运行后在程序目录生成配置、数据和缓存。源代码仓库保留 README、CHANGELOG、许可证与测试文档，不再混入用户下载包。正式版本继续按项目和版本归档到本机和 NAS，保留历史并核对 SHA-256。
+当前分支为 v0.6.5。GitHub 后续用户附件统一为一个 `WindowMark.exe`，完整功能所需组件内置；运行后在程序目录生成配置、数据和缓存。源代码仓库保留 README、CHANGELOG、许可证与测试文档，不再混入用户下载包。正式版本继续按项目和版本归档到本机和 NAS，保留历史并核对 SHA-256。

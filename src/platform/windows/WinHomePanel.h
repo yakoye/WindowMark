@@ -34,6 +34,7 @@ enum class HomeAction {
     BorderApps,
     PinSettings,
     PinGrab,
+    MouseSettings,
     DragSettings,
     DragApps,
     PinLastWindow,

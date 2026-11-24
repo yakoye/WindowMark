@@ -1,6 +1,7 @@
 #include "WinHomePanel.h"
 
 #include "AppIdentity.h"
+#include "BuildStamp.h"
 #include "Resource.h"
 #include "PinDiag.h"
 
@@ -223,6 +224,7 @@ private:
             return;
         case kIdAbout:            Finish(HomeAction::About); return;
         case kIdExit:             Finish(HomeAction::Exit); return;
+        case 2056: Finish(HomeAction::MouseSettings); return;
         case kIdClose:            Finish(HomeAction::None); return;
         default:                  return;
         }
@@ -315,7 +317,7 @@ private:
         x = std::clamp(x, workLeft, std::max(workLeft, workRight - outerW));
         y = std::clamp(y, workTop, std::max(workTop, workBottom - outerH));
 
-        const std::wstring title = std::wstring(L"WindowMark ") + app::kProductVersion;
+        const std::wstring title = std::wstring(L"WindowMark ") + app::BuildIdentity();
         if (!CreateWindowExW(WS_EX_DLGMODALFRAME, kPanelClass, title.c_str(),
                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, x, y, outerW, outerH,
                              nullptr, nullptr, GetModuleHandleW(nullptr), this)) {
@@ -335,6 +337,7 @@ private:
         y += static_cast<int>(kFeatures.size()) * (kRowH + kGap + kLineH * 2 + kSectionGap);
         y += kRowH + kGap + kLineH * 2 + kSectionGap;
         y += kRowH + kGap;                                         // 空位提示语开关
+        y += kRowH + kGap; // 鼠标控制
         y += kRowH + kGap;                                          // 置顶刚才那个窗口
         y += kRowH + kSectionGap;                                   // 开机启动 + 准星
         y += (kRowH + kGap) * 3;                                    // 程序级按钮三行
@@ -378,6 +381,9 @@ private:
             Add(L"STATIC", f.how, SS_LEFT, kPad, y, full, kLineH, -1);
             y += kLineH + kSectionGap;
         }
+
+        Add(L"BUTTON", L"鼠标控制...（滚轮与指针分别调节）", BS_PUSHBUTTON | WS_TABSTOP, kPad, y, full, kRowH, 2056);
+        y += kRowH + kGap;
 
         imeToggle_ = Add(L"BUTTON", L"输入法占位保护(&I)", BS_AUTOCHECKBOX | WS_TABSTOP,
                          kPad, y, 252, kRowH, 2051, true);

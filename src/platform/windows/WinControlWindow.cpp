@@ -1,6 +1,7 @@
 #include "WinControlWindow.h"
 
 #include "AppIdentity.h"
+#include "BuildStamp.h"
 #include "AutoStart.h"
 #include "ClipKeeperIdentity.h"
 #include "PinDiag.h"
@@ -51,6 +52,9 @@ bool WinControlWindow::Start(Handlers handlers) {
     // menu item is there, the click dispatches, nothing happens - so the only way to catch
     // it is to say so at startup rather than wait for someone to notice.
     const std::pair<const wchar_t*, bool> wired[] = {
+        {L"onMouseSettings", static_cast<bool>(handlers_.onMouseSettings)},
+        {L"onToggleWheel", static_cast<bool>(handlers_.onToggleWheel)},
+        {L"onTogglePointer", static_cast<bool>(handlers_.onTogglePointer)},
         {L"onToggleAll", static_cast<bool>(handlers_.onToggleAll)},
         {L"onToggleDrag", static_cast<bool>(handlers_.onToggleDrag)},
         {L"onDragSettings", static_cast<bool>(handlers_.onDragSettings)},
@@ -211,7 +215,8 @@ void WinControlWindow::AddTrayIcon() {
         GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     if (!data.hIcon) data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(data.szTip, L"WindowMark - 左键打开面板，右键打开菜单");
+    const auto tip = L"WindowMark " + app::BuildIdentity() + L"\n左键面板，右键菜单";
+    wcsncpy_s(data.szTip, tip.c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &data);
 }
 
@@ -699,6 +704,15 @@ void WinControlWindow::ShowMenu() {
                     reinterpret_cast<UINT_PTR>(pinning), L"窗口置顶");
     }
 
+    HMENU mouse = CreatePopupMenu();
+    if (mouse) {
+        AppendMenuW(mouse, MF_STRING | (wheelEnabled_ ? MF_CHECKED : MF_UNCHECKED), kToggleWheelCommand, L"滚轮调节");
+        AppendMenuW(mouse, MF_STRING | (pointerEnabled_ ? MF_CHECKED : MF_UNCHECKED), kTogglePointerCommand, L"指针调节");
+        AppendMenuW(mouse, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(mouse, MF_STRING, kMouseSettingsCommand, L"鼠标设置...");
+        AppendMenuW(menu, MF_POPUP | ((wheelEnabled_ || pointerEnabled_) ? MF_CHECKED : MF_UNCHECKED),
+                    reinterpret_cast<UINT_PTR>(mouse), L"鼠标控制");
+    }
     HMENU dragging = CreatePopupMenu();
     if (dragging) {
         AppendMenuW(dragging, MF_STRING | (dragEnabled_ ? MF_CHECKED : MF_UNCHECKED),
@@ -946,6 +960,9 @@ LRESULT WinControlWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) 
         case kBorderSettingsCommand: handler = &handlers_.onBorderSettings; break;
         case kBorderExcludeCommand:  handler = &handlers_.onBorderExcludeApps; break;
         case kTogglePinningCommand:  handler = &handlers_.onTogglePinning; break;
+        case kMouseSettingsCommand: handler = &handlers_.onMouseSettings; break;
+        case kToggleWheelCommand: handler = &handlers_.onToggleWheel; break;
+        case kTogglePointerCommand: handler = &handlers_.onTogglePointer; break;
         case kToggleDragCommand:     handler = &handlers_.onToggleDrag; break;
         case kDragSettingsCommand:   handler = &handlers_.onDragSettings; break;
         case kDragExcludeCommand:    handler = &handlers_.onDragExcludeApps; break;

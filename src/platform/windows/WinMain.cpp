@@ -4,6 +4,7 @@
 #include "WinControlWindow.h"
 #include "WinDragBackend.h"
 #include "WinImeTrayGuard.h"
+#include "WinMouseControl.h"
 #include "WinDragSettingsDialog.h"
 #include "WinDonate.h"
 #include "WinHomePanel.h"
@@ -324,6 +325,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
     };
 
+    windowmark::win::WinMouseControl mouseControl(settingsPath.parent_path());
+    std::wstring mouseError;
+    const bool mouseStarted = mouseControl.Recover(mouseError) && mouseControl.Apply(settings.mouse, mouseError);
+
     // Every dialog below is modal to the hidden tray window. Disabling that window blocks
     // input to it but not the tray icon's callback message, so the menu stayed usable and
     // could stack a second copy of any dialog on top of the first.
@@ -398,7 +403,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             draft.drag.enabled = now.drag.enabled;
             coordinator.UpdateSettings(draft);
             control.SetBorderState(coordinator.CurrentSettings().border.enabled);
-            control.SetDragState(coordinator.CurrentSettings().drag.enabled);
+            control.SetMouseState(mouseControl.WheelActive(), mouseControl.PointerActive());
+    control.SetDragState(coordinator.CurrentSettings().drag.enabled);
             control.SetPinState(coordinator.CurrentSettings().pin.enabled);
             if (reapplyHotkey) reapplyHotkey();
             persist();
@@ -693,6 +699,38 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return id != 0 && coordinator.IsPinned(id);
     };
 
+    const auto applyMouse = [&](const windowmark::MouseSettings& value) {
+        const auto before = coordinator.CurrentSettings();
+        std::wstring error;
+        if (!mouseControl.Apply(value, error)) {
+            std::wstring rollback;
+            mouseControl.Apply(before.mouse, rollback);
+            control.SetMouseState(mouseControl.WheelActive(), mouseControl.PointerActive());
+            MessageBoxW(nullptr, (error + rollback).c_str(), L"鼠标控制", MB_OK | MB_ICONERROR);
+            return;
+        }
+        auto next = before; next.mouse = value;
+        if (!windowmark::Settings::Save(settingsPath, next)) {
+            std::wstring rollback; mouseControl.Apply(before.mouse, rollback);
+            control.SetMouseState(mouseControl.WheelActive(), mouseControl.PointerActive());
+            MessageBoxW(nullptr, L"保存鼠标设置失败，本次更改未保留。", L"鼠标控制", MB_OK | MB_ICONERROR);
+            return;
+        }
+        coordinator.UpdateSettings(next);
+        control.SetMouseState(mouseControl.WheelActive(), mouseControl.PointerActive());
+    };
+    handlers.onMouseSettings = [&]() {
+        exclusive([&]() {
+            auto value = coordinator.CurrentSettings().mouse;
+            if (windowmark::win::ShowMouseSettings(control.NativeHandle(), value)) applyMouse(value);
+        });
+    };
+    handlers.onToggleWheel = [&]() {
+        auto value = coordinator.CurrentSettings().mouse; value.wheelEnabled = !mouseControl.WheelActive(); applyMouse(value);
+    };
+    handlers.onTogglePointer = [&]() {
+        auto value = coordinator.CurrentSettings().mouse; value.pointerEnabled = !mouseControl.PointerActive(); applyMouse(value);
+    };
     handlers.onShowPanel = [&]() {
         using Action = windowmark::win::HomeAction;
         using Cmd = windowmark::win::WinControlWindow;
@@ -705,6 +743,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         dialogOpen = false;
 
         switch (action) {
+        case Action::MouseSettings: control.RunCommand(Cmd::kMouseSettingsCommand); break;
         case Action::None:             break;
         case Action::BookmarkSettings: control.RunCommand(Cmd::kSettingsCommand); break;
         case Action::BookmarkApps:     control.RunCommand(Cmd::kSelectionCommand); break;
@@ -852,8 +891,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         // Version and build stamp together: the version says which release this is, the
         // stamp says which build, and only the stamp is impossible to forget to update.
         const std::wstring instruction =
-            std::wstring(L"WindowMark ") + windowmark::app::kProductVersion +
-            L"   （构建于 " + windowmark::app::kBuildStamp + L"）";
+            std::wstring(L"WindowMark ") + windowmark::app::BuildIdentity();
 
         // TaskDialog draws the main icon at 32px, so ask the .ico for that size rather
         // than letting it shrink the 256.
@@ -942,6 +980,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             control.ShowBalloon(L"输入法占位保护未启用", L"恢复监视器初始化失败，没有启动原生控制程序。");
         }
     }
+    if (!mouseStarted) control.ShowBalloon(L"鼠标控制未生效", mouseError);
     if (HasArgument(L"--panel")) control.RunCommand(windowmark::win::WinControlWindow::kPanelCommand);
     // 第一次运行：绿色版双击就跑，没有任何安装向导说过话。这是唯一能交代「图标在托盘里」
     // 并且顺手把开机启动和桌面图标办了的机会——那两件事安装程序会替用户做，绿色版没人做，
@@ -985,6 +1024,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // 书签这一项以前漏了：托盘里它的初值写死是「开」，配置里关着也照样打勾。
     control.SetEnabledState(coordinator.CurrentSettings().drawer.enabled);
     control.SetBorderState(coordinator.CurrentSettings().border.enabled);
+    control.SetMouseState(mouseControl.WheelActive(), mouseControl.PointerActive());
     control.SetDragState(coordinator.CurrentSettings().drag.enabled);
     control.SetPinState(coordinator.CurrentSettings().pin.enabled);
 

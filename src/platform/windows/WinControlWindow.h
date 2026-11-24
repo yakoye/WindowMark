@@ -40,6 +40,9 @@ public:
         std::function<void()> onBorderExcludeApps;
         std::function<void()> onTogglePinning;
         // 窗口拖动。三项和边框那组同构：开关、排除应用、设置。
+        std::function<void()> onMouseSettings;
+        std::function<void()> onToggleWheel;
+        std::function<void()> onTogglePointer;
         std::function<void()> onToggleDrag;
         std::function<void()> onDragSettings;
         std::function<void()> onDragExcludeApps;
@@ -110,6 +113,7 @@ public:
     void SetEnabledState(bool enabled);
     void SetBorderState(bool enabled);
     void SetDragState(bool enabled);
+    void SetMouseState(bool wheel, bool pointer) { wheelEnabled_ = wheel; pointerEnabled_ = pointer; }
     void SetPinState(bool enabled);
     void SetImeGuardState(bool requested, bool active, std::wstring status, bool hints) {
         imeRequested_ = requested; imeActive_ = active; imeStatus_ = std::move(status);imeHints_ = hints;
@@ -155,6 +159,10 @@ public:
     static constexpr UINT kGrabToPinCommand = 1011;
     static constexpr UINT kPinSettingsCommand = 1013;
     static constexpr UINT kUnpinAllCommand = 1014;
+    static constexpr UINT kMouseSettingsCommand = 1050;
+    static constexpr UINT kToggleWheelCommand = 1051;
+    static constexpr UINT kTogglePointerCommand = 1052;
+    bool wheelEnabled_{}, pointerEnabled_{};
     static constexpr UINT kToggleDragCommand = 1018;
     static constexpr UINT kDragSettingsCommand = 1019;
     static constexpr UINT kDesktopShortcutCommand = 1021;

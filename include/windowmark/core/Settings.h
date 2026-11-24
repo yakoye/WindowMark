@@ -271,7 +271,15 @@ struct ImeGuardSettings {
     bool showHints{true};
 };
 
+struct MouseSettings {
+    bool wheelEnabled{false};
+    bool pointerEnabled{false};
+    int pointerSpeed{10};
+    int wheelIntervalMs{50}; // 毫秒，越大越慢
+};
+
 struct Settings {
+    MouseSettings mouse;
     ImeGuardSettings imeGuard;
     DrawerSettings drawer;
     BorderSettings border;

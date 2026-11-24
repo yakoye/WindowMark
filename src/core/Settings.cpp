@@ -328,6 +328,12 @@ Settings Settings::LoadOrCreate(const std::filesystem::path& filePath) {
     if (const auto it = values.find("border.excluded_apps"); it != values.end()) {
         settings.border.excludedAppKeys = ParseEncodedList(it->second);
     }
+    if (const auto it = values.find("mouse.wheel_enabled"); it != values.end())
+        settings.mouse.wheelEnabled = ParseBool(it->second, false);
+    if (const auto it = values.find("mouse.pointer_enabled"); it != values.end())
+        settings.mouse.pointerEnabled = ParseBool(it->second, false);
+    settings.mouse.pointerSpeed = ParseInt(values, "mouse.pointer_speed", 10, 1, 20);
+    settings.mouse.wheelIntervalMs = ParseInt(values, "mouse.wheel_interval_ms", 50, 1, 1000);
     if (const auto it = values.find("ime_guard.enabled"); it != values.end()) {
         settings.imeGuard.enabled = ParseBool(it->second, false);
     }
@@ -372,7 +378,11 @@ bool Settings::Save(const std::filesystem::path& filePath, const Settings& setti
         return false;
     }
 
-    output << "# WindowMark v0.4.3\n";
+    output << "# WindowMark settings\n";
+    output << "mouse.wheel_enabled=" << (settings.mouse.wheelEnabled ? "true" : "false") << "\n";
+    output << "mouse.pointer_enabled=" << (settings.mouse.pointerEnabled ? "true" : "false") << "\n";
+    output << "mouse.pointer_speed=" << settings.mouse.pointerSpeed << "\n";
+    output << "mouse.wheel_interval_ms=" << settings.mouse.wheelIntervalMs << "\n";
     output << "# Edit this file, then restart WindowMark.\n\n";
     output << "ime_guard.enabled=" << (settings.imeGuard.enabled ? "true" : "false") << "\n";
     output << "ime_guard.show_hints=" << (settings.imeGuard.showHints ? "true" : "false") << "\n";
