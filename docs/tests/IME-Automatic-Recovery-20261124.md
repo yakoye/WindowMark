@@ -28,3 +28,17 @@
 在交互会话使用此前真实旧标记，不带启用参数启动，必须看到控制程序 --reuse-only、state=3、width>0、restore_failures=0。随后仅终止当前测试的 WindowMark，保留 Explorer 和原生控制程序，再不带参数启动，验证旧租约过期后自动恢复及心跳持续增长。
 
 最终实机结果保存在 share_chatgpt/WindowMark-ime-auto-20261124 及开发目录 build/evidence/remote-ime-auto-7100。只有实际结果文件代表该项完成，不以测试设计冒充已执行。此次不自动发送鼠标输入或截图。
+
+## 7.100 最终实机结果
+
+运行构建：0.6.5 / 13de14f / 2026-11-24 20:22:40。实际测试只结束测试启动的 WindowMark PID 10768，保留 Explorer PID 24176、18564 及其控制进程；恢复进程 PID 5252 由常驻 Explorer 18564 不带任何启用参数启动。
+
+- 异常退出留下原始标记，文件在 crash-marker.txt。
+- last-recovery.txt：automatic=1、marked=1、obsolete=0、remains=1、reuse_only=1。
+- 控制程序命令含 --reuse-only；没有走首次附加入口。
+- crash-result.json：state=3、width=76、restore_failures=0、show_hints=true。
+- stable-result.json：仍为 state=3/76 DIP，心跳由 809679484 增至 809686984。
+- 主程序开启偏好保持，Explorer 未重启，无须关闭再开启。
+- 最终共享证据目录：share_chatgpt/WindowMark-ime-auto-20261124-03；开发目录归档 remote-ime-auto-7100。
+
+前两轮人工复制历史标记的实机测试未形成要求的分支：实际 marked=0、命令不含 reuse-only，严格断言失败。没有因最终已生效而将其计为旧标记恢复通过，原始记录保留在无后缀及 -02 目录。改用真实主程序异常退出后，旧标记分支和持续恢复均已确认通过。夹具中的独立旧标记测试也已通过。

@@ -37,12 +37,15 @@ try {
     if(Test-Path "$root/ImeTrayGuard/active-session.lock"){throw 'Previous layout restoration not confirmed'}
     # 使用此前真实故障留下的原始标记，而不是在 Explorer 中制造恢复失败。
     Copy-Item "$output/marker-before.txt" "$root/ImeTrayGuard/active-session.lock"
+    Get-Content "$root/ImeTrayGuard/active-session.lock" -Raw | Set-Content "$output/marker-staged.txt"
     $first=Start-Normal
     $stale=Wait-Active $first 'stale-marker'
-    if(!$stale.reuseOnly){throw 'Expected reuse-only recovery for stale marker'}
     $stale | ConvertTo-Json -Depth 4 | Set-Content "$output/stale-marker-result.json" -Encoding UTF8
+    Copy-Item "$root/ImeTrayGuard/last-recovery.txt" "$output/stale-marker-recovery-trace.txt"
     if($first.Path -ne $exe.Replace('/','\')){throw 'Unexpected process path, refusing crash test'}
     Stop-Process -Id $first.Id -Force
+    if(!(Test-Path "$root/ImeTrayGuard/active-session.lock")){throw 'Crash did not leave a marker; test condition absent'}
+    Copy-Item "$root/ImeTrayGuard/active-session.lock" "$output/crash-marker.txt"
     Start-Sleep -Seconds 2
     $second=Start-Normal
     $crash=Wait-Active $second 'after-crash'
