@@ -1124,6 +1124,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             coordinator.WatchdogTick();
             // 每分钟一条心跳（只在诊断打开时写）。没有它就分不清「看门狗跑着而且一切正常」
             // 和「看门狗自己也停了」——而后者恰恰是要防的那类故障的一种。
+            control.SetMouseState(mouseControl.WheelActive(), mouseControl.PointerActive());
+            static bool wheelFailureShown = false;
+            if (mouseControl.WheelFailed() && !wheelFailureShown) {
+                control.ShowBalloon(L"滚轮调节已停止", L"系统拒绝重发滚轮输入，监听已解除。可以检查目标程序权限后重新启用。");
+                wheelFailureShown = true;
+            }
+            if (!mouseControl.WheelFailed()) wheelFailureShown = false;
             static unsigned ticks = 0;
             if (++ticks % 12 == 0) {
                 windowmark::win::PinDiag(L"看门狗：已巡 %u 次，恢复过 %u 次", ticks,

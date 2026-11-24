@@ -3,10 +3,36 @@
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
+#include <future>
 #define CHECK(x) do { if (!(x)) { std::cerr << "Failed line " << __LINE__ << ": " #x << '\n'; std::exit(1); } } while(false)
+namespace windowmark::win {
+struct MouseControlTestAccess {
+    static void BlockedWorker(WinMouseControl& control) {
+        auto release = std::make_shared<std::promise<void>>();
+        auto resume = release->get_future(); std::promise<void> finished; auto done = finished.get_future();
+        control.wheel_ = std::make_shared<MouseWheelState>();
+        auto state = control.wheel_; state->active = true;
+        control.worker_ = std::thread([state, resume = std::move(resume), finished = std::move(finished)]() mutable {
+            resume.wait(); state->active = false; finished.set_value();
+        });
+        control.threadId_ = GetThreadId(static_cast<HANDLE>(control.worker_.native_handle()));
+        const auto start = GetTickCount64(); control.StopWheel();
+        CHECK(GetTickCount64() - start < 2200); CHECK(!control.WheelActive());
+        release->set_value(); CHECK(done.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    }
+};
+}
 int main() {
     using namespace windowmark;
     WheelThrottle gate;
+    CHECK(gate.Route(false,120,0,50,false)==WheelAction::Pass);
+    CHECK(gate.Route(false,120,1,50,false)==WheelAction::Drop);
+    CHECK(gate.Route(false,120,2,50,true)==WheelAction::Pass);
+    CHECK(gate.Route(false,-120,2,50,false)==WheelAction::Pass);
+    CHECK(gate.Route(true,960,2,50,false)==WheelAction::NormalizeLater);
+    CHECK(gate.Route(true,-960,2,50,false)==WheelAction::NormalizeLater);
+    CHECK(gate.Route(false,0,3,50,false)==WheelAction::Pass);
+    gate.Reset();
     CHECK(gate.Accept(false,120,0,50));
     for (unsigned i=1;i<50;++i) CHECK(!gate.Accept(false,120,i,50));
     CHECK(gate.Accept(false,120,50,50));
@@ -65,6 +91,7 @@ int main() {
     { win::WinMouseControl control(dir); std::wstring error; CHECK(!control.Recover(error)); CHECK(!error.empty()); }
     CHECK(SystemParametersInfoW(SPI_GETMOUSESPEED,0,&after,0)); CHECK(after==current);
     std::filesystem::remove(dir/L"mouse-speed.restore");
+    { win::WinMouseControl control(dir); win::MouseControlTestAccess::BlockedWorker(control); }
     std::filesystem::remove(config); std::filesystem::remove(dir);
     std::cout<<"鼠标节流、独立设置、系统接口与恢复检查通过\n";
 }

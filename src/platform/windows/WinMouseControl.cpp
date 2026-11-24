@@ -7,22 +7,22 @@
 namespace windowmark::win {
 namespace {
 constexpr ULONG_PTR kOwnWheel = 0x574D5748;
+constexpr UINT kDeferredWheel = WM_APP + 513;
 thread_local WheelThrottle gate;
 thread_local unsigned wheelInterval{};
+thread_local MouseWheelState* wheelContext{};
 LRESULT CALLBACK WheelHook(int code, WPARAM message, LPARAM data) {
-    if (code == HC_ACTION && (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL)) {
+    if (code == HC_ACTION && wheelContext && !wheelContext->stop && (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL)) {
         const auto& event = *reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
-        // 远程输入可能也是 injected，只有本模块重发的事件跳过。
-        if (event.dwExtraInfo != kOwnWheel) {
-            const auto delta = static_cast<short>(HIWORD(event.mouseData));
-            if (!gate.Accept(message == WM_MOUSEHWHEEL, delta, GetTickCount64(), wheelInterval)) return 1;
-            INPUT input{}; input.type = INPUT_MOUSE;
-            input.mi.dwFlags = message == WM_MOUSEHWHEEL ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
-            input.mi.mouseData = static_cast<DWORD>(delta > 0 ? WHEEL_DELTA : -WHEEL_DELTA);
-            input.mi.dwExtraInfo = kOwnWheel;
-            // 保留按键状态；发送失败时放过原始事件，不吞掉用户输入。
-            if (SendInput(1, &input, sizeof(input)) == 1) return 1;
-            gate.Reset();
+        const auto delta = static_cast<short>(HIWORD(event.mouseData));
+        const auto action = gate.Route(message == WM_MOUSEHWHEEL, delta, GetTickCount64(), wheelInterval, event.dwExtraInfo == kOwnWheel);
+        if (action == WheelAction::Drop) return 1;
+        if (action == WheelAction::NormalizeLater) {
+            // 回调只排队后返回，绝不在钩子内部同步 SendInput。
+            const auto flags = message == WM_MOUSEHWHEEL ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
+            const auto packed = MAKELPARAM(flags, static_cast<WORD>(delta > 0 ? WHEEL_DELTA : -WHEEL_DELTA));
+            if (PostThreadMessageW(GetCurrentThreadId(), kDeferredWheel, packed, static_cast<LPARAM>(GetTickCount64()))) return 1;
+            gate.Reset(); // 队列不可用则让原始输入继续。
         }
     }
     return CallNextHookEx(nullptr, code, message, data);
@@ -33,7 +33,22 @@ bool WriteSpeed(int speed) {
 }
 }
 void WinMouseControl::StopWheel() {
-    if (worker_.joinable()) { PostThreadMessageW(threadId_, WM_QUIT, 0, 0); worker_.join(); }
+    if (worker_.joinable()) {
+        wheel_->stop = true;
+        wheel_->active = false;
+        if (const auto hook = wheel_->hook.exchange(nullptr)) UnhookWindowsHookEx(hook);
+        PostThreadMessageW(threadId_, WM_QUIT, 0, 0);
+        const auto handle = static_cast<HANDLE>(worker_.native_handle());
+        const auto deadline = GetTickCount64() + 1500;
+        while (WaitForSingleObject(handle, 0) == WAIT_TIMEOUT && GetTickCount64() < deadline) {
+            // 退出时仍处理同步线程调用，避免钩子链与 UI 互相等待。
+            MsgWaitForMultipleObjectsEx(1, &handle, 25, QS_SENDMESSAGE, MWMO_INPUTAVAILABLE);
+            MSG sent{}; PeekMessageW(&sent, nullptr, 0, 0, PM_NOREMOVE | (QS_SENDMESSAGE << 16));
+        }
+        if (WaitForSingleObject(handle, 0) == WAIT_OBJECT_0) worker_.join();
+        else worker_.detach(); // 独立共享状态保证迟退出线程不引用已销毁对象。
+        wheel_.reset();
+    }
     threadId_ = 0; interval_ = 0;
 }
 bool WinMouseControl::RestorePointer() {
@@ -71,20 +86,42 @@ bool WinMouseControl::Apply(const MouseSettings& settings, std::wstring& error) 
         StopWheel();
         if (next) {
             std::promise<bool> ready; auto result = ready.get_future();
+            wheel_ = std::make_shared<MouseWheelState>();
+            auto state = wheel_;
             try {
-            worker_ = std::thread([this, next, ready = std::move(ready)]() mutable {
+            worker_ = std::thread([state, next, ready = std::move(ready)]() mutable {
                 MSG message{}; PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
-                threadId_ = GetCurrentThreadId(); wheelInterval = static_cast<unsigned>(next); gate.Reset();
+                wheelContext = state.get(); wheelInterval = static_cast<unsigned>(next); gate.Reset();
                 const auto hook = SetWindowsHookExW(WH_MOUSE_LL, WheelHook, GetModuleHandleW(nullptr), 0);
-                wheelActive_ = hook != nullptr;
+                state->hook = hook; state->active = hook != nullptr;
                 ready.set_value(hook != nullptr);
                 if (!hook) return;
-                while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
-                UnhookWindowsHookEx(hook);
-                wheelActive_ = false;
+                while (!state->stop && GetMessageW(&message, nullptr, 0, 0) > 0) {
+                    if (message.message == kDeferredWheel) {
+                        if (state->stop || GetTickCount64() - static_cast<ULONGLONG>(message.lParam) > 250) continue;
+                        INPUT input{}; input.type = INPUT_MOUSE;
+                        input.mi.dwFlags = LOWORD(message.wParam);
+                        input.mi.mouseData = static_cast<DWORD>(static_cast<short>(HIWORD(message.wParam)));
+                        input.mi.dwExtraInfo = kOwnWheel;
+                        if (SendInput(1, &input, sizeof(input)) != 1) {
+                            state->failed = true; state->stop = true;
+                        }
+                    } else { TranslateMessage(&message); DispatchMessageW(&message); }
+                }
+                if (const auto installed = state->hook.exchange(nullptr)) UnhookWindowsHookEx(installed);
+                state->active = false; wheelContext = nullptr;
             });
             } catch (...) { error = L"滚轮工作线程未能启动。"; return false; }
-            if (!result.get()) { StopWheel(); error = L"滚轮监听启动失败，未启用滚轮调节。"; return false; }
+            threadId_ = GetThreadId(static_cast<HANDLE>(worker_.native_handle()));
+            const auto deadline = GetTickCount64() + 1500;
+            while (result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready && GetTickCount64() < deadline) {
+                const auto handle = static_cast<HANDLE>(worker_.native_handle());
+                MsgWaitForMultipleObjectsEx(1, &handle, 20, QS_SENDMESSAGE, MWMO_INPUTAVAILABLE);
+                MSG sent{}; PeekMessageW(&sent, nullptr, 0, 0, PM_NOREMOVE | (QS_SENDMESSAGE << 16));
+            }
+            if (result.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready || !result.get()) {
+                StopWheel(); error = L"滚轮监听启动失败或超时，未启用滚轮调节。"; return false;
+            }
             interval_ = next;
         }
     }
