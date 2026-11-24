@@ -31,7 +31,8 @@ private:
     void Tick();
     void Pause(const wchar_t* reason);
     void RecoverLayout(const wchar_t* reason);
-    void RetryExistingEndpoint();
+    void RetryExistingEndpoint(bool neverAttached=false);
+    void SaveWidthCache();
     void SetRequested(bool value);
     DWORD TargetPid() const;
     bool TargetExited() const;
@@ -41,6 +42,7 @@ private:
     HWND hwnd_{};
     UINT taskbarCreated_{};
     std::filesystem::path tools_, data_, marker_, log_, runtime_;
+    ime_guard::WidthHint widthHint_{};
     std::wstring message_{L"已关闭；不改变原生输入法及任务栏布局。"};
     bool requested_{}, hadLease_{}, shuttingDown_{};
     bool recovering_{};

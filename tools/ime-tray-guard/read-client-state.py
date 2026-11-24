@@ -21,7 +21,7 @@ try:
     if not view:raise c.WinError(c.get_last_error())
     raw=c.string_at(view,72)
     magic,version,owner,stop=struct.unpack_from('<IIII',raw)
-    if magic!=0x574d4947 or version!=3:raise RuntimeError('协议不匹配')
+    if magic!=0x574d4947 or version not in (3,4):raise RuntimeError('协议不匹配')
     state,writes,restores,failures,target=struct.unpack_from('<iiiii',raw,24)
     width,beat,result,hints=struct.unpack_from('<qqii',raw,48)
     record=dict(owner_pid=owner,target_pid=target,stop=stop,state=state,writes=writes,restores=restores,

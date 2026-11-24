@@ -44,3 +44,13 @@ rc.2 已删除 `AdviseVisualTreeChange` 调用，通过限定映像的局部根�
 ## 0.6.5 旧标记自动恢复
 
 旧标记不再导致永久暂停。自动控制会话附带 --reuse-only，只接回当前 Explorer 内既有的 LocalRoots07 端点；没有端点时禁止首次附加，端点忙碌时不抢占。已有端点本身只在旧租约已释放且恢复成功时接受下一租约，因此兼容旧 DLL，不需要重启 Explorer。暂时失败按 5、15、30 秒退避，手动关闭取消等待，已知恢复失败停止并显示原因。托盘父级的勾选代表实际生效，保存的偏好独立显示。夹具回归及实机证据见 [自动恢复测试](../tests/IME-Automatic-Recovery-20261124.md)。
+
+## 宽度缓存与 Explorer 就绪等待
+
+主程序在原生占位实际生效后，将宽度、任务栏 DPI 和完整屏幕矩形原子写入同目录 `ImeTrayGuard/width-cache.conf`。重开时即使原生输入法图标正被远程应用隐藏，也可在完全相同的布局下恢复该宽度。DPI、任务栏矩形不匹配或缓存损坏时拒绝使用，等待原生图标显现后重新学习；首次使用仍需显示原生图标一次。
+
+控制协议升级为 4，尾部追加宽度上下文；只读查询端点协议后兼容旧版 3 的固定前缀。旧端点继续可复用，但不读取新缓存字段。新 Explorer 中的诊断连接全部返回 `ERROR_NOT_FOUND` 时，只有完整模块枚举确认原生组件未加载，才返回“从未附加”的专用结果并延迟重试。枚举失败、组件已加载、已有端点忙碌或恢复失败均不归入此分支。
+
+新增精确映像使用微软 PDB 的 `Diagnostics::DiagnosticsInterop::GetXamlIslandRoots` 符号核对，仍须同时匹配映像大小、完整 RSDS GUID/age 和函数前缀，不按文件版本猜测、不扫描地址兜底。参考 [微软符号说明](https://learn.microsoft.com/en-us/windows/desktop/dxtecharts/debugging-with-symbols)和 [XAML 诊断入口](https://learn.microsoft.com/en-us/windows/win32/api/xamlom/nf-xamlom-initializexamldiagnosticsex)。
+
+此次发布前实机门禁及未完成项见 [0.6.5 生命周期验收](../tests/Release-0.6.5-20261124.md)。

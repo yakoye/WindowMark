@@ -29,6 +29,7 @@ bool Client::Start(std::filesystem::path const& directory,std::filesystem::path 
         if(!shared_)throw std::runtime_error("view");
         new(shared_) ClientBlock{};
         shared_->showHints=showHints_?1:0;
+        shared_->widthHint=widthHint_;
         shared_->ownerPid=GetCurrentProcessId();InterlockedExchange64(&shared_->heartbeat,static_cast<LONG64>(GetTickCount64()));
         std::filesystem::create_directories(log.parent_path());
         std::wstring command=L"\""+exe.wstring()+L"\" ";

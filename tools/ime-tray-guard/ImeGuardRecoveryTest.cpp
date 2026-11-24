@@ -17,9 +17,9 @@ bool Wait(std::function<bool()> const& condition,unsigned ms) {
 }
 struct Fixture {
     HANDLE process{}; DWORD pid{};
-    bool Start(std::filesystem::path const& directory) {
+    bool Start(std::filesystem::path const& directory,bool hidden=false) {
         auto exe=directory/L"WindowMarkXamlContainerFixture.exe";
-        std::wstring command=L"\""+exe.wstring()+L"\" --seconds 90 --always-visible";
+        std::wstring command=L"\""+exe.wstring()+L"\" --seconds 90 "+(hidden?L"--always-hidden":L"--always-visible");
         STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
         if(!CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&si,&pi))return false;
         process=pi.hProcess;pid=pi.dwProcessId;CloseHandle(pi.hThread);
@@ -124,7 +124,19 @@ int Lifecycle(std::filesystem::path const& directory,std::filesystem::path const
         legacy.Restore();Wait([]{return false;},5000);
         if(legacy.Requested()||legacy.Active())return 37;
     }
-    puts("legacy_marker_and_manual_off=PASS");return 0;
+    puts("legacy_marker_and_manual_off=PASS");fflush(stdout);
+    {
+        Fixture hidden;if(!hidden.Start(directory,true))return 50;
+        const auto hiddenData=data/L"hidden-cache";std::filesystem::create_directories(hiddenData);
+        Write(hiddenData/L"width-cache.conf","76000 96 0 0 100 40");
+        WinImeTrayGuard cached;cached.UseFixture(hidden.pid);
+        if(!cached.Initialize(directory,hiddenData)||!cached.Enable(true)||!Wait([&]{return cached.Active();},10000))return 51;
+        cached.Shutdown();
+        WinImeTrayGuard restarted;restarted.UseFixture(hidden.pid);
+        if(!restarted.Initialize(directory,hiddenData)||!restarted.Enable(true)||!Wait([&]{return restarted.Active();},10000))return 52;
+        restarted.Shutdown();
+    }
+    puts("hidden_icons_cached_width_survives_restart=PASS");return 0;
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc!=3)return 1;

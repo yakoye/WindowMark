@@ -24,7 +24,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WindowMarkFixtureGetRoot(IInspec
     if(!out)return E_POINTER;*out=nullptr;
     return fixtureSource ? winrt::get_unknown(fixtureSource)->QueryInterface(__uuidof(IInspectable),reinterpret_cast<void**>(out)) : E_PENDING;
 }
-int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,bool alwaysVisible,std::atomic_bool& mainReady) {
+int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,bool alwaysVisible,bool alwaysHidden,std::atomic_bool& mainReady) {
     const char* stage="initialize";
     try {
         // XAML进程级初始化先由主UI线程完成；并发初始化的E_UNEXPECTED不是目标崩溃。
@@ -60,7 +60,7 @@ int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,boo
                 printf("{\"island\":%u,\"event\":\"island_closed_thread_alive\",\"second\":%u}\n",index,sec);fflush(stdout);
             }
             // 5..15秒内容消失，让控制器正常退出/被终止时都能观察恢复。
-            content.Visibility(!alwaysVisible&&sec>=5&&sec<15?Visibility::Collapsed:Visibility::Visible);
+            content.Visibility(alwaysHidden || (!alwaysVisible&&sec>=5&&sec<15)?Visibility::Collapsed:Visibility::Visible);
             if(churn && sec!=lastSecond) {
                 // 自身UI线程创建/销毁非目标节点，模拟Explorer中的其它动态XAML树。
                 while(root.Children().Size()>1)root.Children().RemoveAtEnd();
@@ -81,7 +81,7 @@ int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,boo
     } catch(winrt::hresult_error const& e) {if(!index)mainReady=true;fprintf(stderr,"Fixture island=%u thread=%lu stage=%s HRESULT %08lx\n",index,GetCurrentThreadId(),stage,static_cast<unsigned long>(e.code().value));return 2;}
 }
 int wmain(int argc,wchar_t** argv) {
-    unsigned threads=1,seconds=20;bool churn=false,retireSecondary=false,closeSecondary=false,alwaysVisible=false;
+    unsigned threads=1,seconds=20;bool churn=false,retireSecondary=false,closeSecondary=false,alwaysVisible=false,alwaysHidden=false;
     try {
         for(int i=1;i<argc;++i){
             std::wstring arg=argv[i];
@@ -89,6 +89,7 @@ int wmain(int argc,wchar_t** argv) {
             else if(arg==L"--retire-secondary")retireSecondary=true;
             else if(arg==L"--close-secondary")closeSecondary=true;
             else if(arg==L"--always-visible")alwaysVisible=true;
+            else if(arg==L"--always-hidden")alwaysHidden=true;
             else if((arg==L"--ui-threads"||arg==L"--seconds")&&i+1<argc){
                 std::wstring value=argv[++i];if(value.empty()||value.find_first_not_of(L"0123456789")!=value.npos)return 1;
                 unsigned n=static_cast<unsigned>(std::stoul(value));
@@ -98,8 +99,8 @@ int wmain(int argc,wchar_t** argv) {
         }
     }catch(...){return 1;}
     std::atomic_int failed{};std::atomic_bool mainReady{};std::vector<std::thread> workers;
-    for(unsigned i=1;i<threads;++i)workers.emplace_back([&,i]{if(RunIsland(i,retireSecondary?3:seconds,churn,closeSecondary,alwaysVisible,mainReady))++failed;});
-    if(RunIsland(0,seconds,churn,closeSecondary,alwaysVisible,mainReady))++failed;
+    for(unsigned i=1;i<threads;++i)workers.emplace_back([&,i]{if(RunIsland(i,retireSecondary?3:seconds,churn,closeSecondary,alwaysVisible,alwaysHidden,mainReady))++failed;});
+    if(RunIsland(0,seconds,churn,closeSecondary,alwaysVisible,alwaysHidden,mainReady))++failed;
     for(auto& thread:workers)thread.join();
     return failed?2:0;
 }

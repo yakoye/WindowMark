@@ -1,8 +1,9 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include "ImeGuardWidthHint.h"
 namespace ime_guard {
-constexpr unsigned kClientMagic=0x574d4947, kClientVersion=3;
+constexpr unsigned kClientMagic=0x574d4947, kClientVersion=4;
 // 界面只写心跳/停止；控制程序只写运行状态。没有用户输入内容。
 struct alignas(8) ClientBlock {
     unsigned magic{kClientMagic}, version{kClientVersion};
@@ -14,5 +15,6 @@ struct alignas(8) ClientBlock {
     alignas(8) volatile LONG64 targetHeartbeat{};
     volatile LONG result{STILL_ACTIVE};
     volatile LONG showHints{1};
+    WidthHint widthHint{};
 };
 }

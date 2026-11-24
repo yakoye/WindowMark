@@ -19,6 +19,12 @@ ULONGLONG ProcessCreated(HANDLE process) {
 WinImeTrayGuard::~WinImeTrayGuard() { Shutdown(); }
 bool WinImeTrayGuard::Initialize(std::filesystem::path tools, std::filesystem::path data) {
     tools_ = std::move(tools); data_ = std::move(data); marker_ = data_ / L"active-session.lock";
+    {
+        std::ifstream cache(data_ / L"width-cache.conf");
+        ime_guard::WidthHint value;
+        if(cache >> value.milliDip >> value.dpi >> value.taskbar.left >> value.taskbar.top >> value.taskbar.right >> value.taskbar.bottom;
+           cache && ime_guard::Valid(value)) widthHint_=value;
+    }
     WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpfnWndProc = WndProc;
     cls.lpszClassName = kClass;
     if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
@@ -148,6 +154,7 @@ bool WinImeTrayGuard::Enable(bool automatic) {
 #ifdef WINDOWMARK_IME_GUARD_TESTING
         fixturePid = fixturePid_;
 #endif
+        client_.SetWidthHint(widthHint_);
         if (!client_.Start(runtime, log_, fixturePid, reuseOnly_)) {
             message_ = client_.Current().error;
             // 不能确认失败发生在哪一步，保留标记供下次启动诊断。
@@ -203,19 +210,34 @@ void WinImeTrayGuard::RecoverLayout(const wchar_t* reason) {
     client_.Stop();
     message_ = reason;
 }
-void WinImeTrayGuard::RetryExistingEndpoint() {
+void WinImeTrayGuard::RetryExistingEndpoint(bool neverAttached) {
     if (!requested_ || shuttingDown_) return;
     const unsigned delay = reuseFailures_ == 0 ? 5 : reuseFailures_ == 1 ? 15 : 30;
     ++reuseFailures_;
     recovering_ = true;
     recoverAt_ = GetTickCount64() + delay * 1000ULL;
-    message_ = L"已开启自动恢复，当前未占位；" + std::to_wstring(delay) +
-        L" 秒后重试已有原生端点，不重新注入。";
+    message_ = neverAttached ? L"任务栏诊断连接尚未就绪，未发生附加；" + std::to_wstring(delay) + L" 秒后自动重试。" :
+        L"已开启自动恢复，当前未占位；" + std::to_wstring(delay) + L" 秒后重试已有原生端点，不重新注入。";
+}
+void WinImeTrayGuard::SaveWidthCache() {
+    const auto& status=client_.Current();
+    const auto bar=FindWindowW(L"Shell_TrayWnd",nullptr);
+    if(status.width<12 || status.width>512 || !bar)return;
+    ime_guard::WidthHint value;
+    value.milliDip=static_cast<std::int64_t>(status.width*1000.0);
+    value.dpi=GetDpiForWindow(bar);
+    if(!GetWindowRect(bar,&value.taskbar) || !ime_guard::Valid(value))return;
+    if(value.milliDip==widthHint_.milliDip && value.dpi==widthHint_.dpi && EqualRect(&value.taskbar,&widthHint_.taskbar))return;
+    const auto path=data_/L"width-cache.conf",pending=data_/L"width-cache.tmp";
+    std::ofstream file(pending,std::ios::trunc);
+    file<<value.milliDip<<' '<<value.dpi<<' '<<value.taskbar.left<<' '<<value.taskbar.top<<' '<<value.taskbar.right<<' '<<value.taskbar.bottom;
+    file.close();
+    if(file && MoveFileExW(pending.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))widthHint_=value;
 }
 void WinImeTrayGuard::Tick() {
     client_.Tick();
     const auto& s = client_.Current();
-    if (Active()) reuseFailures_ = 0;
+    if (Active()) { reuseFailures_ = 0;SaveWidthCache(); }
     if (requested_ && !shuttingDown_) {
         const DWORD pid = TargetPid();
         HANDLE target = pid ? OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
@@ -231,7 +253,12 @@ void WinImeTrayGuard::Tick() {
     if (s.running && s.restoreFailures) Pause(L"恢复校验异常；已停止续租，请查看日志。");
     if (!s.running && hadLease_) {
         hadLease_ = false;
-        if (TargetExited() || ImeGuardRestored(s.running, s.exitCode, s.state, s.writes, s.restores, s.restoreFailures)) {
+        if (!reuseOnly_ && s.exitCode==8 && s.writes==0 && s.restoreFailures==0) {
+            // 控制程序确认所有连接均 ERROR_NOT_FOUND，且从未进入附加路径；可等待连接就绪再试。
+            std::error_code ec;std::filesystem::remove(marker_,ec);
+            if(!ec)RetryExistingEndpoint(true);
+            else {recovering_=false;message_=L"诊断连接尚未就绪，但恢复标记清理失败，请检查程序目录权限。";}
+        } else if (TargetExited() || ImeGuardRestored(s.running, s.exitCode, s.state, s.writes, s.restores, s.restoreFailures)) {
             std::error_code ec; std::filesystem::remove(marker_, ec);
             if (ec) { recovering_ = false; message_ = L"布局已恢复，但恢复标记清理失败；请手动检查。"; }
             else if (!recovering_ && requested_ && !shuttingDown_ && s.writes > 0)

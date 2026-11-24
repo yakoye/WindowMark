@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <tlhelp32.h>
 #include <ole2.h>
 #include <xamlom.h>
 #include "XamlContainerProtocol.h"
@@ -46,6 +47,14 @@ std::wstring ProcessPath(DWORD pid) {
     wchar_t text[32768]{}; DWORD length=32768;
     if(!QueryFullProcessImageNameW(process.value,0,text,&length))throw std::runtime_error("Cannot identify target process");
     return text;
+}
+bool TapDefinitelyAbsent(DWORD pid) {
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,pid));
+    if(snapshot.value==INVALID_HANDLE_VALUE || !snapshot.value)return false;
+    MODULEENTRY32W entry{};entry.dwSize=sizeof(entry);
+    if(!Module32FirstW(snapshot.value,&entry))return false;
+    do {if(_wcsicmp(entry.szModule,L"WindowMarkXamlContainerTap.dll")==0)return false;}while(Module32NextW(snapshot.value,&entry));
+    return GetLastError()==ERROR_NO_MORE_FILES;
 }
 struct Log {
     Handle file;
@@ -161,6 +170,7 @@ int wmain(int argc,wchar_t** argv) {
         struct ViewGuard {Block* p;~ViewGuard(){if(p){InterlockedExchange(&p->stop,1);UnmapViewOfFile(p);}}} guard{view};
         new(view) Block{};view->ownerPid=GetCurrentProcessId();view->targetPid=pid;view->durationSeconds=seconds;
         view->reserve=reserve;view->fixture=!native;
+        if(client.p)view->widthHint=client.p->widthHint;
         view->persistent=persistent;view->nativeConsent=nativeConsent;
         view->showHints=hints;
         wchar_t ownExe[32768]{};GetModuleFileNameW(nullptr,ownExe,32768);
@@ -180,6 +190,14 @@ int wmain(int argc,wchar_t** argv) {
             log.Write("{\"event\":\"reuse_only_no_endpoint\"}");
             return 7; // 不加载新 DLL，不创建 NativeOnce，不调用 XAML 附加入口。
         }
+        if(broker) {
+            DWORD_PTR version{};
+            const auto answered=SendMessageTimeoutW(broker,ProtocolQuery(),kMagic,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,1000,&version);
+            if(!answered || version!=kVersion) {
+                view->version=3;view->widthHint={}; // 兼容旧端点，旧 DLL 不读取扩展。
+                log.Write("{\"event\":\"legacy_endpoint_no_width_cache\"}");
+            }
+        }
         if(native&&!broker) {
             auto marker=L"Local\\WindowMark.XamlContainerTrial.NativeOnce07."+std::to_wstring(pid);
             nativeMarker.value=CreateEventW(nullptr,TRUE,FALSE,marker.c_str());
@@ -198,13 +216,16 @@ int wmain(int argc,wchar_t** argv) {
             attached=SendMessageTimeoutW(broker,WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG|SMTO_BLOCK,2000,&accepted)&&accepted?S_OK:E_FAIL;
             log.Write("{\"event\":\"reuse_local_roots\",\"hr\":"+std::to_string(attached)+"}");
         }
-        for(unsigned endpoint=firstEndpoint;!broker&&endpoint<=16;++endpoint) {
+        for(unsigned endpoint=firstEndpoint;!broker&&endpoint<=64;++endpoint) {
             std::wstring connection=L"VisualDiagConnection"+std::to_wstring(endpoint);
             attached=initialize(connection.c_str(),pid,L"",dll.c_str(),kClassId,mappingName.c_str());
             log.Write("{\"event\":\"attach\",\"endpoint\":"+std::to_string(endpoint)+",\"hr\":"+std::to_string(attached)+"}");
             if(attached!=HRESULT_FROM_WIN32(ERROR_NOT_FOUND))break;
         }
         view->attachHr=attached;
+        if(attached==HRESULT_FROM_WIN32(ERROR_NOT_FOUND) && !broker && TapDefinitelyAbsent(pid)) {
+            log.Write("{\"event\":\"no_connection_never_attached\"}");return 8;
+        }
         if(FAILED(attached))return 2;
         const auto begin=GetTickCount64();ULONGLONG lastTick{};LONG lastState=-1;
         auto copy=std::make_unique<Block>();ULONGLONG lastLogged{};

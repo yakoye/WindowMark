@@ -59,6 +59,7 @@ class Tap : public winrt::implements<Tap,IObjectWithSite> {
             SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));
         }
         if (!self) return DefWindowProcW(hwnd,message,w,l);
+        if(message==ProtocolQuery() && w==kMagic)return kVersion;
         try {
             if(message==WM_COPYDATA) {
                 const auto data=reinterpret_cast<COPYDATASTRUCT*>(l);
@@ -270,9 +271,14 @@ class Tap : public winrt::implements<Tap,IObjectWithSite> {
             if(!width_.Restore()){InterlockedIncrement(&shared_->restoreFailures);shared_->state=Failed;Stop();return;}
             InterlockedIncrement(&shared_->restores);shared_->state=Observing;stableCount_=0;
         }
-        if (shared_->reserve && !width_.Active() && candidateCount==1 && !shared_->overflow &&
-            (shared_->fixture || learnedCandidate_==candidateId || languageAncestors.contains(candidateId))) {
-            const double size=learnedCandidate_==candidateId?learnedWidth_:candidate.ActualWidth();
+        const bool cached=shared_->version==kVersion && ime_guard::Valid(shared_->widthHint) &&
+            (shared_->fixture || ime_guard::Matches(shared_->widthHint,FindWindowW(L"Shell_TrayWnd",nullptr)));
+        if (shared_->reserve && !width_.Active() && candidateCount==1 && candidate.Visibility()==Visibility::Visible && !shared_->overflow &&
+            (shared_->fixture || learnedCandidate_==candidateId || languageAncestors.contains(candidateId) || cached)) {
+            const double natural=candidate.ActualWidth();
+            const double size=learnedCandidate_==candidateId?learnedWidth_:
+                (languageAncestors.contains(candidateId) && natural>0)?natural:
+                cached?static_cast<double>(shared_->widthHint.milliDip)/1000.0:natural;
             if (candidateId==lastCandidate_ && std::abs(size-lastWidth_)<0.01 && size>0) ++stableCount_;
             else stableCount_=0;
             lastCandidate_=candidateId; lastWidth_=size;
