@@ -2,7 +2,7 @@
 import copy
 import unittest
 from test_analyze import sample
-from validate_release_capture import validate
+from validate_release_capture import validate, app_position_unchanged
 
 
 def row(second, shown):
@@ -24,6 +24,18 @@ def row(second, shown):
 
 
 class ReleaseCaptureTests(unittest.TestCase):
+    def test_centered_image_scale_is_not_translation(self):
+        a = dict(rect=[1736,1398,1760,1422], **{'class':'Image'})
+        b = dict(rect=[1733,1395,1763,1425], **{'class':'Image'})
+        self.assertTrue(app_position_unchanged(a,b))
+        moved = dict(rect=[1734,1395,1764,1425], **{'class':'Image'})
+        self.assertFalse(app_position_unchanged(a,moved))
+        stretched = dict(rect=[1733,1398,1763,1422], **{'class':'Image'})
+        self.assertFalse(app_position_unchanged(a,stretched))
+        for node in (a,b):
+            node['class'] = 'Taskbar.TaskListButtonAutomationPeer'
+        self.assertFalse(app_position_unchanged(a,b))
+
     def test_complete_round_trip(self):
         self.assertTrue(validate([row(0,True), row(1,False), row(2,True)],400,95)['passed'])
 

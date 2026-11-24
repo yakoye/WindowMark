@@ -6,11 +6,29 @@ from analyze import read_rows, unpack
 from transitions import visible
 
 
+def app_nodes(row):
+    return {tuple(n['runtime_id']): n for b in row['taskbars'] for n in b['uia'] if n.get('app_geometry')}
+
+
+def app_position_unchanged(before, after):
+    if before['class'] != after['class']:
+        return False
+    a, b = before['rect'], after['rect']
+    if a == b:
+        return True
+    # 系统 Image 的焦点动画会以中心为锚点等比缩放；父按钮仍须逐边坐标完全一致。
+    return (before['class'] == 'Image' and a[2] > a[0] and a[3] > a[1]
+            and b[2] > b[0] and b[3] > b[1]
+            and a[0] + a[2] == b[0] + b[2] and a[1] + a[3] == b[1] + b[3]
+            and (a[2] - a[0]) * (b[3] - b[1]) == (b[2] - b[0]) * (a[3] - a[1]))
+
+
 def validate(rows, left, width):
     previous = None
     context = None
     events = []
     failures = []
+    centered_image_scales = 0
     remote_hidden = False
     for i, row in enumerate(rows):
         current_context, nodes, stamp = unpack(row)
@@ -42,19 +60,23 @@ def validate(rows, left, width):
             if old.keys() != outside.keys() or changed or roles != previous['roles']:
                 failures.append(f'{i}: 原生显隐时其他托盘按钮改变')
             old_apps = previous['apps']
-            apps = {tuple(n['runtime_id']): n['rect'] for b in row['taskbars'] for n in b['uia'] if n.get('app_geometry')}
-            if any(old_apps[k] != apps[k] for k in old_apps.keys() & apps.keys()):
+            apps = app_nodes(row)
+            common_apps = old_apps.keys() & apps.keys()
+            if any(not app_position_unchanged(old_apps[k], apps[k]) for k in common_apps):
                 failures.append(f'{i}: 原生显隐时任务栏应用区移动')
+            centered_image_scales += sum(old_apps[k]['rect'] != apps[k]['rect']
+                                        and app_position_unchanged(old_apps[k], apps[k]) for k in common_apps)
             events.append(dict(sample=i, utc=row['utc'], before=previous['state'], after=state,
                                from_exe=previous['exe'], to_exe=exe, common_tray_buttons=len(old.keys() & outside.keys())))
         previous = dict(state=state, stamp=stamp, outside={k: n for k, n in buttons.items() if k not in slot}, roles=roles,
-                        exe=exe, apps={tuple(n['runtime_id']): n['rect'] for b in row['taskbars'] for n in b['uia'] if n.get('app_geometry')})
+                        exe=exe, apps=app_nodes(row))
         context = current_context
     appeared = any(e['before'] == 0 and e['after'] == 2 for e in events)
     disappeared = any(e['before'] == 2 and e['after'] == 0 for e in events)
     return dict(passed=appeared and disappeared and remote_hidden and not failures,
                 samples=len(rows), slot_left_px=left, slot_width_px=width,
                 appeared=appeared, disappeared=disappeared, remote_hidden=remote_hidden,
+                centered_image_scale_events=centered_image_scales,
                 events=events, failures=failures,
                 scope='现有远程应用前后台往返；不代表断线重连、Windows 10 或所有显示布局已验证')
 

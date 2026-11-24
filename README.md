@@ -1,6 +1,6 @@
 # WindowMark v0.6.5
 
-单 EXE 绿色版开发检出：`WindowMark-portable`。0.6.5 交付为 `dist/v0.6.5/WindowMark.exe`。
+单 EXE 绿色版：下载并运行 `WindowMark.exe` 即可。0.6.5 构建标识为 `5ec0be8 · 2026-11-24 21:07:50`，开发检出为 `WindowMark-portable`，交付文件为 `dist/v0.6.5/WindowMark.exe`。
 已发布的 v0.6.3 和历史归档保留不变。后续正式发布使用 `make-package.ps1 -Release`，只交付一个 EXE，并按项目和版本双目录归档核验。
 
 ## 鼠标控制
