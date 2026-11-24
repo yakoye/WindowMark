@@ -114,7 +114,8 @@ bool WinImeTrayGuard::Enable(bool automatic) {
     observedPid_ = pid; observedCreated_ = created;
     std::error_code ec;
     const bool marked = std::filesystem::exists(marker_, ec);
-    if (marked && MarkerObsolete(pid, created)) std::filesystem::remove(marker_, ec);
+    const bool obsolete = marked && MarkerObsolete(pid, created);
+    if (obsolete) std::filesystem::remove(marker_, ec);
     const bool remains = std::filesystem::exists(marker_, ec);
     if (ec) {
         message_ = L"启用设置已保留；无法读取恢复标记，请检查程序目录权限。";
@@ -130,6 +131,12 @@ bool WinImeTrayGuard::Enable(bool automatic) {
         if (runtime_.empty()) runtime_ = data_ / L"runtime" / id;
         const auto& runtime = runtime_;
         std::filesystem::create_directories(runtime);
+        // 记录实际分支，区分普通启动与旧标记端点恢复，避免仅凭最终宽度误判测试。
+        {
+            std::ofstream trace(data_ / L"last-recovery.txt", std::ios::trunc);
+            trace << "automatic=" << automatic << "\nmarked=" << marked << "\nobsolete=" << obsolete
+                  << "\nremains=" << remains << "\nreuse_only=" << reuseOnly_ << "\n";
+        }
         for (const auto* name : {L"WindowMarkXamlContainerTrial.exe", L"WindowMarkXamlContainerTap.dll"})
             std::filesystem::copy_file(tools_ / name, runtime / name, std::filesystem::copy_options::skip_existing);
         log_ = data_ / (id + L".jsonl");
