@@ -1,5 +1,6 @@
 ﻿# 在当前用户交互会话安装待验证构建；不修改用户偏好，不启动额外远程连接。
-param([string]$Output='C:/Users/color/Downloads/share_chatgpt/WindowMark-release-065-cache')
+param([string]$Output='C:/Users/color/Downloads/share_chatgpt/WindowMark-release-065-cache',
+      [switch]$Enable, [switch]$Calibrate)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $root='C:/Users/color/Downloads/yakoye-release/WindowMark'
@@ -17,11 +18,14 @@ try {
     if((Get-FileHash "$root/WindowMark.exe").Hash -ne (Get-FileHash "$Output/WindowMark.exe").Hash){throw 'Installed executable hash mismatch'}
     $shell=@((New-Object -ComObject Shell.Application).Windows())|Where-Object {$_.FullName -like '*explorer.exe'}|Select-Object -First 1
     if(!$shell){throw 'Persistent Explorer not found'}
-    $shell.Document.Application.ShellExecute("$root/WindowMark.exe",'--ime-guard-enable',$root,'open',1)
+    $arguments=if($Enable){'--ime-guard-enable'}else{''}
+    $shell.Document.Application.ShellExecute("$root/WindowMark.exe",$arguments,$root,'open',1)
     Start-Sleep -Seconds 3
     # 自有空白编辑框短暂前台，用于学习真实原生输入法宽度，无键鼠模拟和文字输入。
-    $fixture=Start-Process "$Output/WindowMarkInputContextFixture.exe" -PassThru
-    $fixture.WaitForExit(20000)|Out-Null
+    if($Calibrate){
+        $fixture=Start-Process "$Output/WindowMarkInputContextFixture.exe" -PassThru
+        $fixture.WaitForExit(20000)|Out-Null
+    }
     for($i=1;$i -le 12;$i++) {
         Start-Sleep -Seconds 3
         $main=@(Get-Process WindowMark -ErrorAction SilentlyContinue|Where-Object {!$_.HasExited -and $_.SessionId -eq (Get-Process -Id $PID).SessionId}|Sort-Object StartTime -Descending)[0]
