@@ -84,9 +84,10 @@ int wmain(int argc,wchar_t** argv) {
         if(argc==1 || (argc==2 && std::wstring(argv[1])==L"--help")) {
             puts("XAML local-root controller 0.5 - RESEARCH, not a released feature.\n--fixture-pid PID --reserve --out NEW.jsonl [--seconds 5..90] [--persistent] [--toggle-ms 3000..10000]\nNative attachment DISABLED by default. Explicit --native-research --persistent plus --observe-taskbar/--reserve-taskbar required.\nNo global visual-tree subscription; exact loaded-image identity required. Later leases reuse the local broker. Unknown Windows builds refused.\nCtrl+C restores the current lease. DLL remains until target exits; idle mode does not override layout.");return 0;
         }
-        bool native=false,reserve=false,persistent=false,nativeConsent=false,hints=false;DWORD pid{};unsigned seconds=30, firstEndpoint=1,toggleMs=0;const wchar_t* path=nullptr;const wchar_t* clientName=nullptr;
+        bool native=false,reserve=false,persistent=false,nativeConsent=false,hints=false,reuseOnly=false;DWORD pid{};unsigned seconds=30, firstEndpoint=1,toggleMs=0;const wchar_t* path=nullptr;const wchar_t* clientName=nullptr;
         for(int i=1;i<argc;++i) {
             std::wstring arg=argv[i];
+            if(arg==L"--reuse-only"){reuseOnly=true;continue;}
             if(arg==L"--observe-taskbar"&&!native)native=true;
             else if(arg==L"--show-hints")hints=true;
             else if(arg==L"--reserve-taskbar"&&!native&&!reserve){native=true;reserve=true;}
@@ -175,6 +176,10 @@ int wmain(int argc,wchar_t** argv) {
             }
         }
         Handle nativeMarker;
+        if(reuseOnly && !broker) {
+            log.Write("{\"event\":\"reuse_only_no_endpoint\"}");
+            return 7; // 不加载新 DLL，不创建 NativeOnce，不调用 XAML 附加入口。
+        }
         if(native&&!broker) {
             auto marker=L"Local\\WindowMark.XamlContainerTrial.NativeOnce07."+std::to_wstring(pid);
             nativeMarker.value=CreateEventW(nullptr,TRUE,FALSE,marker.c_str());

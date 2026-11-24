@@ -23,7 +23,7 @@ public:
     Client(Client const&)=delete;
     Client& operator=(Client const&)=delete;
     ~Client();
-    bool Start(std::filesystem::path const& directory,std::filesystem::path const& log,DWORD fixturePid=0);
+    bool Start(std::filesystem::path const& directory,std::filesystem::path const& log,DWORD fixturePid=0,bool reuseOnly=false);
     void Stop() noexcept;
     void SetHints(bool enabled) noexcept { showHints_=enabled; if(shared_)InterlockedExchange(&shared_->showHints,enabled?1:0); }
     void Tick(bool heartbeat=true) noexcept;

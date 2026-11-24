@@ -116,17 +116,22 @@ bool WinImeTrayGuard::Enable(bool automatic) {
     const bool marked = std::filesystem::exists(marker_, ec);
     if (marked && MarkerObsolete(pid, created)) std::filesystem::remove(marker_, ec);
     const bool remains = std::filesystem::exists(marker_, ec);
-    if (automatic && (ec || remains)) {
-        message_ = L"启用设置已保留；当前 Explorer 的上次恢复未确认，暂停重试。可关闭后重新启用。";
+    if (ec) {
+        message_ = L"启用设置已保留；无法读取恢复标记，请检查程序目录权限。";
         return false;
     }
+    // 未确认标记存在时只能复用已有空闲端点，控制程序禁止首次附加。
+    // 旧版端点的 WM_COPYDATA 会原子拒绝仍持有租约或恢复失败的会话。
+    reuseOnly_ = automatic && remains;
     try {
         // Explorer 加载独立运行副本，避免安装目录 DLL 锁定阻塞升级/卸载。
         const auto id = std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
-        const auto runtime = data_ / L"runtime" / id;
+        // 本次进程内的自动重试复用同一份组件，避免等待期间反复复制 EXE/DLL 占满磁盘。
+        if (runtime_.empty()) runtime_ = data_ / L"runtime" / id;
+        const auto& runtime = runtime_;
         std::filesystem::create_directories(runtime);
         for (const auto* name : {L"WindowMarkXamlContainerTrial.exe", L"WindowMarkXamlContainerTap.dll"})
-            std::filesystem::copy_file(tools_ / name, runtime / name);
+            std::filesystem::copy_file(tools_ / name, runtime / name, std::filesystem::copy_options::skip_existing);
         log_ = data_ / (id + L".jsonl");
         std::ofstream marker(marker_, std::ios::trunc);
         marker << "pid=" << GetCurrentProcessId() << "\ntarget_pid=" << pid
@@ -136,9 +141,10 @@ bool WinImeTrayGuard::Enable(bool automatic) {
 #ifdef WINDOWMARK_IME_GUARD_TESTING
         fixturePid = fixturePid_;
 #endif
-        if (!client_.Start(runtime, log_, fixturePid)) {
+        if (!client_.Start(runtime, log_, fixturePid, reuseOnly_)) {
             message_ = client_.Current().error;
             // 不能确认失败发生在哪一步，保留标记供下次启动诊断。
+            if (requested_ && reuseOnly_) RetryExistingEndpoint();
             return false;
         }
         hadLease_ = true; message_ = L"已请求启用，正在核验原生容器；尚未生效。";
@@ -168,6 +174,7 @@ std::wstring WinImeTrayGuard::StatusText() const {
 }
 void WinImeTrayGuard::Restore() {
     recovering_ = false;
+    reuseFailures_ = 0;
     SetRequested(false);
     if (client_.Current().running) { client_.Stop(); message_ = L"正在恢复系统默认布局。"; }
     else {
@@ -189,9 +196,19 @@ void WinImeTrayGuard::RecoverLayout(const wchar_t* reason) {
     client_.Stop();
     message_ = reason;
 }
+void WinImeTrayGuard::RetryExistingEndpoint() {
+    if (!requested_ || shuttingDown_) return;
+    const unsigned delay = reuseFailures_ == 0 ? 5 : reuseFailures_ == 1 ? 15 : 30;
+    ++reuseFailures_;
+    recovering_ = true;
+    recoverAt_ = GetTickCount64() + delay * 1000ULL;
+    message_ = L"已开启自动恢复，当前未占位；" + std::to_wstring(delay) +
+        L" 秒后重试已有原生端点，不重新注入。";
+}
 void WinImeTrayGuard::Tick() {
     client_.Tick();
     const auto& s = client_.Current();
+    if (Active()) reuseFailures_ = 0;
     if (requested_ && !shuttingDown_) {
         const DWORD pid = TargetPid();
         HANDLE target = pid ? OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
@@ -213,12 +230,15 @@ void WinImeTrayGuard::Tick() {
             else if (!recovering_ && requested_ && !shuttingDown_ && s.writes > 0)
                 RecoverLayout(L"原生布局已确认恢复，保留启用设置并重新建立保护。");
             else if (!recovering_) message_ = requested_ ? L"启用设置已保留，当前保护停止。" : L"已关闭，原生布局已确认恢复。";
-        } else { recovering_ = false; message_ = L"启用设置已保留；保护停止且恢复未确认，暂停当前任务栏重试。请查看诊断日志。"; }
+        } else if (requested_ && !shuttingDown_ && !s.restoreFailures) {
+            // 无已知恢复失败时，后续只请求端点自身确认空闲；不删除未确认标记。
+            RetryExistingEndpoint();
+        } else { recovering_ = false; message_ = L"已开启但未生效：恢复校验失败，请查看诊断日志。"; }
     }
     if (recovering_ && requested_ && !s.running && !suspended_) {
         const auto now = GetTickCount64();
         if (now >= recoverAt_ && Compatibility().empty()) {
-            // 只在原布局已确认恢复后重连一次；连接失败不循环重试。
+            // 未确认标记存在时，Enable 仅允许已有端点复用，不重走附加入口。
             Enable(true);
         }
     }

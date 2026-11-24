@@ -73,13 +73,48 @@ int Lifecycle(std::filesystem::path const& directory,std::filesystem::path const
     puts("dead_target_marker_recovered=PASS");fflush(stdout);
     Write(marker,liveMarker);
     {
-        WinImeTrayGuard blocked;blocked.UseFixture(second.pid);blocked.onRequestedChanged=persist;
-        if(!blocked.Initialize(directory,data)||blocked.Enable(true)||!blocked.Requested()||!savedEnabled)return 33;
-        Wait([]{return false;},2500);
-        if(blocked.Active()||disabled)return 34;
-        blocked.Restore();if(blocked.Requested()||savedEnabled||disabled!=1)return 35;
+        WinImeTrayGuard recovered;recovered.UseFixture(second.pid);recovered.onRequestedChanged=persist;
+        if(!recovered.Initialize(directory,data)||!recovered.Enable(true)||!recovered.Requested()||!savedEnabled)return 33;
+        if(!Wait([&]{return recovered.Active();},10000)||disabled)return 34;
+        recovered.Restore();if(recovered.Requested()||savedEnabled||disabled!=1)return 35;
+        if(!Wait([&]{return !std::filesystem::exists(marker);},8000))return 38;
     }
-    puts("unconfirmed_live_target_keeps_preference_without_retry=PASS");fflush(stdout);
+    puts("unconfirmed_marker_reuses_idle_endpoint_automatically=PASS");fflush(stdout);
+    {
+        WinImeTrayGuard owner;owner.UseFixture(second.pid);
+        if(!owner.Initialize(directory,data/L"owner")||!owner.Enable()||!Wait([&]{return owner.Active();},10000))return 39;
+        const auto contenderData=data/L"contender";
+        std::filesystem::create_directories(contenderData);
+        Write(contenderData/L"active-session.lock",Read(data/L"owner"/L"active-session.lock"));
+        WinImeTrayGuard contender;contender.UseFixture(second.pid);
+        if(!contender.Initialize(directory,contenderData)||!contender.Enable(true))return 40;
+        Wait([]{return false;},3000);
+        if(contender.Active()||!owner.Active()||!contender.Requested())return 41;
+        owner.Shutdown();
+        if(!Wait([&]{return contender.Active();},25000))return 42;
+        contender.Shutdown();
+    }
+    puts("busy_endpoint_not_stolen_then_recovered_automatically=PASS");fflush(stdout);
+    {
+        Fixture untouched;if(!untouched.Start(directory))return 43;
+        FILETIME a{},b{},c{},d{};if(!GetProcessTimes(untouched.process,&a,&b,&c,&d))return 44;
+        const auto stamp=(static_cast<ULONGLONG>(a.dwHighDateTime)<<32)|a.dwLowDateTime;
+        const auto unknownData=data/L"no-endpoint";std::filesystem::create_directories(unknownData);
+        Write(unknownData/L"active-session.lock","pid=1\ntarget_pid="+std::to_string(untouched.pid)+"\ntarget_created="+std::to_string(stamp)+"\n");
+        WinImeTrayGuard unknown;unknown.UseFixture(untouched.pid);
+        if(!unknown.Initialize(directory,unknownData)||!unknown.Enable(true))return 45;
+        Wait([]{return false;},7500);
+        if(unknown.Active()||!unknown.Requested())return 46;
+        unsigned runtimeCopies{};
+        for(auto const& item:std::filesystem::directory_iterator(unknownData/L"runtime"))if(item.is_directory())++runtimeCopies;
+        if(runtimeCopies!=1)return 49;
+        HWND found{};while((found=FindWindowExW(HWND_MESSAGE,found,L"WindowMark.XamlContainerTrial.LocalRoots07",nullptr))!=nullptr) {
+            DWORD pid{};GetWindowThreadProcessId(found,&pid);if(pid==untouched.pid)return 47;
+        }
+        unknown.Restore();Wait([]{return false;},2000);
+        if(unknown.Requested()||unknown.Active())return 48;
+    }
+    puts("no_endpoint_no_fresh_attach_and_manual_off_cancels_retry=PASS");fflush(stdout);
     Write(marker,"pid=1\n");
     std::filesystem::last_write_time(marker,std::filesystem::file_time_type::clock::now()-std::chrono::hours(1));
     {

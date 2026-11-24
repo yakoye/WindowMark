@@ -12,7 +12,7 @@ Client::~Client() {
     // 不结束Explorer。控制程序若仍阻塞，目标端期限/进程死亡监测负责恢复。
     Release();
 }
-bool Client::Start(std::filesystem::path const& directory,std::filesystem::path const& log,DWORD fixturePid) {
+bool Client::Start(std::filesystem::path const& directory,std::filesystem::path const& log,DWORD fixturePid,bool reuseOnly) {
     if(status_.running)return false;
     Release();status_={};
     try {
@@ -34,6 +34,7 @@ bool Client::Start(std::filesystem::path const& directory,std::filesystem::path 
         std::wstring command=L"\""+exe.wstring()+L"\" ";
         command+=fixturePid?L"--fixture-pid "+std::to_wstring(fixturePid)+L" --reserve ":L"--reserve-taskbar --native-research ";
         command+=L"--persistent --client-map \""+name+L"\" --out \""+log.wstring()+L"\"";
+        if(reuseOnly)command+=L" --reuse-only";
         STARTUPINFOW startup{};startup.cb=sizeof(startup);startup.dwFlags=STARTF_USESHOWWINDOW;startup.wShowWindow=SW_HIDE;
         PROCESS_INFORMATION info{};
         if(!CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,directory.c_str(),&startup,&info)) {

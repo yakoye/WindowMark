@@ -156,6 +156,15 @@ class Tap : public winrt::implements<Tap,IObjectWithSite> {
     }
     void RefreshLocalTree() {
         local_roots::Roots roots;
+#ifdef WINDOWMARK_FIXTURE_ROOTS
+        if(shared_->fixture) {
+            using ReadFixture=HRESULT(WINAPI*)(::IInspectable**);
+            auto read=reinterpret_cast<ReadFixture>(GetProcAddress(GetModuleHandleW(nullptr),"WindowMarkFixtureGetRoot"));
+            if(!read)winrt::throw_hresult(E_NOINTERFACE);
+            Microsoft::WRL::ComPtr<::IInspectable> root;
+            winrt::check_hresult(read(root.GetAddressOf()));roots.push_back(root);
+        } else
+#endif
         winrt::check_hresult(local_roots::Read(roots));
         entries_.clear();elements_.clear();
         struct Pending { DependencyObject object;InstanceHandle parent; };

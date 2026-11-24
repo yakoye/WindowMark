@@ -45,6 +45,8 @@ endif()
 foreach(target IN ITEMS WindowMarkXamlContainerTap WindowMarkXamlContainerTrial WindowMarkXamlContainerFixture)
     if(target STREQUAL "WindowMarkXamlContainerTap")
         add_library(${target} SHARED EXCLUDE_FROM_ALL XamlContainerTap.cpp XamlContainerTap.def)
+        # 此独立工程的 DLL 用于夹具测试；正式主工程不定义该宏。
+        target_compile_definitions(${target} PRIVATE WINDOWMARK_FIXTURE_ROOTS)
     elseif(target STREQUAL "WindowMarkXamlContainerTrial")
         add_executable(${target} EXCLUDE_FROM_ALL XamlContainerTrial.cpp)
     else()

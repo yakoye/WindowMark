@@ -1,5 +1,6 @@
 // 自身隐藏宿主：不操作用户窗口、不抢焦点。用于验证同一诊断DLL的宽度和恢复。
 #include <windows.h>
+#include <inspectable.h>
 #include <windows.ui.xaml.hosting.desktopwindowxamlsource.h>
 #ifdef GetCurrentTime
 #undef GetCurrentTime
@@ -17,6 +18,12 @@
 #include <chrono>
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
+// 测试宿主公开自身 UI 线程的根，不依赖系统私有根查询版本。
+thread_local winrt::Windows::Foundation::IInspectable fixtureSource{nullptr};
+extern "C" __declspec(dllexport) HRESULT WINAPI WindowMarkFixtureGetRoot(IInspectable** out) noexcept {
+    if(!out)return E_POINTER;*out=nullptr;
+    return fixtureSource ? winrt::get_unknown(fixtureSource)->QueryInterface(__uuidof(IInspectable),reinterpret_cast<void**>(out)) : E_PENDING;
+}
 int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,bool alwaysVisible,std::atomic_bool& mainReady) {
     const char* stage="initialize";
     try {
@@ -32,6 +39,7 @@ int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,boo
         winrt::check_hresult(source.as<IDesktopWindowXamlSourceNative>()->AttachToWindow(window));
         HWND child{};winrt::check_hresult(source.as<IDesktopWindowXamlSourceNative>()->get_WindowHandle(&child));
         SetWindowPos(child,nullptr,0,0,400,100,SWP_NOACTIVATE|SWP_NOZORDER|SWP_SHOWWINDOW);
+        fixtureSource=source;
         StackPanel root;root.Orientation(Orientation::Horizontal);
         Grid slot;slot.Name(index==0?L"WindowMarkImeSlots":L"WindowMarkOtherSlots");slot.HorizontalAlignment(HorizontalAlignment::Left);
         StackPanel content;content.Orientation(Orientation::Horizontal);
@@ -69,7 +77,7 @@ int RunIsland(unsigned index,unsigned seconds,bool churn,bool closeSecondary,boo
             }
             MsgWaitForMultipleObjects(0,nullptr,FALSE,20,QS_ALLINPUT);
         }
-        stage="close-island";if(!closed)source.Close();DestroyWindow(window);manager.Close();return 0;
+        stage="close-island";fixtureSource=nullptr;if(!closed)source.Close();DestroyWindow(window);manager.Close();return 0;
     } catch(winrt::hresult_error const& e) {if(!index)mainReady=true;fprintf(stderr,"Fixture island=%u thread=%lu stage=%s HRESULT %08lx\n",index,GetCurrentThreadId(),stage,static_cast<unsigned long>(e.code().value));return 2;}
 }
 int wmain(int argc,wchar_t** argv) {

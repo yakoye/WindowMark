@@ -460,7 +460,7 @@ private:
                     SendMessageW(imeToggle_, BM_SETCHECK, checked, 0);
             }
             const std::wstring label = settings.imeGuard.enabled && !active ?
-                L"占位保护：已启用(&I)" : L"输入法占位保护(&I)";
+                L"占位保护：待恢复(&I)" : L"输入法占位保护(&I)";
             if (label != imeLabel_) { SetWindowTextW(imeToggle_, label.c_str()); imeLabel_ = label; }
             const std::wstring status = ctx_.imeStatus ? ctx_.imeStatus() : L"";
             if (status != imeStatusText_) { SetWindowTextW(imeStatus_, status.c_str()); imeStatusText_ = status; }

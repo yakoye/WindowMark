@@ -31,6 +31,7 @@ private:
     void Tick();
     void Pause(const wchar_t* reason);
     void RecoverLayout(const wchar_t* reason);
+    void RetryExistingEndpoint();
     void SetRequested(bool value);
     DWORD TargetPid() const;
     bool TargetExited() const;
@@ -39,10 +40,12 @@ private:
     ime_guard::Client client_;
     HWND hwnd_{};
     UINT taskbarCreated_{};
-    std::filesystem::path tools_, data_, marker_, log_;
+    std::filesystem::path tools_, data_, marker_, log_, runtime_;
     std::wstring message_{L"已关闭；不改变原生输入法及任务栏布局。"};
     bool requested_{}, hadLease_{}, shuttingDown_{};
     bool recovering_{};
+    bool reuseOnly_{};
+    unsigned reuseFailures_{};
     unsigned suspended_{};
     ULONGLONG recoverAt_{};
     HWND taskbar_{};
